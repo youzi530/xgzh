@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001）
+## 当前能力（Sprint 0 + INFRA-001 + INFRA-002）
 
 API:
 
@@ -17,6 +17,26 @@ Schema（Alembic `0001_init`，PG 16 + pgvector 0.8.2）:
 - `users` / `auth_sessions` / `invite_codes`
 - `ipos` / `ipo_documents`（embedding `vector(1024)` + HNSW 索引）
 - `user_favorites` / `push_tokens`
+
+缓存层（`app/cache/`）:
+
+- `@cached(ttl_seconds=N, namespace="...")` — JSON 序列化的函数级缓存
+- `@rate_limit(times=N, per_seconds=N, key_func=...)` — Lua 原子 INCR+EXPIRE 限流
+- `RealRedisClient` 走真 Redis；`InMemoryRedisClient` 走 dict+asyncio.Lock（单测/降级用）
+- 所有 key 自动加 `xgzh:` 前缀
+
+```python
+from app.cache import cached, rate_limit, RateLimitExceeded
+
+@cached(ttl_seconds=1800, namespace="ipo")
+async def fetch_ipo_basic(code: str) -> dict: ...
+
+@rate_limit(
+    times=1, per_seconds=60, namespace="otp",
+    key_func=lambda phone: f"phone:{phone}",
+)
+async def send_otp(phone: str) -> None: ...
+```
 
 ## 启动（首次）
 
@@ -109,6 +129,7 @@ app/
 ├── db/             # SQLAlchemy 2.0 async Base + ORM models
 │   ├── base.py
 │   └── models/     # users, auth, invite, ipo, push 等
+├── cache/          # Redis 客户端封装 + @cached / @rate_limit 装饰器
 └── main.py
 alembic/
 ├── env.py

@@ -16,7 +16,7 @@
 | ID | 类型 | 标题 | 估算 | 依赖 | 优先级 |
 |----|------|------|:----:|------|:------:|
 | INFRA-001 ✅ | infra | PostgreSQL 初始 schema（Alembic + pgvector） | 0.5d | - | P0 |
-| INFRA-002 | infra | Redis cache 封装 + 限流装饰器 | 0.5d | - | P0 |
+| INFRA-002 ✅ | infra | Redis cache 封装 + 限流装饰器 | 0.5d | - | P0 |
 | BE-001 | backend | User 模型 + phone OTP 发送（dev 走 mock 短信） | 0.5d | INFRA-001, INFRA-002 | P0 |
 | BE-002 | backend | OTP 校验 + 注册/登录 + JWT 颁发 | 0.5d | BE-001 | P0 |
 | BE-003 | backend | JWT 中间件 + `current_user` 依赖 | 0.5d | BE-002 | P0 |
@@ -101,21 +101,29 @@ BE-003 ──────── BE-011
 
 ---
 
-### INFRA-002 · Redis cache 封装 + 限流装饰器
+### INFRA-002 · Redis cache 封装 + 限流装饰器 ✅ DONE
 
-**改动文件**
-- `apps/api/app/cache/__init__.py`
-- `apps/api/app/cache/redis_client.py`
-- `apps/api/app/cache/decorators.py`（`@cached(ttl=)`、`@rate_limit(per_minute=)`）
-- `apps/api/tests/test_cache.py`
+**改动文件**（已实装）
+- `apps/api/app/cache/__init__.py` — 公开 API
+- `apps/api/app/cache/redis_client.py` — `RedisClientProtocol` + `RealRedisClient`（Lua INCR+EXPIRE）+ `InMemoryRedisClient`（asyncio.Lock）+ singleton 注入器
+- `apps/api/app/cache/decorators.py` — `@cached`、`@rate_limit`、`RateLimitExceeded`
+- `apps/api/tests/test_cache.py` — 17 条用例
 
 **AC**
-- [ ] `cached` 支持 JSON 序列化、key 自动 hash（含函数名 + args）
-- [ ] `rate_limit` 用 Redis Lua 脚本原子操作（防竞态）
-- [ ] 提供 `RedisFakeAdapter` 给单测用（不强依赖真实 redis）
-- [ ] `pytest tests/test_cache.py` 全绿
+- [x] `cached` 支持 JSON 序列化（`default=str` 兜底 Decimal/datetime）、key 自动 hash（`sha256(func_name+args+kwargs)[:16]`）
+- [x] `rate_limit` 用 Lua 脚本 `INCR; if==1 then EXPIRE end` 一次原子（防双 INCR 之间窗口被遗忘 EXPIRE）
+- [x] 提供 `InMemoryRedisClient`（dict + `asyncio.Lock`）给单测；并发 100 协程 INCR 测试得 1..100 无丢失
+- [x] 真 Redis 烟测：`xgzh:cache:smoke:*` 与 `xgzh:rate:smoke:user:alice` 均按命名规范写入并被 `RateLimitExceeded` 正确触发
+- [x] `pytest tests/test_cache.py` ⇒ 17 passed
+- [x] 全套 `pytest -q` ⇒ 23 passed / 3 skipped (无 DB) ; 26 passed (有 DB)
 
-**Cursor Prompt**
+**关键不变量**
+- INCR 之后再 INCR **不会** 重置 TTL（防止限流被无限延期）
+- Redis I/O 失败时 `@cached` 走原函数 + log warn（业务不挂）
+- `@rate_limit` Redis 挂掉则 raise（关闸而非放行，更安全）
+- 所有 key 走 `namespaced_key()` 自动加 `xgzh:` 前缀，统一命名空间
+
+**Cursor Prompt**（保留以便重做参考）
 
 ```
 为 apps/api 实现 Redis 缓存层，按 .cursor/rules/40-database.mdc 的 key 规范：
