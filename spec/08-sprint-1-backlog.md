@@ -15,7 +15,7 @@
 
 | ID | 类型 | 标题 | 估算 | 依赖 | 优先级 |
 |----|------|------|:----:|------|:------:|
-| INFRA-001 | infra | PostgreSQL 初始 schema（Alembic + pgvector） | 0.5d | - | P0 |
+| INFRA-001 ✅ | infra | PostgreSQL 初始 schema（Alembic + pgvector） | 0.5d | - | P0 |
 | INFRA-002 | infra | Redis cache 封装 + 限流装饰器 | 0.5d | - | P0 |
 | BE-001 | backend | User 模型 + phone OTP 发送（dev 走 mock 短信） | 0.5d | INFRA-001, INFRA-002 | P0 |
 | BE-002 | backend | OTP 校验 + 注册/登录 + JWT 颁发 | 0.5d | BE-001 | P0 |
@@ -57,26 +57,31 @@ BE-003 ──────── BE-011
 
 ## 🎯 详细 issue（按推荐合并顺序）
 
-### INFRA-001 · PostgreSQL 初始 schema (Alembic + pgvector)
+### INFRA-001 · PostgreSQL 初始 schema (Alembic + pgvector) ✅ DONE
 
 **目标**：把 `spec/05` 的核心 DDL 落到代码，建立 Alembic 第一次 migration。
 
-**改动文件**
-- `apps/api/pyproject.toml` 加 `alembic`, `sqlalchemy[asyncio]`, `asyncpg`
-- `apps/api/alembic.ini`（生成）
-- `apps/api/migrations/env.py`
-- `apps/api/migrations/versions/0001_init.py`
-- `apps/api/app/db/base.py`（`AsyncSessionFactory`, `Base`）
-- `apps/api/app/db/models/__init__.py`
-- `apps/api/app/db/models/user.py`、`ipo.py`、`auth.py`
+**改动文件**（已实装）
+- `apps/api/pyproject.toml` 加 `alembic`, `sqlalchemy[asyncio]`, `asyncpg`, `pgvector`
+- `apps/api/alembic.ini`
+- `apps/api/alembic/env.py`（async-aware；URL 优先级 `-x url=` > `XGZH_TEST_DATABASE_URL` > `settings.database_url`）
+- `apps/api/alembic/versions/0001_init_core_schema.py`
+- `apps/api/app/db/base.py`（`Base`, `get_engine`, `get_session_factory`, `get_session`）
+- `apps/api/app/db/models/__init__.py`、`_mixins.py`
+- `apps/api/app/db/models/user.py`、`auth.py`、`invite.py`、`ipo.py`、`push.py`
+- `apps/api/tests/conftest.py`、`tests/test_migrations.py`
+- `apps/api/.env(.example)` 加 `DATABASE_URL`
 
 **AC**
-- [ ] `uv run alembic upgrade head` 在本地 `docker-compose up -d postgres` 后能成功
-- [ ] 创建以下表：`users`, `auth_sessions`, `ipos`, `ipo_documents`, `user_favorites`, `push_tokens`, `invite_codes`
-- [ ] `ipo_documents.embedding` 是 `vector(1024)` 类型（为 Sprint 2 的 RAG 铺路）
-- [ ] 加单测 `tests/test_migrations.py`：升级 / 回滚一次到底，确认无破坏
+- [x] `uv run alembic upgrade head` 本地（`postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh`）跑通
+- [x] 创建 7 张表：`users`, `auth_sessions`, `ipos`, `ipo_documents`, `user_favorites`, `push_tokens`, `invite_codes`
+- [x] 30 个索引、6 个外键、4 个唯一约束（`uq_users_phone` 等）就位
+- [x] `ipo_documents.embedding` 为 `vector(1024)` + HNSW cosine 索引
+- [x] 扩展 `pgcrypto`、`vector` 自动启用
+- [x] `tests/test_migrations.py` 三条测试（upgrade / downgrade / idempotent）全绿
+- [x] `pytest -q` 在无 `XGZH_TEST_DATABASE_URL` 时 6 passed / 3 skipped；有此 env 时 9 passed / 0 failed
 
-**Cursor Prompt**
+**Cursor Prompt**（保留以便未来重做参考）
 
 ```
 按 spec/05 §3 的 SQL DDL 与 .cursor/rules/40-database.mdc 的命名/类型规范，

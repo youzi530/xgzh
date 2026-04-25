@@ -36,6 +36,14 @@ class Settings(BaseSettings):
 
     redis_url: str = Field(default="redis://localhost:6379/0")
 
+    database_url: str = Field(
+        default="postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh",
+        description="主库连接串. 默认指向本地 dev DB. 测试用 XGZH_TEST_DATABASE_URL 覆盖.",
+    )
+    db_echo_sql: bool = Field(default=False)
+    db_pool_size: int = Field(default=5)
+    db_max_overflow: int = Field(default=10)
+
     free_agent_daily_limit: int = Field(default=5)
 
     @property

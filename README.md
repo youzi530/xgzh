@@ -8,8 +8,12 @@
 ## 🏃 当前迭代
 
 - **第一刀（First Slice）已跑通**：`/healthz` + `/api/v1/ipos` (HK seed + A-share AKShare) + `/api/v1/agent/diagnose` SSE
-- **进行中**：[Sprint 1 PR-Ready Backlog](spec/08-sprint-1-backlog.md) — 16 个 PR-sized issue，每个含 AC + Cursor Prompt 模板
-- **后端测试**：`cd apps/api && .venv/bin/pytest` ⇒ 6 passed
+- **Sprint 1 进度**：[backlog](spec/08-sprint-1-backlog.md) — 16 个 PR-sized issue
+  - ✅ **INFRA-001**：Alembic + 7 张表 + pgvector(1024)，迁移测试 3/3 绿
+  - 进行中：INFRA-002 (Redis cache 封装) → BE-001 (User + OTP)
+- **后端测试**：
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 6 passed / 3 skipped
+  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 9 passed
 
 ## 📖 设计文档
 
