@@ -1,0 +1,92 @@
+---
+description: AI Agent / Prompt / RAG 工程规范
+globs:
+  - "apps/api/app/services/llm*.py"
+  - "apps/api/app/services/agent*.py"
+  - "apps/agent/**/*.py"
+  - "packages/prompts/**/*"
+---
+
+# AI Agent / Prompt / RAG 规范
+
+完整设计参见 `spec/04-AI-Agent与数据源技术落地方案.md`。本文件是它的工程化执行规范。
+
+## 模型路由
+
+| 任务类型 | 默认模型 | 备用 / 降级 |
+|---------|---------|------------|
+| 简单问答 / 摘要 | `glm-4-flash` 或 `doubao-lite` | `deepseek-v3` |
+| 主对话 / 诊断 | `deepseek-v3` | `glm-4-air` |
+| 推理 / 规律分析 | `deepseek-r1` | `deepseek-v3` |
+| Embedding | `bge-m3` | `text-embedding-v3` |
+| Reranker | `bge-reranker-v2-m3` | - |
+
+- **必须**通过 LiteLLM 统一接入；禁止直接 import 单个 SDK
+- 接入渠道优先 **硅基流动 (siliconflow)**，便于一站式切换
+
+## Prompt 工程
+
+### 文件版本化
+
+- Prompt 文件统一放 `packages/prompts/<module>/<name>.v{n}.md`
+- 每次 Prompt 变更 = 新版本号 + CHANGELOG，旧版本保留
+- System Prompt 必须包含三大模块：身份 / 工具 / 中立护栏
+
+### 中立护栏（合规红线）
+
+每个面向用户的 Prompt 必须包含以下条款（**不可删减**）：
+
+```
+【数据真实性】
+1. 所有数字、事实必须来源于工具调用结果或检索片段，禁止凭记忆编造
+2. 如检索结果与问题不相关，必须明确说"暂无足够数据"
+3. 引用使用 [1][2] 格式，对应到具体来源
+
+【中立性】
+1. 严禁使用："建议买入/满仓/重仓/全仓/必涨/稳赚/抄底/保本/保收益"
+2. 仅做事实陈述与多方观点呈现，给出"机会与风险"两面
+3. 必须以"以上为客观分析，最终决策请结合自身情况，本工具不构成投资建议"结尾
+```
+
+### 引用源约束
+
+- 所有 fact-claim 必须挂 `[N]`，且每个 N 对应一个 retrieval chunk
+- 输出后端必须执行 `validate_citations()`：丢弃无对应来源的 `[N]`
+
+## Tool Use
+
+- 工具定义集中在 `apps/api/app/services/agent_tools/`
+- 每个工具：① 函数签名 ② JSON Schema ③ 单元测试 三件套缺一不可
+- 工具内部失败 = 返回结构化错误（不要抛异常给 LLM）
+
+## RAG
+
+- 切分：`chunk_size=512`，`overlap=64`
+- 索引必带元数据：`ipo_code`, `doc_type`, `section`, `page`, `source_url`
+- 检索：必须 **Vector + BM25 混合 + Reranker 重排**（见 spec/04 §2.3）
+- MVP 阶段：`PGVector`；DAU > 10K 后切 `Milvus`
+
+## 成本控制
+
+- 单次对话目标成本 ≤ **¥0.05**
+- 必须实现：
+  - Prompt cache（相同 system prompt KV 复用）
+  - Embedding cache（hash → vector）
+  - 热门 IPO 的诊断结果缓存 1-6h
+- 所有 LLM 调用必须记录：`model / prompt_tokens / completion_tokens / cost_cny`
+
+## 输出后处理
+
+每次 LLM 输出在返回前端之前必须经过：
+
+```
+1. validate_citations()       # 引用源校验
+2. forbidden_pattern_filter()  # 黑名单关键词检测 → 触发重写
+3. ensure_disclaimer()         # 末尾追加免责声明
+```
+
+## 离线评测
+
+- 评测集放 `packages/eval/datasets/`
+- 每次 Prompt 或模型变更 → 必须跑评测，记录 召回@5 / 准确率 / 幻觉率 / 成本
+- Bad case 必须入库，迭代 Prompt 时复测

@@ -1,0 +1,49 @@
+---
+description: XGZH project root context - read first
+alwaysApply: true
+---
+
+# XGZH 项目根上下文（每次会话必读）
+
+## 产品
+
+- **新股智汇 (XGZH / IPO Agent)**：港股 / A 股打新 + AI 分析 + CRS 报税 + 券商对比
+- 形态：UniApp 小程序 + iOS/Android App + H5（一套代码）
+- 商业模式：Freemium + CPA/CPS 券商返佣
+- 目标用户：中国大陆 / HK / SG 的打新人群与 CRS 关注者
+
+## 技术栈一句话
+
+- 前端：**UniApp 4 (Vue 3 + TypeScript) + uni-app x + Wot Design Uni**
+- 后端：**FastAPI (Python 3.12) + uv + LangGraph + LiteLLM**
+- 数据库：**PostgreSQL 16 + PGVector + Redis + ClickHouse**（MVP 起步只用 PG + Redis）
+- AI 模型：**DeepSeek-V3/R1 主力 + GLM-4-Flash 兜底**（通过硅基流动 / 直连）
+
+## 设计文档（写代码前先读对应章节）
+
+| 模块 | 找哪份文档 |
+|------|-----------|
+| 整体架构 / 数据流 | `spec/02-产品整体架构与模块划分.md` |
+| UI 流程 / 字段定义 | `spec/03-核心功能模块深度解析.md` |
+| AI / RAG / 数据源 | `spec/04-AI-Agent与数据源技术落地方案.md` |
+| 技术栈 / DB Schema | `spec/05-全栈技术栈选型.md` |
+| 商业 / 合规 | `spec/06-商业化变现与合规避险.md` |
+| 排期 / Sprint backlog | `spec/07-MVP开发清单与排期.md` |
+
+## 仓库结构
+
+```
+xgzh/
+├── apps/{api, agent, mp, admin}
+├── packages/{shared-types, prompts, eval}
+├── infra/      # docker-compose 等
+├── spec/       # 设计文档
+└── .cursor/    # AI 规则
+```
+
+## 工作原则
+
+1. **先读 spec 再动手**：找到对应模块的设计章节
+2. **小步快跑**：单次改动 ≤ 300 行 / ≤ 3 文件
+3. **跑通 > 完美**：MVP 优先端到端能跑
+4. **先 Plan 后 Code**：架构选型与多文件改动先 Plan

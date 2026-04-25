@@ -1,0 +1,84 @@
+---
+description: UniApp 客户端编码规范
+globs:
+  - "apps/mp/**/*.vue"
+  - "apps/mp/**/*.ts"
+  - "apps/mp/**/*.js"
+---
+
+# UniApp 前端规范
+
+## 技术栈
+
+- **UniApp 4.x + Vue 3 (Composition API) + TypeScript**
+- **uni-app x（uts）** 用于 App 端原生性能
+- UI 库：**Wot Design Uni**（首选）
+- 状态管理：**Pinia**
+- 请求：封装 `uni.request`（拦截器/重试/SSE 兼容）
+- 图表：**uCharts**（小程序友好）/ ECharts（H5 / App）
+
+## 目录约定
+
+```
+apps/mp/
+├── pages/<module>/<page>.vue   # 页面（pages.json 注册）
+├── components/                 # 全局共享组件
+├── api/                        # 后端接口封装
+├── store/                      # Pinia store
+├── utils/                      # 工具（sse/request/format/big.js）
+├── types/                      # TypeScript 类型
+├── static/                     # 静态资源
+└── App.vue / main.ts / pages.json / manifest.json
+```
+
+## 编码风格
+
+- **Composition API** + `<script setup lang="ts">`，禁止 Options API
+- 严格 TS：`strict: true`，禁止 `any`（必要时 `unknown` + type guard）
+- 组件命名：PascalCase（`IpoCard.vue`）；页面文件 kebab-case（`pages/ipo/detail.vue`）
+
+## 跨端兼容
+
+```vue
+<!-- ✅ 平台分支 -->
+<!-- #ifdef MP-WEIXIN -->
+<button open-type="getUserProfile">微信登录</button>
+<!-- #endif -->
+<!-- #ifdef APP-PLUS -->
+<button @click="appLogin">登录</button>
+<!-- #endif -->
+```
+
+## 金额（合规）
+
+```ts
+// ✅ 用 big.js，所有金融数值
+import Big from 'big.js'
+const total = new Big(price).times(qty).toFixed(2)
+
+// ❌ 禁止
+const total = Number(price) * Number(qty) // 浮点丢精度
+```
+
+## 网络请求
+
+- 所有接口调用走 `api/*.ts`，**不要在组件里直写 uni.request**
+- 必须处理：loading / error / 空态
+- SSE / 流式：用封装好的 `utils/sse.ts`（小程序需走 chunked 兼容）
+
+## 暗黑模式
+
+- 用 CSS 变量 + Pinia `useThemeStore()`，在 `App.vue` `onLaunch` 同步系统主题
+- 颜色不要硬编码，写成 `var(--color-text)` / `var(--color-bg)`
+
+## 性能
+
+- 长列表用 `recycle-list`（小程序）/ 虚拟滚动
+- 图片必带 `lazy-load` + 占位
+- 路由跳转使用 `uni.navigateTo` 时务必判断重复点击
+
+## 合规与免责
+
+- 任何展示 AI 输出 / 金融分析的页面，**必须**在底部固定免责声明
+- 引用源（citations）必须可点击查看原文片段
+- 搜索敏感关键词（如"建议买入"）出现在 UI 文案中 → 立即停下问用户

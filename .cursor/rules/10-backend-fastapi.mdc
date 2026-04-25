@@ -1,0 +1,88 @@
+---
+description: FastAPI 后端编码规范
+globs:
+  - "apps/api/**/*.py"
+  - "apps/agent/**/*.py"
+---
+
+# FastAPI 后端规范
+
+## 项目结构
+
+```
+apps/api/app/
+├── api/v1/         # 路由（按业务模块拆分文件，如 ipos.py / agent.py）
+├── core/           # 配置、安全、依赖注入、日志
+├── services/       # 业务逻辑（不依赖 framework）
+├── repositories/   # 数据访问层（与 ORM 解耦）
+├── schemas/        # Pydantic 请求/响应模型
+├── models/         # SQLAlchemy ORM
+├── adapters/       # 外部数据源（akshare/tushare/futu/llm）
+├── tasks/          # Celery 异步任务
+└── main.py         # FastAPI app 入口
+```
+
+## 编码风格
+
+- **Python 3.12+**，必须使用类型注解（含返回值）
+- 所有 endpoint 参数/返回值必须用 Pydantic 模型，**不允许返回裸 dict**
+- 异步优先（`async def`），数据库操作用 `asyncpg` / `SQLAlchemy 2.0 async`
+- **依赖注入**用 `Depends`，禁止全局 service 单例
+
+## 命名
+
+- 路由：`/api/v{n}/<resource>`（kebab-case），HTTP 方法语义化
+- 函数：`snake_case`，公共服务方法以动词开头：`fetch_ipo_list`, `analyze_ipo`
+- Pydantic：`SomethingIn` / `SomethingOut`（区分输入输出）
+
+## 金额与精度（合规）
+
+```python
+from decimal import Decimal
+
+# ✅ 正确
+issue_price: Decimal = Decimal("10.50")
+
+# ❌ 禁止
+issue_price: float = 10.50  # 浮点损失精度，金融场景禁用
+```
+
+## 错误处理
+
+- 业务异常用自定义 `class XGZHException(Exception)` 子类，由全局 handler 统一转 HTTP 4xx
+- 第三方调用必须 try/except + 结构化日志
+- 不要把第三方异常 raw 抛给前端
+
+```python
+# ✅
+try:
+    data = await akshare_client.fetch_ipo_list()
+except AKShareTimeout as e:
+    logger.warning("akshare timeout", extra={"market": market})
+    raise UpstreamUnavailable("ipo source temporarily unavailable") from e
+```
+
+## 配置
+
+- 用 `pydantic-settings`，所有配置项有类型 + 默认值 + 来源 `.env`
+- **禁止**在代码中硬编码 API Key、URL、阈值
+
+## 日志
+
+- 用 `structlog` 或 `loguru`，全部 JSON 输出，必带 `request_id` / `user_id`
+- 日志中**禁止**包含完整手机号、身份证、银行卡号、API Key
+
+## 测试
+
+- 用 `pytest` + `pytest-asyncio` + `httpx.AsyncClient`
+- 关键业务路径必须有测试，覆盖率目标 ≥ 60%（核心 ≥ 80%）
+
+## 数据源调用
+
+- 一律走 `app/adapters/<source>.py`，业务层不直接 import akshare/tushare
+- adapter 必须实现：超时、重试、降级缓存、限频
+
+## 包管理
+
+- 使用 **uv**（不要 pip / poetry / pipenv）
+- 添加依赖：`uv add <pkg>`；锁定：`uv lock`；同步：`uv sync`

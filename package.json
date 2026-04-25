@@ -1,0 +1,21 @@
+{
+  "name": "xgzh-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "新股智汇 - 港A股打新 + AI Agent + CRS 报税向导",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev:mp": "pnpm --filter xgzh-mp dev:mp-weixin",
+    "dev:h5": "pnpm --filter xgzh-mp dev:h5",
+    "build:mp": "pnpm --filter xgzh-mp build:mp-weixin",
+    "lint": "pnpm -r lint",
+    "format": "pnpm -r format",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "infra:logs": "docker compose -f infra/docker-compose.yml logs -f"
+  }
+}

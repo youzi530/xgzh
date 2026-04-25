@@ -1,0 +1,84 @@
+---
+description: 数据库（PostgreSQL/Redis/ClickHouse）规范
+globs:
+  - "apps/api/app/models/**/*.py"
+  - "apps/api/alembic/**/*.py"
+  - "infra/**/*.sql"
+---
+
+# 数据库规范
+
+## 通用
+
+- 主库：**PostgreSQL 16**；缓存：**Redis 7**；时序/分析：**ClickHouse**
+- DB schema 完整设计见 `spec/05-全栈技术栈选型.md` §3
+- 迁移：**Alembic**；不允许手写 SQL 改生产 schema
+
+## PostgreSQL
+
+### 命名
+
+- 表：`snake_case`，复数（`users`, `ipos`, `agent_messages`）
+- 字段：`snake_case`；时间戳一律 `TIMESTAMPTZ`，命名以 `_at` 结尾（`created_at`）
+- 主键：默认 `UUID DEFAULT gen_random_uuid()`，业务无关；高频日志类用 `BIGSERIAL`
+- 索引：必带前缀 `idx_<table>_<col(s)>`；唯一索引 `uq_<table>_<col(s)>`
+
+### 类型
+
+- 金额：`NUMERIC(20,2)` 或 `NUMERIC(12,4)`，**禁止 FLOAT/REAL**
+- 货币代码：`VARCHAR(8)`（ISO 4217）
+- 枚举：用 `VARCHAR(16)` + 应用层校验（不用 PG ENUM 类型，便于演进）
+- JSON：`JSONB`（不要 JSON）
+
+### 必备字段
+
+每张业务表必须包含：
+
+```sql
+created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+```
+
+软删除场景额外加 `deleted_at TIMESTAMPTZ`，并对查询条件统一加 `WHERE deleted_at IS NULL`。
+
+### 索引策略
+
+- 高频查询字段必须有索引
+- 数组/JSONB 用 `GIN` 索引（如 `articles.related_ipos TEXT[]`）
+- 向量字段用 `IVFFlat` 或 `HNSW`（PGVector）
+
+## Alembic 迁移
+
+- 文件名：`{revision}_<verb>_<noun>.py`，例：`0003_add_ipo_performance_table.py`
+- 每个迁移必须 **可逆**（`upgrade()` + `downgrade()`）
+- **禁止**在迁移里写业务数据填充逻辑（用单独 data migration 脚本）
+- 上线前必须本地 + staging 跑通
+
+## Redis Key 规范
+
+```
+<domain>:<sub>:<id>[:<sub>]    # 冒号分隔，全 lowercase
+
+ipo:basic:0700.HK              # TTL 30min
+article:tldr:0700.HK           # TTL 60min
+session:<session_id>           # TTL 24h
+rate:user:<uid>:agent:daily    # 配额（每日重置）
+lock:cron:fetch_ipos           # 分布式锁
+stream:ipo_fetch               # Redis Streams 队列
+```
+
+- TTL **必须**显式设置，禁止永不过期
+- 大 key 拆分（> 1MB 必须分片）
+
+## ClickHouse
+
+- 表引擎：`MergeTree` 系列；用户行为表用 `ORDER BY (event_time, event_name, user_id)`
+- 必带 TTL：`TTL event_time + INTERVAL 180 DAY`
+- 写入路径：API → Redis Streams → Worker → ClickHouse（不直写）
+
+## 安全
+
+- **禁止**在 SQL 中拼接用户输入（一律参数化）
+- 所有密码：`bcrypt`（cost ≥ 12）
+- 手机号 / 身份证 等 PII：脱敏存储 + 加密索引（如必要查询）
+- 备份：每日全量 + 增量 WAL，保留 30 天

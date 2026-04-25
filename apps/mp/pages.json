@@ -1,0 +1,35 @@
+{
+    "pages": [
+        {
+            "path": "pages/index/index",
+            "style": {
+                "navigationBarTitleText": "新股智汇",
+                "navigationBarBackgroundColor": "#0F172A",
+                "navigationBarTextStyle": "white",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
+            "path": "pages/ipo/detail",
+            "style": {
+                "navigationBarTitleText": "新股详情",
+                "navigationBarBackgroundColor": "#0F172A",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
+            "path": "pages/ipo/agent",
+            "style": {
+                "navigationBarTitleText": "AI 诊断",
+                "navigationBarBackgroundColor": "#0F172A",
+                "navigationBarTextStyle": "white"
+            }
+        }
+    ],
+    "globalStyle": {
+        "navigationBarTextStyle": "white",
+        "navigationBarTitleText": "新股智汇",
+        "navigationBarBackgroundColor": "#0F172A",
+        "backgroundColor": "#0B1220"
+    }
+}

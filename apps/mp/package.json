@@ -1,0 +1,47 @@
+{
+  "name": "xgzh-mp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "新股智汇 UniApp 客户端 (小程序 + App + H5)",
+  "scripts": {
+    "dev:mp-weixin": "uni -p mp-weixin",
+    "dev:h5": "uni",
+    "dev:app": "uni -p app",
+    "build:mp-weixin": "uni build -p mp-weixin",
+    "build:h5": "uni build",
+    "build:app": "uni build -p app",
+    "lint": "eslint . --ext .ts,.vue",
+    "format": "prettier --write \"**/*.{ts,vue,json,md}\""
+  },
+  "dependencies": {
+    "@dcloudio/uni-app": "3.0.0-4060920241225001",
+    "@dcloudio/uni-app-plus": "3.0.0-4060920241225001",
+    "@dcloudio/uni-components": "3.0.0-4060920241225001",
+    "@dcloudio/uni-h5": "3.0.0-4060920241225001",
+    "@dcloudio/uni-mp-weixin": "3.0.0-4060920241225001",
+    "big.js": "^6.2.2",
+    "dayjs": "^1.11.13",
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13",
+    "wot-design-uni": "^1.5.0"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "^3.4.14",
+    "@dcloudio/uni-automator": "3.0.0-4060920241225001",
+    "@dcloudio/uni-cli-shared": "3.0.0-4060920241225001",
+    "@dcloudio/uni-stacktracey": "3.0.0-4060920241225001",
+    "@dcloudio/vite-plugin-uni": "3.0.0-4060920241225001",
+    "@types/big.js": "^6.2.2",
+    "@types/node": "^22.7.0",
+    "@vue/tsconfig": "^0.7.0",
+    "eslint": "^9.13.0",
+    "prettier": "^3.3.3",
+    "sass": "^1.80.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.10",
+    "vue-tsc": "^2.1.10"
+  },
+  "uni-app": {
+    "scripts": {}
+  }
+}
