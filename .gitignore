@@ -63,3 +63,7 @@ infra/.env
 # ─── AI / artifacts ────────────────────────────────
 .ai-cache/
 prompts-debug/
+
+# ─── 离线评测报告 (BE-S2-009; 报告本体不进 git, 仅保留 .gitkeep 维护目录) ──
+apps/api/evals/reports/*
+!apps/api/evals/reports/.gitkeep

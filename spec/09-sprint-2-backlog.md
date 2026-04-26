@@ -64,7 +64,7 @@
 | BE-S2-006b | agent | 余下 3 个 Tool（peers / sentiment_placeholder / historical）+ hybrid_search Tool 化 | 1d | BE-S2-006a | P0 | ✅ |
 | BE-S2-007 | agent | LangGraph 主循环 + 引用源装配 + 合规端层 disclaimer | 1.5d | BE-S2-002, BE-S2-005, BE-S2-006b | P0 | ✅ |
 | BE-S2-008 | quota | Agent 配额管理（免费 5/天 + VIP 无限 + 滑动窗口）| 0.5d | BE-S2-007 | P0 | ✅ |
-| BE-S2-009 | eval | 评测集 80 条 + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）| 1d | BE-S2-007 | P0 | ⬜ |
+| BE-S2-009 | eval | 评测集 80 条 + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）| 1d | BE-S2-007 | P0 | ✅ |
 
 ### 前端 · FE-S2
 
@@ -1043,6 +1043,81 @@ _user (匿       get_or_create  payload) → SSE
 6. **匿名 anon_key=None 共享 key 引发 cross-user 测试串扰**：单测 `test_record_anonymous_unknown_ip_uses_fallback` 验证"None 走 'unknown' 兜底"是有意行为（安全侧）, 但写文档说明; 集成测的 `client` fixture 走 ASGITransport 的 `request.client.host = 'testclient'`, 多用例间 IP 相同, 走 InMemory 隔离不会跨 fixture 串扰
 
 → **建议下一步走 BE-S2-009**（评测集 80 条 + 离线评测脚手架: spec Agent 主线 BE-S2-008 ✅ → **BE-S2-009** → FE-S2-001 / QA-S2-001。BE-S2-009 PR 内会落地: `eval/dataset/sprint2_80q.jsonl`（80 条标注 query, 覆盖 IPO 基本面 / 风险 / 对标 / RAG 召回 4 类）+ `eval/run_eval.py`（离线评测脚手架: 召回@5 / 幻觉率 / LLM-as-judge 三指标）+ `Makefile eval-sprint2` + 报告 markdown）
+
+---
+
+### BE-S2-009 PR 总结（评测集 80 条 + 离线评测脚手架）✅
+
+**目标**：交付一套"可重复跑"的离线评测脚手架, 把 Sprint 2 RAG Agent 主链路（hybrid_search → LLM 回答 → 引用源装配）的质量量化, 给后续 spec/07 P1 阈值告警 / 模型替换决策提供基线。
+
+**实现要点**
+
+- **目录布局**：`apps/api/evals/`（独立于 `app/`, 不打入运行时镜像）
+  - `schema.py` — Pydantic v2 模型: `EvalCase` / `EvalCaseResult` / `RunSummary` / `RunReport`, 支持 jsonl 读写 + duplicate id 校验; `frozen=True` 强约束 case 不可变
+  - `metrics.py` — 三指标纯函数实现:
+    - `compute_recall_at_5(retrieved_chunks, expected_keywords, expected_doc_ids?)`: 子串命中即算 hit, 大小写不敏感, 截 top-5
+    - `extract_atomic_facts(text)`: 正则抽取硬事实 (中文日期 / 百分比 / 货币金额 / 数字), 支持 `2018 年 9 月 20 日` 中文带空格 + `99 港元` / `港元 99` 双向币种顺序
+    - `compute_hallucination(answer_text, citations, ground_truth_facts?)`: 字符级 baseline, 只算"答案中抽出的硬事实在引用 snippet 池里没出现"占比 (与"覆盖率"概念正交)
+  - `judge.py` — LLM-as-judge: 走 `app.adapters.llm_client.chat`, 强制 `response_format={"type":"json_object"}`, 系统提示约束打 1-5 分 + 列举幻觉事实; `parse_response` 容忍 ```json``` 围栏 + 字段缺失 + 越界分数
+  - `runner.py` — 三模式 case 执行:
+    - `keyword`: 纯校验 dataset schema + 关键词在 reference_answer 出现, 无 IO, CI smoke
+    - `retrieval`: 真调 `app.services.rag.hybrid_search` + 算 recall@5, 不发 LLM
+    - `end_to_end`: hybrid_search → 自定义精简 prompt 直调 `llm_client.chat`（不走 `agent.graph.run` 防污染会话表）→ 算 hallucination + 可选 LLMJudge
+    - 用 `asyncio.Semaphore` 并发 (`settings.eval_judge_concurrency`, 默认 4) 防 LLM provider 限流
+  - `reporter.py` — markdown + JSON 双输出, `by_category` 表格 `n/a` 渲染 (区分"未跑该模式" vs "0%"), 失败 case + 字符级幻觉 top 列表
+  - `cli.py` — `argparse` CLI: `--mode`、`--dataset`、`--use-judge`、`--concurrency`、`--fail-below-recall`、`--fail-above-hallucination`、`--no-write`; 退出码 0/1/2 (成功 / 脚本错 / 阈值未达)
+- **数据集** `evals/dataset/sprint2_80q.jsonl` — 80 条 jsonl, 4 类 × 20 (basic / risk / peers / rag), 覆盖 8 只港股 IPO（腾讯 / 美团 / 阿里 / 小米 / 快手 / 心动 / 网易 / 新东方在线）, 每条带 `expected_keywords` + `ground_truth_facts` + `reference_answer`
+- **配置项** (`app/core/config.py`): 新增 `eval_judge_model` / `eval_judge_concurrency` / `eval_dataset_path` / `eval_report_dir`
+- **Makefile**: 新增 4 个 target — `eval-sprint2-smoke` / `eval-sprint2-retrieval` / `eval-sprint2` / `eval-sprint2-judge`
+- **gitignore**: `apps/api/evals/reports/*` 排除生成报告, 保留 `.gitkeep`
+
+**测试** (62 个新单测, 全 mock 不打外部 IO)
+
+| 文件 | 用例数 | 覆盖范围 |
+|------|------:|---------|
+| `tests/test_evals_schema.py` | 22 | EvalCase 字段校验 / load_cases 错误处理 / dump round-trip / build_summary 三模式聚合 / 80q 数据集自检 (4×20 平衡 + IPO code 归一 + ID 唯一) |
+| `tests/test_evals_metrics.py` | 16 | recall@5 边界 (空 / 大小写 / top5 截断 / doc_id 优先) / extract_atomic_facts (日期 / 百分比 / 货币 / 去重) / compute_hallucination (空答案 / 全 backed / 部分 backed / 数字归一) |
+| `tests/test_evals_judge.py` | 12 | build_prompt 内容校验 / parse_response 容错 (围栏 / 缺字段 / 越界分数) / judge LLM 错误隔离 |
+| `tests/test_evals_runner.py` | 12 | keyword 实数据集跑通 / retrieval mock hybrid_search / end_to_end mock chat + 验证 metrics / reporter render / CLI 退出码 |
+
+**质量门禁**
+
+| 维度 | sprint baseline | BE-S2-009 后 |
+|------|---------------:|-------------:|
+| 测试用例总数 | 285 | **347** (+62) |
+| 测试通过率 | 100% | **100%** |
+| ruff 增量错误 (新增文件) | 0 | **0** (`evals/` + `tests/test_evals_*.py` + `app/core/config.py` 全绿) |
+| mypy 增量错误 (新增文件) | 0 | **0** (`evals/` + `app/core/config.py` 8 文件全绿; baseline 25 不变) |
+| Makefile target | — | +4 (`eval-sprint2-*`) |
+| 配置项 | — | +4 (`eval_*`) |
+
+**关键 bug & 修复（PR 内自查发现）**
+
+1. **`PEERS_006` jsonl 多行被换行打断** — 生成时一条 case 被切成两行, 导致 `json.loads` 直接 `JSONDecodeError`; 合并为单行后通过
+2. **正则没覆盖 `2018 年 9 月 20 日` 这种带空格的中文日期** — `_FACT_PATTERN` 改成 `\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日` 才能抽到; 同理币种 `99 港元` 要支持"金额在前 / 币种在前"两种顺序
+3. **`compute_hallucination` 把 `ground_truth_facts` 误算进候选池** — 导致答案里的"软件"这种通用词 (恰好也是 ground_truth 里的) 被判幻觉; 改成"只看答案抽出的硬事实是否被 citations 覆盖", `ground_truth_facts` 留作未来 coverage 指标
+4. **`by_category` 在 `keyword` 模式渲染成 `0.0%`** — 该模式不算 recall / hallucination, 应该是 `n/a` 而不是 0; `RunSummary.by_category` 类型放宽到 `dict[str, dict[str, float | int | None]]`, reporter 看到 None 渲染 `n/a`
+5. **`B017 pytest.raises(Exception)` 太宽泛** — 改成 `pytest.raises(ValidationError)` 精确捕获 Pydantic 校验错
+6. **`runner._run_end_to_end_case` 不走 `agent.graph.run`** — 故意决策: 走 graph 会创建 `chat_sessions` / `chat_messages` 行污染评测库, 端到端模式直接调 `llm_client.chat` + 自定义 system prompt, 跟生产链路解耦但等价
+
+**验证**
+
+```bash
+# 1. CLI smoke (无 IO, 验证 schema + 80 条数据集)
+make eval-sprint2-smoke
+# → 80/80 success, 4×20 by_category, 报告 markdown 渲染正常
+
+# 2. 全量后端测试
+uv run pytest -q --no-cov
+# → 347 passed, 215 skipped (DB 依赖类), 0 failed
+
+# 3. lint + type
+uv run ruff check evals tests/test_evals_*.py app/core/config.py
+uv run mypy evals app/core/config.py
+# → All checks passed / Success: no issues found in 8 source files
+```
+
+→ **建议下一步走 FE-S2-001**（AI 对话页 UI + Pinia store + SSE consume）—— 后端 P0 主链路 BE-S2-001/002/003/004/005/006a/006b/007/008/009 全部 ✅, 前端依赖已就绪; 或并行启动 QA-S2-001 (Agent E2E 集成测试) 把后端兜底跑一轮。
 
 ## ✅ Sprint 2 完成后的产出物
 

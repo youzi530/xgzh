@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007/008/009/010/011）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001~011 + Sprint 2 BE-S2-000~009）
 
 API:
 
@@ -581,6 +581,40 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 
 预期 `3 passed`，详见 `spec/08-sprint-1-backlog.md` §QA-001 / §Sprint 1.5。
 
+## 离线评测 (BE-S2-009)
+
+`evals/` 是 Sprint 2 RAG Agent 主链路的离线评测脚手架, 不打入运行时镜像。三种 mode 支持递进式跑分：
+
+```bash
+# 1. 纯 schema + 关键词校验 (无 IO, CI smoke; ~1s)
+make eval-sprint2-smoke
+
+# 2. 召回@5 (依赖 PG + ipo_documents 实数据, 不发 LLM)
+make eval-sprint2-retrieval
+
+# 3. 端到端 (PG + 真 LLM, 算召回@5 + 字符级幻觉)
+make eval-sprint2
+
+# 4. 端到端 + LLM-as-judge (额外 1-5 分语义打分)
+make eval-sprint2-judge
+```
+
+- **数据集**: `evals/dataset/sprint2_80q.jsonl` — 80 条 jsonl, 4 类 × 20 (basic / risk / peers / rag), 8 只港股 IPO 覆盖
+- **三指标**:
+  - **召回@5**: top-5 chunks 是否含 `expected_keywords` (子串命中, 大小写不敏感)
+  - **幻觉率**: 答案中"硬事实"(数字 / 日期 / 货币 / 百分比) 在引用 snippet 池里没出现的占比 (字符级 baseline)
+  - **LLM-as-judge**: 走 `settings.eval_judge_model` (默认 DeepSeek-V3, 可改 GPT-4o), 强制 JSON 输出 1-5 分 + rationale + hallucinated_facts
+- **报告**: 默认写 `evals/reports/<run_id>.md` + `evals/reports/<run_id>.json`; `--no-write` 只打印
+- **CI 阈值告警**: `--fail-below-recall 0.7 --fail-above-hallucination 0.10` 退出码 2 触发, 给 QA-S2-002 (eval CI 化) 复用
+
+CLI 完整选项:
+
+```bash
+uv run python -m evals.cli --help
+```
+
+详见 `spec/09-sprint-2-backlog.md` §BE-S2-009 PR 总结。
+
 ## 项目结构
 
 ```
@@ -607,6 +641,14 @@ app/
 alembic/
 ├── env.py
 └── versions/       # 0001_init_core_schema.py …
+evals/              # BE-S2-009 离线评测脚手架 (不打入运行时)
+├── schema.py       # EvalCase / EvalCaseResult / RunReport (Pydantic)
+├── metrics.py      # 召回@5 / 字符级幻觉 / 硬事实抽取
+├── judge.py        # LLM-as-judge (1-5 打分)
+├── runner.py       # keyword / retrieval / end_to_end 三模式
+├── reporter.py     # markdown + JSON 双输出
+├── cli.py          # python -m evals.cli ...
+└── dataset/sprint2_80q.jsonl  # 80 条 4×20
 ```
 
 详见 `.cursor/rules/10-backend-fastapi.mdc` 与 `.cursor/rules/40-database.mdc`。

@@ -13,7 +13,8 @@
 # - DB target 默认假定 ``infra/docker-compose.yml`` 已启 ``xgzh-postgres`` + ``xgzh-redis``,
 #   或本地 Homebrew Postgres 14 + Redis 7 跑着.
 
-.PHONY: help test test-db-init test-unit test-e2e test-all lint typecheck
+.PHONY: help test test-db-init test-unit test-e2e test-all lint typecheck \
+        eval-sprint2-smoke eval-sprint2-retrieval eval-sprint2 eval-sprint2-judge
 
 # 默认 dev / test 库 DSN; 用户可以通过 ``make TEST_DATABASE_URL=...  test-e2e`` 覆盖
 DEV_DB_URL ?= postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh
@@ -50,3 +51,22 @@ lint:  ## ruff 静态检查
 
 typecheck:  ## mypy 类型检查
 	uv run mypy app
+
+# ─── BE-S2-009 离线评测脚手架 ────────────────────────────────────────────
+# 三档跑法:
+#   eval-sprint2-smoke    : 无 IO, 仅校验 80 条数据集 schema 正确 (CI 默认)
+#   eval-sprint2-retrieval: 走 PG, 算召回@5 (BE-S2-005 hybrid_search baseline)
+#   eval-sprint2          : 走 PG + LLM, 算召回@5 + 字符级幻觉 (不调 judge)
+#   eval-sprint2-judge    : 全量 + LLM-as-judge (1-5 分语义评分; 最贵)
+
+eval-sprint2-smoke:  ## 评测集 80 条 schema smoke (无 PG / LLM)
+	uv run python -m evals.cli --mode keyword --no-write
+
+eval-sprint2-retrieval:  ## 评测召回@5 (需 PG; LLM 不依赖)
+	uv run python -m evals.cli --mode retrieval
+
+eval-sprint2:  ## 端到端评测 (需 PG + LLM key; 不调 judge)
+	uv run python -m evals.cli --mode end_to_end
+
+eval-sprint2-judge:  ## 端到端 + LLM-as-judge (需 PG + LLM key; 最贵)
+	uv run python -m evals.cli --mode end_to_end --use-judge

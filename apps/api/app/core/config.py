@@ -309,6 +309,29 @@ class Settings(BaseSettings):
             if s.strip()
         )
 
+    # ─── BE-S2-009 离线评测脚手架 ───────────────────────────────────────
+    eval_judge_model: str = Field(
+        default="openai/deepseek-ai/DeepSeek-V3",
+        description=(
+            "LLM-as-judge 裁判模型. 默认与 llm_primary_model 一致省成本; "
+            "改 .env 走 GPT-4o / Claude-Opus 提质量. 走 LiteLLM 路由统一."
+        ),
+    )
+    eval_judge_concurrency: int = Field(
+        default=4,
+        description="judge / 端到端 case 并发上限. 太高会撞 LLM provider rate limit.",
+        ge=1,
+        le=32,
+    )
+    eval_dataset_path: str = Field(
+        default="evals/dataset/sprint2_80q.jsonl",
+        description="默认评测集路径 (相对 apps/api/). CLI ``--dataset`` 可覆盖.",
+    )
+    eval_report_dir: str = Field(
+        default="evals/reports",
+        description="评测报告输出目录 (gitignored).",
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",
