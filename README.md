@@ -41,6 +41,11 @@
     - `apps/mp/components/FavoriteButton.vue`（未登录跳登录 modal / 已登录乐观切换 / 错误码分类 toast / `default | compact` 双密度）
     - `apps/mp/pages/ipo/detail.vue` 重构：顶部红色风险 banner + Header（status badge + 关注按钮）+ 6 格基本信息卡 + 4 tab（基本面 / 保荐承销 / 亮点 / 风险，财务摘要 dict 容错渲染）+ AI 诊断 CTA（"VIP 限免"角标占位）+ 数据来源行
     - 跨 store 联动用 watch 而非反向 import，箭头单向 favorites → auth，避免循环依赖
+  - ✅ **FE-006**：自选列表 Tab
+    - `apps/mp/pages/me/favorites.vue`（新建）：顶部 stats 条（已关注 N / 申购中 X 金色高亮）+ `IPOCard` 列表（适配器 `toIPOItem` 把 `FavoriteItem` 缺失字段填 null）+ 长按 ActionSheet → modal 二次确认 → store 移除 + 空态（图标 + 文案 + "去发现新股"CTA）+ 下拉刷新
+    - `apps/mp/pages.json`：注册 `/pages/me/favorites` + `enablePullDownRefresh: true`
+    - `apps/mp/pages/me/index.vue`：插入"我的自选"入口卡片（VIP 卡下方），右侧显示自选数量徽标，进个人中心时预热 `favStore.loadOnce()`
+    - 跨页响应式验证：详情页 ★ 关注 → 自选列表立即同步（store 单源真相）；详情页 ☆ 取消 → 自选列表立即少一项
   - ✅ **FE-003**：个人中心 + 设置 + VIP 入口（无支付）
     - 资料卡（昵称首字头像 / 区域本地化 / 邀请码点击复制）+ VIP 占位卡 + 邀请绑定卡 + 设置区 + 退出登录
     - 邀请绑定接 BE-006，前端做长度校验 + 自禁 + 大写归一，7 类错误码（`invite_code_not_found` / `invite_self_binding` / `invite_already_bound` / `invite_code_inactive` / `invite_code_expired` / `invite_code_exhausted` / `invite_code_not_personal`）逐个映射文案

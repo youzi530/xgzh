@@ -40,6 +40,15 @@
                 "navigationBarBackgroundColor": "#0B1220",
                 "navigationBarTextStyle": "white"
             }
+        },
+        {
+            "path": "pages/me/favorites",
+            "style": {
+                "navigationBarTitleText": "我的自选",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white",
+                "enablePullDownRefresh": true
+            }
         }
     ],
     "globalStyle": {

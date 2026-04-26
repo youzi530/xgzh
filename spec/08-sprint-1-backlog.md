@@ -33,7 +33,7 @@
 | FE-003 ✅ | frontend | 个人中心 + 设置 + VIP 入口（无支付） | 1d | FE-002 | P0 |
 | FE-004 ✅ | frontend | 首页瀑布流 + 今日打新卡片 + 打新日历 | 1.5d | BE-008 | P0 |
 | FE-005 ✅ | frontend | 新股详情页（关注按钮 + 招股要点） | 1d | BE-009, BE-010 | P0 |
-| FE-006 | frontend | 自选列表 Tab | 0.5d | BE-010, FE-005 | P0 |
+| FE-006 ✅ | frontend | 自选列表 Tab | 0.5d | BE-010, FE-005 | P0 |
 | QA-001 | qa | API 集成测试套件（pytest + httpx） | 1d | BE-009 | P0 |
 
 **合计**：后端 8d + 前端 6d + 基础 2d = **16 PR / ~12-14 工作日**（双周内可完）
@@ -1261,15 +1261,64 @@ psql xgzh -c "UPDATE ipos SET extra = jsonb_set(coalesce(extra, '{}'::jsonb), '{
 
 ---
 
-### FE-006 · 自选列表 Tab
+### FE-006 · 自选列表 Tab ✅ DONE
 
-**改动文件**
-- `apps/mp/pages/me/favorites.vue`
+**目标**：把"我的自选"做成完整页面 — 列表卡片复用 `IPOCard` + 长按二次确认移除 + 空态引导回首页 + 个人中心入口（含数量徽标），并验证 FE-005 的 `useFavoritesStore` 在多页面间响应式同步。
+
+**改动文件**（已实装）
+- `apps/mp/pages/me/favorites.vue`（新建）：自选列表页 — 顶部 stats 条（已关注 N / 申购中 X）+ `IPOCard` 列表（适配器把 `FavoriteItem` 转 `IPOItem` 形状）+ 长按 ActionSheet → modal 二次确认 → store 移除 + 空态（图标 + 文案 + "去发现新股"按钮）+ 错误态点击重试 + 下拉刷新（`loadOnce(force=true)`）
+- `apps/mp/pages.json`：注册 `/pages/me/favorites` 路由 + `enablePullDownRefresh: true`
+- `apps/mp/pages/me/index.vue`：插入"我的自选"入口卡片（VIP 卡下方，邀请绑定上方），右侧显示自选数量徽标；进个人中心时预热 `favStore.loadOnce()`，徽标即时显示
 
 **AC**
-- [ ] 列表显示用户全部自选
-- [ ] 长按移除（带二次确认）
-- [ ] 空态有引导文案
+- [x] 列表显示用户全部自选（`useFavoritesStore().items` 响应式）
+- [x] 长按移除（ActionSheet → modal 二次确认）
+- [x] 空态有引导文案（"去发现新股"按钮跳首页）
+- [x] 顶部 stats 条引导用户行动（"申购中 X 只"用金色高亮）
+- [x] 下拉刷新强刷自选列表（`loadOnce(force=true)`）
+- [x] 个人中心"我的自选"入口 + 数量徽标
+- [x] 未登录访问 favorites 页直接 `reLaunch` 回登录（不能 navigateTo, 防后退栈）
+- [x] 跨页响应式：详情页 ☆/★ 切换 → 自选列表立即同步（store 单源真相）
+
+**关键设计决策**
+1. **复用 `IPOCard` 而非新写一个卡片**：自选页的卡片视觉要和首页一致（用户认知一致），通过 `toIPOItem(f: FavoriteItem)` 适配器把 `LEFT JOIN ipos` 投影里缺失的 `subscribe_start` / `subscribe_end` / `pe_ratio` 等填 null，`IPOCard` 内部已对 null 兜底渲染 `--` / "信息待补"
+2. **长按移除 = ActionSheet + modal 二次确认 双层兜底**：单 modal 用户长按可能误触；ActionSheet 给"取消关注"红色按钮当第一道意图确认，确认后再 modal 二次确认（含具体 IPO 名 `${item.name}`）；移除走 `favStore.remove`，乐观更新 + 失败回滚由 store 内部完成
+3. **数据来源 = `useFavoritesStore` 单源真相**：详情页 `★` 关注 → store 乐观更新 `items[]` → 自选列表 storeToRefs 响应式立即同步多一项；详情页 `☆` 取消 → 自选列表自动少一项；不需要返回时 reload。这是 FE-005 选 Pinia store 集中持自选的核心收益
+4. **HK seed 收藏的 placeholder 渲染**：用户可以收藏"还没入 ipos 表的 HK seed IPO"，此时 `name` / `industry` / `issue_price` 都为 null；adapter 用 `code` 兜底 `name`，`IPOCard` 显示"行业未分类 / --" 灰态卡片，不丢条目
+5. **空态文案 + CTA 引导**：仿 spec/06 §UX 规范的"empty state 必有 CTA"原则；不只是文案，还有大按钮跳首页发现新股；图标用 ☆ 与详情页关注按钮符号呼应
+6. **stats 条把"申购中"高亮**：用户进自选页最关心"我关注的哪些今天能打"，金色卡片让用户瞄一眼就知道 actionable 数量；非申购中的归到"已关注"灰态总数
+7. **个人中心入口数量徽标**：从 `favStore.items.length` 派生 computed，进个人中心 `loadOnce` 触发后徽标自动渲染；> 0 才显示徽标，避免"0"占位
+8. **下拉刷新 stopPullDownRefresh**：UniApp `enablePullDownRefresh + onPullDownRefresh` 必须显式 `stopPullDownRefresh`，否则 loading 圈不会消失（小程序原生交互细节）
+9. **adapter 不放在 `api/favorites.ts`**：`toIPOItem` 是渲染层适配，跟 BE 数据模型无关；放页面里清晰"这是 favorites 页 → 复用 IPOCard 的胶水"，而非污染 API client
+10. **未做长按拖拽排序 / 批量移除**：Sprint 1 规模 (单用户预期 < 50 自选) 不需要；后续用户量大时再加 spec/05 §自选优化的"拖拽排序"功能
+
+**验收方法**
+
+```bash
+# 0. 起后端
+cd apps/api && uv run uvicorn app.main:app --port 8000
+
+# 1. 登录后, 进任意 IPO 详情页, 点 ☆ 关注 (FE-005 已实现)
+# 2. 返回首页, 点右上角头像进个人中心
+#    - 看到"我的自选"卡片, 右侧徽标显示 1
+# 3. 点"我的自选"卡片, 进自选列表页
+#    - 顶部 stats: 已关注 1 / 申购中 0 (或 1, 取决于该 IPO status)
+#    - 列表显示刚才关注的 IPO 卡片 (复用首页样式)
+# 4. 长按卡片
+#    - ActionSheet 弹"取消关注"红色按钮
+#    - 点确认 → modal "确认取消关注 ${name}?"
+#    - 点"取消关注" → toast "已取消关注", 列表立即少一项
+# 5. 列表为空 → 显示空态 + "去发现新股" 按钮 → 点击回首页
+# 6. 下拉刷新 → 加载圈出现, 完成后自动收回
+# 7. 在详情页再次关注 → 返回自选列表, 立即看到新增项 (响应式)
+```
+
+**遗留 / 后续**
+- 申购窗口推送提醒（`notify_on_subscribe` 字段当前都是默认 true，但前端没有"开关"切换 UI）：等 BE-011 push 真接入 APNs / FCM 后，加每行卡片右侧"🔔 / 🔕"小开关，调 BE-010 的"PUT /favorites/{code}/notify"或"重新 add 覆盖"
+- 排序选项（按 favorited_at / 按 subscribe_start / 按 status）：当前固定后端 `favorited_at DESC`，量大后加排序 chip
+- 批量移除 / 多选模式：Sprint 1 规模不需要，后续做
+- 自选数 > 100 后的分页：BE-010 当前不分页，后端加 `?page=&size=` 参数后前端走 `onReachBottom`
+- `notify_on_subscribe` 在 add 时 UI 没暴露开关：前端默认传 true，符合用户"我关注就要提醒"的直觉，后续如果要"静默关注"可以在 ActionSheet 加多一项
 
 ---
 

@@ -16,7 +16,15 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - Header 区：名称 + status badge（与列表卡片同一调色板）+ 关注按钮（`FavoriteButton` 组件）
   - 6 格基本信息卡 + 4 tab：基本面（财务摘要 KV）/ 保荐承销（chip + 招股书链接）/ 投资亮点 / 主要风险（任一为空给"暂未补齐"占位）
   - AI 诊断 CTA（"VIP 限免"角标占位，匿名仍可点击进入）+ 数据来源行 + 免责行
-  - `useFavoritesStore()` 集中持自选数据：登录后首次进详情触发 `loadOnce`，乐观更新 + 失败回滚；FE-006 自选列表 Tab 直接复用
+  - `useFavoritesStore()` 集中持自选数据：登录后首次进详情触发 `loadOnce`，乐观更新 + 失败回滚
+- **我的自选（FE-006）**：自选列表 Tab + 长按移除
+  - 个人中心入口卡片（"我的自选" + 数量徽标）
+  - 顶部 stats 条：已关注 N / 申购中 X（金色高亮 actionable 数量）
+  - 列表复用 `IPOCard`（`FavoriteItem → IPOItem` 适配器把缺失字段填 null）
+  - 长按 ActionSheet 弹"取消关注"红色按钮 → modal 二次确认（含 IPO 名）→ `favStore.remove` 乐观更新
+  - 空态：☆ 图标 + 引导文案 + "去发现新股"CTA 跳首页
+  - 下拉刷新：`loadOnce(force=true)` + `uni.stopPullDownRefresh`
+  - 跨页响应式：详情页 ★ / ☆ 切换 → 自选列表立即同步（Pinia store 单源真相，无需 reload）
 - AI 诊断页：DeepSeek-V3 流式输出（SSE）
 - **登录页（FE-001）**：手机 OTP + 微信小程序一键登录
   - 双 Tab：手机号 + 验证码（全平台）/ 微信一键（仅 `MP-WEIXIN` 条件编译）
@@ -72,7 +80,9 @@ apps/mp/
 ├── pages/
 │   ├── index/index.vue       # 首页（FE-004：双视图 + status chip + 今日打新 + 分页）
 │   ├── auth/login.vue        # 登录页（手机 OTP + 微信一键，FE-001）
-│   ├── me/index.vue          # 个人中心（资料 + 邀请 + VIP 占位 + 设置 + 退出，FE-003）
+│   ├── me/
+│   │   ├── index.vue         # 个人中心（资料 + 邀请 + VIP 占位 + 自选入口 + 设置 + 退出，FE-003 / FE-006）
+│   │   └── favorites.vue     # 我的自选（stats + IPOCard 列表 + 长按移除 + 空态，FE-006）
 │   └── ipo/
 │       ├── detail.vue        # 详情页（FE-005：风险 banner + 关注按钮 + 4-tab 招股要点 + AI CTA）
 │       └── agent.vue         # AI 诊断页

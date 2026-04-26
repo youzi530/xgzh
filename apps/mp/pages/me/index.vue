@@ -25,11 +25,17 @@ import { computed, reactive, ref } from 'vue'
 
 import { bindInvite, parseInviteError } from '@/api/invite'
 import { useAuthStore } from '@/stores/auth'
+import { useFavoritesStore } from '@/stores/favorites'
 
 const KEY_BOUND_REFERRER = 'xgzh.invite.bound_referrer'
 
 const authStore = useAuthStore()
 const { user, loggedIn } = storeToRefs(authStore)
+
+// 自选数量徽标; 进个人中心时若已登录顺手 loadOnce, 列表入口立刻能看到 N
+const favStore = useFavoritesStore()
+const { items: favoriteItems } = storeToRefs(favStore)
+const favoriteCount = computed(() => favoriteItems.value.length)
 
 const inviteForm = reactive({ code: '' })
 const inviteSubmitting = ref(false)
@@ -62,6 +68,14 @@ function refreshAuthGate() {
   }
   const cached = uni.getStorageSync(KEY_BOUND_REFERRER) as string | ''
   boundReferrer.value = cached || null
+  // 预热自选列表; 失败不阻塞页面渲染, FE-006 列表页内还会再 ensure 一次
+  favStore.loadOnce().catch(() => {
+    // 忽略, 进自选 Tab 时还会再调
+  })
+}
+
+function gotoFavorites() {
+  uni.navigateTo({ url: '/pages/me/favorites' })
 }
 
 function copyInviteCode() {
@@ -226,6 +240,22 @@ onShow(() => {
       </view>
       <view class="vip-cta">
         <text>升级</text>
+      </view>
+    </view>
+
+    <view class="entry-list">
+      <view class="entry-item" @tap="gotoFavorites">
+        <view class="entry-left">
+          <text class="entry-icon">★</text>
+          <view class="entry-text">
+            <text class="entry-title">我的自选</text>
+            <text class="entry-desc">关注新股 + 申购窗口提醒</text>
+          </view>
+        </view>
+        <view class="entry-right">
+          <text v-if="favoriteCount > 0" class="entry-badge">{{ favoriteCount }}</text>
+          <text class="entry-arrow">›</text>
+        </view>
       </view>
     </view>
 
@@ -411,6 +441,76 @@ onShow(() => {
   color: #0b1220;
   font-size: 26rpx;
   font-weight: 700;
+}
+
+.entry-list {
+  background: var(--color-surface, #131a2c);
+  border-radius: 24rpx;
+  padding: 8rpx 24rpx;
+  border: 1rpx solid var(--color-border, rgba(255, 255, 255, 0.06));
+}
+.entry-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 0;
+}
+.entry-left {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  min-width: 0;
+}
+.entry-icon {
+  width: 64rpx;
+  height: 64rpx;
+  flex-shrink: 0;
+  border-radius: 16rpx;
+  background: rgba(246, 196, 83, 0.15);
+  border: 1rpx solid rgba(246, 196, 83, 0.35);
+  color: #f6c453;
+  font-size: 32rpx;
+  text-align: center;
+  line-height: 64rpx;
+}
+.entry-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  min-width: 0;
+}
+.entry-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text, #e2e8f0);
+}
+.entry-desc {
+  font-size: 22rpx;
+  color: var(--color-text-muted, #94a3b8);
+}
+.entry-right {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex-shrink: 0;
+}
+.entry-badge {
+  min-width: 40rpx;
+  height: 40rpx;
+  padding: 0 12rpx;
+  line-height: 40rpx;
+  text-align: center;
+  background: rgba(79, 139, 255, 0.18);
+  border: 1rpx solid rgba(79, 139, 255, 0.4);
+  border-radius: 999rpx;
+  color: var(--color-primary, #4f8bff);
+  font-size: 22rpx;
+  font-weight: 700;
+}
+.entry-arrow {
+  font-size: 36rpx;
+  color: var(--color-text-muted, #94a3b8);
 }
 
 .section {
