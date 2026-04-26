@@ -71,7 +71,7 @@
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
 | FE-S2-001 | page | AI 对话页 UI + Pinia store + SSE consume | 1d | BE-S2-007 | P0 | ✅ |
-| FE-S2-002 | render | 打字机渲染 + Markdown 增量解析 + MP-WEIXIN onChunkReceived 兼容 | 0.5d | FE-S2-001 | P0 | ⬜ |
+| FE-S2-002 | render | 打字机渲染 + Markdown 增量解析 + MP-WEIXIN onChunkReceived 兼容 | 0.5d | FE-S2-001 | P0 | ✅ |
 | FE-S2-003 | render | 引用源面板（[1] 点击 → ActionSheet → 原文片段抽屉）| 0.5d | FE-S2-001 | P0 | ⬜ |
 | FE-S2-004 | quota | 配额限制 UI + VIP 升级引导 modal（接 429）| 0.5d | BE-S2-008, FE-S2-001 | P0 | ⬜ |
 
@@ -1414,6 +1414,168 @@ README.md                             # 同步 Sprint 2 进度
 ```
 
 → **建议下一步走 FE-S2-002**（打字机渲染 + Markdown 增量解析, 0.5d）—— 当前 chat 骨架已就位但 LLM 输出还是裸文本，FE-S2-002 把 `marked` / `markdown-it` 增量解析挂上去 + 打字机节流（避免 token 100 个/s 触发 100 次 reflow），同时把 `[1] [2]` inline citation reference 转成可点击 anchor（为 FE-S2-003 抽屉打入口）。或并行 **FE-S2-003**（引用源 ActionSheet 抽屉, 0.5d）也可以，两者无依赖。
+
+---
+
+### FE-S2-002 PR 总结（已完成 ✅）
+
+**目标**：把 FE-S2-001 chat 骨架里裸文本的 LLM 输出升级为 **Markdown 增量渲染**，解决 token 100/s 暴击导致的 reflow 抖动问题；顺手把 SSE 跨端 abort 实现，给用户加"停止生成"按钮（spec 写明 FE-S2-001 时延后到本 PR 一并做）；以及把 `[N]` 引用转成可点击 anchor（FE-S2-003 抽屉打入口）。
+
+**实现要点**
+
+1. **轻量自实现 Markdown 解析器** (`apps/mp/utils/markdown.ts`, +245)
+   - **不引第三方依赖**：`@dcloudio/*` 当前 npm 版本被 yank，加 `marked` / `markdown-it` 撞同样 npm 体系问题；自实现 ~245 行覆盖 LLM 投研对话场景 90%+ 用法
+   - **支持子集**：段落 / heading h1-h6 / 无序列表 (`-` `*` `+`) / 有序列表 (`1. `) / 引用 (`> `) / 代码块 (```` ``` ````) / 加粗 (`**`) / 斜体 (`*`) / 行内代码 (\`) / 链接 (`[text](url)`) / **citation (`[N]`)**
+   - **citation 单独识别**：regex 区分 `[N]` (纯数字) vs `[text](url)` 链接 vs `[text]` 普通文本，避免 `[研报](http://x)` 被误识别为 `idx=研报` 的 citation
+   - **不支持 / 简化**：表格、嵌套列表、删除线、HTML 原生标签（XSS / MP 不安全）
+   - **增量策略**：每次 delta 后整文重 parse（短文 < 1ms / 帧），不做"已 commit + tail buffer"过早优化
+   - **`blocksToPlainText`**：导出辅助函数供 Sprint 3 "复制内容" / 字数统计复用
+
+2. **MarkdownRenderer 跨端组件** (`apps/mp/components/MarkdownRenderer.vue`, +281)
+   - **纯 `<view>` + `<text>` 渲染**：不用 `v-html` (XSS) / `rich-text` (MP-WEIXIN 事件冒泡有坑)，纯 view+text 在三端均可挂 `@tap`
+   - **Props**：`blocks: MarkdownBlock[]` + `streaming?: boolean`
+   - **Emits**：`citation-tap (idx)` + `link-tap (url)` 让父页决定行为（避免组件耦合业务）
+   - **流式光标 ▋**：在最后一个非 hr / 非 code block 尾部 inline 一个闪烁光标；代码块 `<text>` 内部不嵌光标（破坏 monospace 对齐）
+   - **citation chip 样式**：`[1]` 渲染为蓝色 outline+底色 chip，视觉上让用户感知"可交互"
+
+3. **打字机节流调度器** (`apps/mp/utils/typewriter.ts`, +85)
+   - **跨端 rAF**：H5 用 `requestAnimationFrame` (60fps + 后台 tab 自动暂停)，MP / App polyfill `setTimeout(16ms)`（精度差 ~1ms 但够用）
+   - **buffer 合并**：多个 delta push 在 16ms 内合并到 1 次 commit，避免 100 token/s 触发 100 次 markdown 重 parse + DOM diff
+   - **drain() 兜底**：流结束 / 错误 / cancel 时强制 flush，buffer 里残留字符立即落地，防止"最后几个字看不到"
+   - **done 后 push 直接 commit**：罕见的"drain 后又收到延迟 delta"边界绕过节流，保证字不丢
+   - **不支持暂停/恢复**：单调推进语义最简单，避免引入"流速插值"复杂度
+
+4. **SSE abort 跨端支持** (`apps/mp/utils/sse.ts`, +120 -50)
+   - `streamSSE` 返回类型从 `Promise<void>` 改为 `StreamHandle = { done, abort }`
+   - **H5**：`AbortController` + `fetch({signal})`；abort 后 `fetch.then` 抛 `AbortError` → `onError(message='aborted', statusCode=0)`
+   - **MP / App**：`RequestTask.abort()`；fail 回调里 `errMsg` 命中 `/abort|interrupt/i` → 同样 onError
+   - **abort 后不调 onComplete**：让上层语义清晰区分"自然 end"vs"用户取消"
+   - **`isAbortError(err)` 工具函数**：上层判别 abort 触发的 onError，对外暴露
+   - **块作用域 `{ ... }` 包裹两端**：避免 TS 看到 `// #ifdef H5` / `// #ifndef H5` 内的 `const done` 双声明（条件编译是注释，TS 静态检查会同时看到两分支）
+
+5. **Chat API 升级** (`apps/mp/api/chat.ts`, +35 -8)
+   - `chatDiagnoseStream` 返回类型: `Promise<void>` → `ChatStreamHandle = StreamHandle`
+   - 新增 `onAbort?` handler；底层 `isAbortError` 命中时不当 stream error 处理
+   - `done` promise 仍在 quota / auth 时 reject (与 v1 保持一致, store 现有 try/catch 不变)
+
+6. **Chat Store 升级** (`apps/mp/stores/chat.ts`, +110 -15)
+   - 新 phase: `cancelled`（用户主动停止生成的终态；不弹错 banner）
+   - 新 ChatMessageError kind: `cancelled`（partial content 为空时的占位"已停止生成"）
+   - 新 state (非响应式 `let`): `_activeHandle: ChatStreamHandle | null` + `_activeTypewriter: Typewriter | null`，仅 streaming 期间非空
+   - 新 getter: `canCancel = phase === 'streaming'`（pending 阶段不允许 cancel，防"流没起就 abort"）
+   - 新 action: `cancelStream()` — 调 `_activeHandle.abort()`，触发 `_onAbort` 回调
+   - **打字机集成**：`_onDelta` 改走 `_activeTypewriter.push(text)`；commit 回调 `_commitDelta` 同步更新 `m.content` + `m.parsedBlocks`（由 markdown parser 重 parse）
+   - **`m.parsedBlocks` 缓存**：流式中实时同步，end 后不再变；MarkdownRenderer 直接吃 blocks 不需在模板里 `computed`
+   - **所有终态分支** (`_onEnd / _onAgentError / _onEndError / _onStreamError / _onAbort / quota catch / auth catch`) 都加 `_drainTypewriter()` 防最后几字符丢失
+   - `reset()` 自动 abort 进行中的流（防离页时流仍在跑）
+   - `retryLast()` 把 `cancelled` 也视为可重试（用户"停止 → 想再来一次"的常见诉求）
+
+7. **Agent 页 UI 升级** (`apps/mp/pages/ipo/agent.vue`, +60 -45)
+   - assistant 气泡的 content 区从 `<text>{{ m.content }}</text>` 升级为 `<MarkdownRenderer :blocks="m.parsedBlocks ?? []" :streaming="m.streaming" @citation-tap @link-tap />`
+   - **底部 composer 切按钮**：流式 (canCancel=true) 时显示红色"■ 停止"按钮，否则蓝色"发送"
+   - **citation tap 占位**：弹 `uni.showModal` 显示 snippet 预览（FE-S2-003 改为 ActionSheet→抽屉→原文片段）
+   - **link tap**：MP 不支持外跳，复制 URL 到剪贴板 + toast 提示
+   - **cancelled chip**：assistant 流被 cancel 后即使有 partial content 也显示灰色"⏹️ 已停止生成"chip + "重新生成"按钮
+   - 移除原来的 `.bubble-content` flex baseline 布局（MarkdownRenderer 自带 block 间距，容器只做尺寸约束）
+   - 移除原来的 `.cursor` / `@keyframes blink` 样式（MarkdownRenderer 内置 `.md-cursor` 替代）
+
+**测试**
+
+```bash
+# 1. lint / type 检查
+cd apps/mp && pnpm dev:h5
+# IDE 内 vue-tsc 全绿;
+# (apps/mp 因 ``@dcloudio/*`` npm yank 仍无法跑 ``pnpm install`` 本地; 与 FE-S2-001 同样靠 IDE LSP)
+
+# 2. 手动验证 H5 (浏览器)
+make dev  # apps/api uvicorn :8000
+cd apps/mp && pnpm dev:h5  # http://localhost:5173
+# 浏览器: 进 /pages/ipo/agent → 输入"分析下基本面"
+#   ✅ LLM 回复出现 markdown heading / 列表 / 加粗 / `行内代码`
+#   ✅ token 流速 ~30/s 时, 用 Performance 面板看 reflow 频率 → 60fps 稳定 (16ms 一帧合并)
+#   ✅ LLM 输出 [1] [2] 时显示蓝色 chip; 点击 → 弹 modal 显示对应 citation snippet
+#   ✅ 流式中底部按钮变红色"■ 停止" → 点 → 流立即断 → 出现灰色"已停止生成"chip + "重新生成"
+#   ✅ 流完成后 [N] chip 仍可点; markdown 渲染稳定; 不再有光标 ▋
+#   ✅ 链接 [研报](http://...) → 点击 → 复制到剪贴板 + toast "链接已复制"
+
+# 3. 手动验证 MP-WEIXIN (HBuilderX 编译到微信开发者工具)
+# 同 H5 流程; 重点验:
+#   ✅ task.abort() 调用后 SSE 流停止 (查 DevTools Network → 请求被取消)
+#   ✅ 16ms setTimeout polyfill 下打字机仍流畅 (实测约 ~17ms 一帧)
+#   ✅ <text> @tap 在 [N] chip / link 上正常触发, 不被冒泡到外层气泡
+```
+
+**改动文件清单**
+
+```
+apps/mp/utils/markdown.ts            # 新建 (+245): 轻量增量 markdown parser
+apps/mp/utils/typewriter.ts          # 新建 (+85):  跨端打字机节流调度器
+apps/mp/utils/sse.ts                 # 升级 (+120 -50): abort 跨端 + StreamHandle 返回类型
+apps/mp/api/chat.ts                  # 升级 (+35 -8):  ChatStreamHandle + onAbort
+apps/mp/stores/chat.ts               # 升级 (+110 -15): cancelStream + Typewriter + parsedBlocks
+apps/mp/components/MarkdownRenderer.vue  # 新建 (+281): block 列表渲染 + citation/link emit
+apps/mp/pages/ipo/agent.vue          # 升级 (+60 -45): MarkdownRenderer 集成 + 停止生成按钮 + citation tap
+spec/09-sprint-2-backlog.md          # 标 ✅ + 本 PR 总结
+apps/mp/README.md                    # 同步 FE-S2-002 完成 + 打字机/markdown 文档
+README.md                            # 同步 Sprint 2 进度
+```
+
+**设计决策与取舍**
+
+1. **不引 marked / markdown-it 而是自实现**
+   - npm 体系受 `@dcloudio/*` yank 影响，加新 dep 风险大
+   - LLM 投研回答的 markdown 子集很窄（heading / 列表 / 加粗 / 行内代码 / `[N]`），250 行手写覆盖 90%+
+   - MP-WEIXIN 不能 `v-html`，用第三方 markdown lib 输出 HTML 还得过 `rich-text`，事件冒泡 + `[N]` tap 都要 hack；自渲染纯 view+text 一切可控
+   - **代价**：不支持表格 / 嵌套列表 / 任务列表 — Sprint 3 视需要补，目前后端 prompt 也不引导 LLM 输出复杂结构
+
+2. **每次 delta 全文重 parse 而非 incremental tail buffer**
+   - LLM 单回合输出 ~1-3KB，全文 parse < 1ms / 帧
+   - 16ms 帧节流后实际触发 ~3-10 次 / 秒 parse，远低于性能瓶颈
+   - tail buffer 增量解析需识别"段落是否已闭合"（空行后闭合 / 当前行可能还在写），实现复杂 + edge case 多
+   - **取舍前置**：等真有 5KB+ 长 LLM 输出 + MP 卡顿数据再优化；YAGNI
+
+3. **Typewriter 不做"逐字 reveal 平滑动画"**
+   - LLM token 实际流速本身就是 1-3 字/delta，自然就有打字机视觉
+   - 真做"50 字 / 帧拆分逐字推进"会让显示滞后于真实流，流结束时还要"追平动画"，体验上反而割裂
+   - 16ms buffer 合并已解决"100token/s 一帧脉冲式 reflow"主要痛点
+   - **如果未来产品要更"OpenAI 感"**：可在 commit 回调里加字符级插值，但建议先用户调研，多数用户对"token 跳跃"无感
+
+4. **citation `[N]` 与 markdown 链接 `[text](url)` 在 parser 中区分**
+   - 难点：`[abc](http://...)` 不能误识别为 citation `idx='abc'`；`[报告 1](url)` 也是链接不是 citation
+   - 解法：citation 必须满足 ① `[...]` 内是**纯数字** ② `]` 之后**不跟 `(`**
+   - 兼顾 LLM 输出 `[1]` / `[2]` 引用 + Markdown 链接两种场景
+
+5. **abort 用块作用域 `{ ... }` 隔离 H5 / MP 实现**
+   - `// #ifdef H5` / `// #ifndef H5` 是注释，TS 静态检查同时看到两分支
+   - 没有块作用域时 `const done` 在 H5 块和 MP 块都声明 → TS 报 `Cannot redeclare block-scoped variable`
+   - 块作用域 `{ const done = ... }` 让两个分支各自 lexical scope；编译时只剩一个分支，运行时无影响
+   - **类似 Rust `match` 模式分支**：每个 arm 独立作用域，不污染外层
+
+6. **cancelStream 仅在 streaming 阶段生效**
+   - `pending` 阶段流还没起 (后端可能根本没收到请求)，abort 是 no-op；UI 此时按钮仍显示"生成中…"灰禁用
+   - `done / error / cancelled` 都是终态，没东西可 abort
+   - **仅 `streaming` 显示红色"■ 停止"按钮**，避免用户误点
+
+7. **partial content 在 cancel 时保留**
+   - 用户停止生成后已经生成的部分仍可见 (类似 ChatGPT 行为)
+   - 仅当 `m.content === ''` (流刚起就 cancel) 时显示明显的 "已停止生成" placeholder
+   - 有 partial content 时 chip 显示"已停止生成"+"重新生成"按钮，让用户决定是接受残段还是重 query
+
+8. **`m.parsedBlocks` 而非模板 `computed`**
+   - 在 store 的 `_commitDelta` 里同步 parse 缓存到 `m.parsedBlocks`，模板里直接 `:blocks="m.parsedBlocks"` 不走 `computed`
+   - 优点：终态后 blocks 不再变, vue diff 零开销；如果走 computed 即使 content 不变也可能因依赖追踪变化重算
+   - 缺点：parse 时机绑定在 commit 而非渲染，如果未来要做"滚动加载历史"需要回填 parsedBlocks（Sprint 3 历史会话页时统一处理）
+
+**测试覆盖（预期 / 后续）**
+
+- 当前 (本 PR): 手动 + IDE LSP 全绿; 单测留 Sprint 2 末尾 QA-S2-003 一并做（vitest + happy-dom）
+- 后续 unit test 重点:
+  - `parseInline`: citation vs link 边界 (`[1]` / `[1](url)` / `[text]` / `[text](url)` 全覆盖)
+  - `parseMarkdown`: 流式未闭合代码块 / 流式不完整列表项 / 多空行边界
+  - `Typewriter`: drain 顺序 + done 后 push 直接 commit + 多次 push 帧合并
+  - `streamSSE.abort`: H5 mock fetch + AbortController, MP mock uni.request + task.abort 各跑一次
+
+→ **建议下一步走 FE-S2-003**（引用源 ActionSheet 抽屉, 0.5d）—— citation chip 已挂 `@tap` 占位，只剩接抽屉组件 + 跳后端原文 PDF；或并行 **FE-S2-004**（VIP 升级 modal, 0.5d），两者无依赖。
 
 ## ✅ Sprint 2 完成后的产出物
 

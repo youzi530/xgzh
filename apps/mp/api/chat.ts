@@ -14,7 +14,7 @@
  * 字段名一一对齐后端 ``app/schemas/chat.py`` (driving from there)。
  */
 
-import { streamSSE, type SSEErrorContext, type SSEEvent } from '@/utils/sse'
+import { isAbortError, streamSSE, type SSEErrorContext, type SSEEvent, type StreamHandle } from '@/utils/sse'
 
 // ─── 入参 ──────────────────────────────────────────────────────────
 
@@ -160,33 +160,54 @@ export interface ChatStreamHandlers {
   onAgentError?: (err: ChatErrorPayload) => void
   /** 解析 / 网络 / SSE 协议错; 与 ``onAgentError`` 区分 */
   onStreamError?: (err: Error) => void
+  /** 用户主动 abort 调 ``handle.abort()`` 触发; UI 应给"已停止生成"提示 */
+  onAbort?: () => void
 }
+
+/**
+ * ``chatDiagnoseStream`` 的返回句柄.
+ *
+ * - ``done``: stream 终止 (含 abort) 的 promise; quota / auth 时 reject
+ *   (与 v1 一致, 让 caller 走 try/catch 而非 onError handler 弹 modal)
+ * - ``abort``: 用户主动取消; 触发 ``handlers.onAbort`` (若提供)
+ */
+export type ChatStreamHandle = StreamHandle
 
 // ─── 主入口 ────────────────────────────────────────────────────────
 
 /**
  * 启动一次 ``chat/diagnose`` SSE 流.
  *
- * - **配额超额** (HTTP 429): 返回前抛 ``ChatQuotaError`` (含 ``ChatQuotaPayload``);
- *   不调用任何 handler, 让 caller 一处 catch 弹 modal
- * - **鉴权失败** (HTTP 401): 抛 ``ChatAuthError``; 流式接口不走 silent refresh
- * - **流内 SSE event=error**: 走 ``onAgentError``, 不抛, 流仍会有 end 事件兜底
- * - **流内 end {ok:false}**: 走 ``onEndError``, 不抛
- * - **网络断 / parse 抛错**: 走 ``onStreamError``, 不抛
+ * 返回 ``ChatStreamHandle``:
+ * - ``handle.done``: Promise; quota / auth 时 reject, 其它路径 resolve
+ * - ``handle.abort()``: 用户主动取消; 触发 ``handlers.onAbort?.()``,
+ *   流停止后 ``done`` 会 resolve (不 reject)
  *
- * 整个 Promise 仅在 quota / auth 时 reject, 其它情况 resolve (handler 内已分发)。
+ * 错误路径分流
+ * ============
+ * - **配额超额** (HTTP 429): ``done`` reject ``ChatQuotaError``; 不调任何 handler
+ * - **鉴权失败** (HTTP 401/403): ``done`` reject ``ChatAuthError``
+ * - **用户 abort**: ``onAbort`` 被调; ``done`` resolve (无 reject)
+ * - **流内 SSE event=error**: 走 ``onAgentError``, 流仍会有 end 兜底
+ * - **流内 end {ok:false}**: 走 ``onEndError``
+ * - **网络断 / parse 抛错**: 走 ``onStreamError``
+ *
+ * 与 v1 (FE-S2-001) 兼容性
+ * ========================
+ * v1 直接 ``await chatDiagnoseStream(body, handlers)``; v2 改为 ``handle.done``.
+ * 调用方 ``stores/chat.ts`` 已同步升级, 不存在裸 await 调用方。
  */
-export async function chatDiagnoseStream(
+export function chatDiagnoseStream(
   body: ChatDiagnoseRequest,
   handlers: ChatStreamHandlers,
-): Promise<void> {
+): ChatStreamHandle {
   // 流内 ``event=error`` 后台层仍会再发一个 ``event=end {ok:false}``, 这里
   // 用 closure flag 让 onEnd / onEndError 区分 "正常路径" vs "错误路径已发过 error"。
   let agentErrorEmitted = false
   let httpQuotaError: ChatQuotaError | null = null
   let httpAuthError: ChatAuthError | null = null
 
-  await streamSSE<ChatDiagnoseRequest>({
+  const inner = streamSSE<ChatDiagnoseRequest>({
     url: '/api/v1/chat/diagnose',
     method: 'POST',
     body,
@@ -237,17 +258,22 @@ export async function chatDiagnoseStream(
       }
     },
     onError: (err, ctx) => {
+      // 用户主动 abort: 走 onAbort, 不当作 stream error
+      if (isAbortError(err)) {
+        handlers.onAbort?.()
+        return
+      }
       // 进流前的 HTTP 错误: 429 配额 / 401 鉴权 / 5xx 服务端
       if (ctx.statusCode === 429) {
         const body = ctx.body as { detail?: ChatQuotaExceededResponse } | ChatQuotaExceededResponse
         // FastAPI ``HTTPException(detail=...)`` 会包一层 ``{"detail": {...}}``;
         // 也兼容直接给 ``ChatQuotaExceededResponse`` 的情况 (运营手动 mock 等)
-        const inner =
+        const innerBody =
           'detail' in (body as Record<string, unknown>)
             ? ((body as { detail: ChatQuotaExceededResponse }).detail)
             : (body as ChatQuotaExceededResponse)
-        if (inner && typeof inner === 'object' && inner.code === 'agent_quota_exceeded') {
-          httpQuotaError = new ChatQuotaError(inner)
+        if (innerBody && typeof innerBody === 'object' && innerBody.code === 'agent_quota_exceeded') {
+          httpQuotaError = new ChatQuotaError(innerBody)
           return
         }
         httpQuotaError = new ChatQuotaError({
@@ -272,8 +298,13 @@ export async function chatDiagnoseStream(
     },
   })
 
-  if (httpQuotaError) throw httpQuotaError
-  if (httpAuthError) throw httpAuthError
+  // 包一层 promise: 把 quota / auth 转成 reject (与 v1 行为一致)
+  const done = inner.done.then(() => {
+    if (httpQuotaError) throw httpQuotaError
+    if (httpAuthError) throw httpAuthError
+  })
+
+  return { done, abort: inner.abort }
 }
 
 /**

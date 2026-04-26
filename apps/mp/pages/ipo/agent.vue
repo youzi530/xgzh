@@ -1,26 +1,30 @@
 <script setup lang="ts">
 /**
- * AI 对话页 (FE-S2-001).
+ * AI 对话页 (FE-S2-001 + FE-S2-002).
  *
  * 对接后端 ``POST /api/v1/chat/diagnose`` (BE-S2-007 + BE-S2-008 配额).
  *
- * 范围 (本 PR)
- * ============
+ * 范围
+ * ====
  * - 多轮对话基础骨架: user / assistant 气泡 + 输入框 + 发送
  * - SSE 6 类事件全消费 (start/delta/tool_call/sources/end/error)
  * - 续聊: 同会话内 ``session_id`` 自动衔接 (Pinia store 维护)
+ * - **打字机 + Markdown 增量渲染** (FE-S2-002): 走 ``MarkdownRenderer`` +
+ *   16ms 帧节流 ``Typewriter``; ``[N]`` 引用 wrap 成可点击 chip
+ * - **停止生成** (FE-S2-002): 流式中按钮切"停止生成", 调 ``chat.cancelStream()``
+ *   走 H5 AbortController / MP task.abort 跨端
  * - 错误兜底基础版:
  *   - 进流前 429 quota → 红色 modal-style banner 显 retry_after + "升级 VIP" CTA 占位
  *   - 进流前 401/403 auth → 引导跳登录页
  *   - 流内 SSE event=error → assistant 气泡内嵌错误条 + 重试按钮
  *   - 网络断 → 同上
+ *   - 用户主动 cancel → 不弹错, 显示"已停止生成"chip + 可重试
  * - tool_call 折叠步骤卡 (默认折叠, 点开看 args/result_preview); 工具状态色区分
- * - citations 数量 chip (本 PR 不实现抽屉, 留 FE-S2-003)
+ * - citations 数量 chip (本 PR 仅展示数量 + 序号; 抽屉留 FE-S2-003)
  *
  * 不在本 PR 范围
  * ==============
- * - 打字机精细动画 + Markdown 增量解析 (FE-S2-002): 当前用纯文本 + ▋ 光标
- * - 引用源 ActionSheet 抽屉 + 原文片段 (FE-S2-003)
+ * - 引用源 ActionSheet 抽屉 + 原文片段 (FE-S2-003): citation 点击当前给 toast 占位
  * - VIP 升级支付通道 (FE-S2-004): 当前 quota 错仅引导文案, 没有实际支付路径
  *
  * 路由兼容
@@ -35,6 +39,7 @@ import { storeToRefs } from 'pinia'
 import { computed, nextTick, ref } from 'vue'
 
 import type { ChatToolCallPayload } from '@/api/chat'
+import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 
@@ -48,6 +53,7 @@ const {
   currentIpoCode,
   currentIpoName,
   currentSessionId,
+  canCancel,
 } = storeToRefs(chat)
 
 const draft = ref('')
@@ -94,6 +100,12 @@ async function send() {
   await scrollToBottom()
 }
 
+/** 流式中底部按钮切"停止生成"; 点击 cancelStream — 与 ChatGPT 行为一致 */
+function stopGenerating() {
+  if (!canCancel.value) return
+  chat.cancelStream()
+}
+
 function fillPrompt(p: string) {
   if (!chat.canSend) return
   draft.value = p
@@ -102,6 +114,39 @@ function fillPrompt(p: string) {
 async function retry() {
   await chat.retryLast()
   await scrollToBottom()
+}
+
+/**
+ * citation [N] 被用户点击 (FE-S2-002 占位; FE-S2-003 实装抽屉).
+ *
+ * 当前行为: 找该消息的 ``citations`` 列表内 ``idx === n`` 的项, 弹 toast 显 snippet
+ * 预览 — 让用户感知"这个引用是可交互的"; FE-S2-003 把这里换成 ActionSheet → 抽屉 →
+ * 原文片段全文 + 跳后端原文 PDF 链接.
+ */
+function onCitationTap(messageId: string, idx: number) {
+  const m = chat.messages.find((x) => x.id === messageId)
+  if (!m || !m.citations) {
+    uni.showToast({ title: `引用 [${idx}]`, icon: 'none' })
+    return
+  }
+  const c = m.citations.find((x) => x.idx === idx)
+  if (!c) {
+    uni.showToast({ title: `引用 [${idx}] 不存在`, icon: 'none' })
+    return
+  }
+  // 占位 modal: FE-S2-003 改为抽屉 + 跳原文
+  uni.showModal({
+    title: `引用 [${idx}] · ${c.ipo_code ?? '通用'} · p.${c.page ?? '?'}`,
+    content: c.snippet,
+    showCancel: false,
+    confirmText: '知道了',
+  })
+}
+
+/** markdown 内的 ``[text](url)`` 被点击; MP 不支持直接外跳, 复制 + 提示 */
+function onLinkTap(url: string) {
+  uni.setClipboardData({ data: url })
+  uni.showToast({ title: '链接已复制到剪贴板', icon: 'none' })
 }
 
 function dismissError() {
@@ -292,10 +337,14 @@ const isLoggedIn = computed(() => auth.loggedIn)
             </view>
           </view>
 
-          <!-- 文本内容 + 流式光标 -->
+          <!-- 文本内容: 走 MarkdownRenderer (FE-S2-002 增量 markdown + 流式光标) -->
           <view v-if="m.content" class="bubble-content">
-            <text class="bubble-text">{{ m.content }}</text>
-            <text v-if="m.streaming" class="cursor">▋</text>
+            <MarkdownRenderer
+              :blocks="m.parsedBlocks ?? []"
+              :streaming="m.streaming"
+              @citation-tap="(idx: number) => onCitationTap(m.id, idx)"
+              @link-tap="onLinkTap"
+            />
           </view>
           <!-- 流式中但还没 token: 转 dots loading -->
           <view v-else-if="m.streaming" class="thinking">
@@ -314,15 +363,29 @@ const isLoggedIn = computed(() => auth.loggedIn)
             </view>
           </view>
 
-          <!-- assistant 内嵌错误 -->
+          <!-- assistant 内嵌错误 / cancelled chip -->
           <view v-if="m.error" :class="['inline-error', `inline-error-${m.error.kind}`]">
-            <text class="inline-error-text">⚠️ {{ m.error.message }}</text>
+            <text class="inline-error-text">
+              <text v-if="m.error.kind === 'cancelled'">⏹️</text>
+              <text v-else>⚠️</text>
+              {{ m.error.message }}
+            </text>
             <view
               v-if="m.error.kind !== 'quota'"
               class="inline-error-btn"
               @tap="retry"
             >
               <text>重试</text>
+            </view>
+          </view>
+          <!-- 流被 cancel 但已有 partial content: 给个轻量"已停止"chip + 重试 -->
+          <view
+            v-else-if="!m.streaming && chat.phase === 'cancelled' && m.role === 'assistant'"
+            class="inline-error inline-error-cancelled"
+          >
+            <text class="inline-error-text">⏹️ 已停止生成</text>
+            <view class="inline-error-btn" @tap="retry">
+              <text>重新生成</text>
             </view>
           </view>
         </view>
@@ -332,7 +395,7 @@ const isLoggedIn = computed(() => auth.loggedIn)
       <view id="chat-tail" class="scroll-tail" />
     </scroll-view>
 
-    <!-- 6. 底栏: 输入 + 发送 -->
+    <!-- 6. 底栏: 输入 + 发送 / 停止生成 -->
     <view class="composer">
       <input
         v-model="draft"
@@ -343,7 +406,16 @@ const isLoggedIn = computed(() => auth.loggedIn)
         confirm-type="send"
         @confirm="send"
       />
+      <!-- 流式中按钮切"停止"; pending 阶段 (流未起) 仍 disabled, 防"还没起就 abort" -->
       <view
+        v-if="canCancel"
+        class="composer-btn composer-btn-stop"
+        @tap="stopGenerating"
+      >
+        <text>■ 停止</text>
+      </view>
+      <view
+        v-else
         :class="['composer-btn', (!draft.trim() || isStreaming) && 'composer-btn-disabled']"
         @tap="send"
       >
@@ -558,21 +630,9 @@ const isLoggedIn = computed(() => auth.loggedIn)
   white-space: pre-wrap;
 }
 .bubble-content {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-}
-.cursor {
-  display: inline-block;
-  margin-left: 4rpx;
-  color: var(--color-primary, #4f8bff);
-  animation: blink 1s steps(2, end) infinite;
-  font-size: 28rpx;
-}
-@keyframes blink {
-  to {
-    opacity: 0;
-  }
+  /* MarkdownRenderer 已自带 block 间距 + 流式光标; 容器只做尺寸约束 */
+  display: block;
+  width: 100%;
 }
 
 /* 思考中 (still no token) */
@@ -746,6 +806,10 @@ const isLoggedIn = computed(() => auth.loggedIn)
   background: rgba(99, 102, 241, 0.1);
   border: 1rpx solid rgba(99, 102, 241, 0.32);
 }
+.inline-error-cancelled {
+  background: rgba(148, 163, 184, 0.1);
+  border: 1rpx solid rgba(148, 163, 184, 0.32);
+}
 .inline-error-text {
   flex: 1;
   font-size: 24rpx;
@@ -797,6 +861,11 @@ const isLoggedIn = computed(() => auth.loggedIn)
 }
 .composer-btn-disabled {
   opacity: 0.4;
+}
+.composer-btn-stop {
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
+  font-weight: 600;
 }
 
 /* anon hint */
