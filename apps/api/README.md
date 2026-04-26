@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007）
 
 API:
 
@@ -18,6 +18,34 @@ API:
 - `POST /api/v1/auth/logout` 拉黑当前 access（+ 可选拉黑 refresh），需 `Authorization`
 - `GET /api/v1/me` 当前用户基本信息（需 `Authorization: Bearer <access_token>`）
 - `POST /api/v1/invite/bind` 绑定邀请人（一次性，需登录，10/min/user 限流）
+
+后台调度（`app/scheduler/__init__.py` + `app/services/ipo_ingest_service.py`，BE-007）:
+
+- 进程内 `AsyncIOScheduler`（APScheduler 3.x），FastAPI lifespan 启动 + finally `wait=False` 优雅关闭
+- 启动后 `IPO_INGEST_INITIAL_DELAY_SECONDS` 秒触发一次 A 股 IPO 抓取（兜底，避免重启后 12h 没数据）
+- 每天 cron `IPO_INGEST_CRON_HOURS` 整点（默认 `8,20`，时区 `Asia/Shanghai`）跑全量更新
+- `coalesce=True` + `max_instances=1`：错过的多次执行只补跑一次，且不会并发跑两个
+- `run_ingest_a_job` 永不抛：fetch / parse / DB 任何异常都 `logger.exception` 后返回 `{"errors": 1}`
+- `upsert_ipos` 走 PG `ON CONFLICT (code, market) DO UPDATE` 一条 SQL，200 行 < 100ms
+- `COALESCE(EXCLUDED.x, ipos.x)` 兜底：`industry / pe_ratio / issue_price` 等新值为 NULL 时不擦旧值
+- `name / extra / updated_at` 强制覆盖
+- 多副本：K8s 上 web pod 关 `SCHEDULER_ENABLED=false`，单独跑一个 worker pod 开
+- HK 仍走 seed（`fetch_hk_ipos` 留 TODO，Sprint 2 接 HKEX/Futu 后启用 `run_ingest_hk_job`）
+
+```bash
+# 启动 web (lifespan 自动拉起 scheduler)
+uv run uvicorn app.main:app --reload --port 8000
+# 期望日志: scheduler.jobs_registered ... scheduler.started
+
+# 一次性手动跑 (CI / 开发本地灌种子用)
+uv run python -c "
+import asyncio
+from app.services import ipo_ingest_service
+print(asyncio.run(ipo_ingest_service.run_ingest_a_job()))
+"
+# → received=200 inserted=200 updated=0
+# 二次跑 → received=200 inserted=0 updated=200 (upsert 语义)
+```
 
 Schema（Alembic `0001_init`，PG 16 + pgvector 0.8.2）:
 

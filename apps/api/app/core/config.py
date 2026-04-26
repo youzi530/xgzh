@@ -76,6 +76,24 @@ class Settings(BaseSettings):
 
     free_agent_daily_limit: int = Field(default=5)
 
+    scheduler_enabled: bool = Field(
+        default=True,
+        description="是否在 lifespan 启动 APScheduler. 测试 / 一次性脚本场景关掉.",
+    )
+    ipo_ingest_initial_delay_seconds: int = Field(
+        default=5,
+        description="启动后多少秒触发一次 IPO 抓取. 0 = 不立即跑 (只跑 cron).",
+    )
+    ipo_ingest_cron_hours: str = Field(
+        default="8,20",
+        description="A 股 IPO 全量抓取的每日 cron 小时数 (Asia/Shanghai), 多个用逗号分隔.",
+    )
+    ipo_ingest_a_limit: int = Field(
+        default=200,
+        description="每次抓取从 AKShare 取的最大行数. 200 行覆盖近 1 年新股.",
+    )
+    ipo_ingest_timezone: str = Field(default="Asia/Shanghai")
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

@@ -17,10 +17,11 @@
   - ✅ **BE-004**：Refresh token rotation + 黑名单（`POST /api/v1/auth/refresh` + `POST /api/v1/auth/logout`，旧 refresh 一次性，access/refresh 双拉黑，jti 粒度）
   - ✅ **BE-005**：微信小程序登录（`POST /api/v1/auth/login/wechat-mp`，`code2Session` 拿 openid/unionid，unionid > openid 优先，错误码二分映射 401/502/503，session_key 不落库）
   - ✅ **BE-006**：邀请码生成 + 绑定（注册原子落 `invite_codes` 行；`POST /api/v1/invite/bind` 一次性 + 自禁 + 并发安全 + 7 类错误码）
-  - 进行中：BE-007 (IPO 表持久化 + AKShare 调度入库)
+  - ✅ **BE-007**：IPO 表持久化 + AKShare 调度入库（APScheduler `AsyncIOScheduler` lifespan 启停；启动后立即一次 + cron 08:00/20:00 Asia/Shanghai；`upsert_ipos` PG `ON CONFLICT (code, market) DO UPDATE` 一条 SQL；`COALESCE` 兜底防擦数据；`run_ingest_a_job` 永不抛）
+  - 进行中：BE-008 (`GET /ipos` 切回数据库 + 筛选 + Redis 缓存)
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 75 passed / 72 skipped
-  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 147 passed
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 78 passed / 79 skipped
+  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 157 passed
 
 ## 📖 设计文档
 

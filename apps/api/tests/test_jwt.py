@@ -76,7 +76,11 @@ def test_typ_mismatch_raises(settings: Settings) -> None:
 def test_tampered_token_signature_fails(settings: Settings) -> None:
     uid = uuid.uuid4()
     token, _ = create_access_token(uid, settings)
-    bad = token[:-1] + ("0" if token[-1] != "0" else "1")
+    # 改末尾字符在 base64url 上有时仅改 padding bit, 不会污染 HMAC 输入;
+    # 改 8th-to-last 一定落在 sig 主体, 稳定破签.
+    pivot = -8
+    orig = token[pivot]
+    bad = token[:pivot] + ("A" if orig != "A" else "B") + token[pivot + 1 :]
     with pytest.raises(InvalidTokenError):
         decode_token(bad, expected_type=ACCESS_TOKEN_TYPE, settings=settings)
 

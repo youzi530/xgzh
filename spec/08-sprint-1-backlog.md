@@ -23,7 +23,7 @@
 | BE-004 ✅ | backend | Refresh token + 黑名单 | 0.5d | BE-003 | P0 |
 | BE-005 ✅ | backend | 微信小程序登录（code → openid → unionid → 绑定） | 1d | BE-002 | P0 |
 | BE-006 ✅ | backend | 邀请码生成 + 绑定（注册时落入 referrer） | 0.5d | BE-002 | P0 |
-| BE-007 | backend | IPO 表持久化 + AKShare 调度入库 | 1d | INFRA-001 | P0 |
+| BE-007 ✅ | backend | IPO 表持久化 + AKShare 调度入库 | 1d | INFRA-001 | P0 |
 | BE-008 | backend | `GET /ipos` 切回数据库 + 筛选 + Redis 缓存 | 0.5d | BE-007, INFRA-002 | P0 |
 | BE-009 | backend | `GET /ipos/{code}` 字段聚合（HKEX/AKShare 多源 merge） | 0.5d | BE-008 | P0 |
 | BE-010 | backend | 用户自选股表 + add/remove API | 0.5d | BE-003, BE-008 | P0 |
@@ -487,33 +487,85 @@ curl -X POST localhost:8001/api/v1/invite/bind \
 
 ---
 
-### BE-007 · IPO 表持久化 + 调度
+### BE-007 · IPO 表持久化 + AKShare 调度入库 ✅ DONE
 
-**改动文件**
-- `apps/api/app/services/ipo_ingest_service.py`（akshare → upsert）
-- `apps/api/app/scheduler/__init__.py`（用 `APScheduler` AsyncIOScheduler）
-- `apps/api/app/main.py`（lifespan 启动 scheduler）
-- `apps/api/tests/test_ipo_ingest.py`
+**目标**：把每日 AKShare A 股 IPO 列表 upsert 进 `ipos` 表，给 BE-008 (`GET /ipos`
+切回 DB) 准备好数据；HK 仍走 seed，Sprint 2 接 HKEX 后再切。
+
+**改动文件**（已实装）
+- `apps/api/pyproject.toml`：加 `apscheduler>=3.10,<4`
+- `apps/api/app/core/config.py`：加 `scheduler_enabled` / `ipo_ingest_initial_delay_seconds`
+  / `ipo_ingest_cron_hours` / `ipo_ingest_a_limit` / `ipo_ingest_timezone`
+- `apps/api/.env(.example)`：加 5 个新配置项
+- `apps/api/app/services/ipo_ingest_service.py`（新建）：`upsert_ipos(session, items)` +
+  `run_ingest_a_job()` 后台入口（吞异常 + 自管 session + COALESCE 兜底防擦数据）
+- `apps/api/app/scheduler/__init__.py`（新建）：`AsyncIOScheduler` 单例 +
+  `register_jobs` (启动后 N 秒一次 + cron 08:00/20:00 Asia/Shanghai) + `start_scheduler` /
+  `shutdown_scheduler`
+- `apps/api/app/main.py`：lifespan 启动 scheduler + finally 优雅关闭
+- `apps/api/tests/test_ipo_ingest.py`（新建，10 用例）
+- `apps/api/tests/test_jwt.py`：顺手把 BE-004 残留的 last-char tampering flaky 测试改稳
+
+**关键设计决策**
+1. **upsert 走 PG `ON CONFLICT (code, market) DO UPDATE` 一条 SQL**，不是 ORM
+   row-by-row select-update，AKShare 200 行一次入库 < 100ms。
+2. **COALESCE 兜底"新值为 NULL 不擦旧值"**：`industry_l1` / `pe_ratio` / `issue_price` 等
+   在 update 分支用 `COALESCE(EXCLUDED.x, ipos.x)`，避免周期任务把人工补录字段刷 NULL；
+   `name` / `extra` / `updated_at` 强制覆盖。
+3. **`run_ingest_a_job` 永不抛**：fetch / parse / DB 任何异常都 `logger.exception`
+   后返回 `{"errors": 1}`，防止 APScheduler 把整个 job 标 failed 后停掉。
+4. **`coalesce=True` + `max_instances=1`**：调度堵塞 / 实例重启时多次错过的执行只补跑
+   一次，且永远不会两个 ingest 同时跑（撞 PG upsert 倒还行，但浪费 AKShare 配额）。
+5. **多副本部署**：K8s 上多副本 web pod 关 `SCHEDULER_ENABLED=false`，单独跑一个
+   worker pod 开。这样不需要分布式锁也安全（spec/06 ops 章节后补）。
+6. **HK 仍 seed**：akshare 1.18 没干净的 HK IPO API，已留 TODO 指向 spec/04 §4，
+   Sprint 2 接 HKEX/Futu 后启用 `run_ingest_hk_job`。
 
 **AC**
-- [ ] 启动时立即跑一次 ingest（dev 用 5 条样本）
-- [ ] 每天 08:00 / 20:00（Asia/Shanghai）跑全量更新
-- [ ] upsert 按 `code` 唯一约束，不重复
-- [ ] 失败有重试 + 错误告警日志
-- [ ] HK 暂仍用 seed（标 TODO，Sprint 2 接 HKEX）
+- [x] 启动时立即跑一次 ingest（`IPO_INGEST_INITIAL_DELAY_SECONDS=5` 秒后触发；可设 0 关掉）
+- [x] 每天 08:00 / 20:00（Asia/Shanghai）跑全量更新（`IPO_INGEST_CRON_HOURS=8,20` 可调）
+- [x] upsert 按 `(code, market)` 唯一约束去重，第二次跑同样数据 `inserted=0 updated=200`
+- [x] fetch 失败 / DB 失败 / akshare 返回空 都不让进程崩
+- [x] HK 暂仍用 seed（`fetch_hk_ipos` 已留 TODO，Sprint 2 接 HKEX）
+- [x] lifespan 启动/关闭 scheduler，graceful shutdown 不阻塞 web 关闭（用 `wait=False`）
+- [x] 烟测：`run_ingest_a_job()` 真打 AKShare → 200 行入库；二次跑 → 200 行 update，无重复
 
-**Cursor Prompt**
+**测试**
+- 共 **10 个**新增用例：
+  - `upsert_ipos`: 空列表早 return / 全 INSERT / 二次 UPDATE 不增行 / NULL 不擦旧值
+  - `run_ingest_a_job`: happy path / fetch 抛异常吞掉 / 空结果安全
+  - `register_jobs`: 默认 2 jobs / `initial_delay=0` 只剩 cron / 重入安全
+- DB 测试通过 `monkeypatch` 把 `akshare_client.fetch_a_ipos` 替成固定 fixture，再用
+  `patch_session_factory` fixture 把 `get_session_factory` LRU 替成测试库 factory，
+  完全不打外网。
 
+**烟测**
+
+```bash
+# 启动 web (lifespan 拉起 scheduler)
+PYTHONUNBUFFERED=1 IPO_INGEST_INITIAL_DELAY_SECONDS=0 IPO_INGEST_CRON_HOURS=22 \
+  uvicorn app.main:app --port 8765
+# 期望日志: scheduler.jobs_registered ... scheduler.started
+
+# 一次性跑入库 (走真 AKShare)
+python -c "
+import asyncio
+from app.services import ipo_ingest_service
+print(asyncio.run(ipo_ingest_service.run_ingest_a_job()))
+"
+# → received=200 inserted=200 updated=0
+# 再跑一次:
+# → received=200 inserted=0 updated=200 (验证 upsert 语义)
+
+psql ... -c "SELECT count(*), count(*) FILTER (WHERE updated_at > created_at) FROM ipos;"
+# total=200, updated_after_first=200
 ```
-为 apps/api 引入 APScheduler，把 fetch_a_ipos 的结果落到 ipos 表（upsert）。
-要求：
-- lifespan 启动 AsyncIOScheduler，应用退出时优雅关闭
-- 立即跑一次 + 每天 08:00、20:00 Asia/Shanghai
-- 写一个 IPOIngestService.upsert(items) 方法
-- 失败时 logger.error 但不让进程崩溃
-- 单测：mock fetch_a_ipos 返回 [item1, item2]，调用 upsert，再调用一次确认是 update 不是 insert
-- HK 数据仍用 seed，加 TODO 注释指向 spec/04 §4
-```
+
+**遗留 / Sprint 2**
+- `run_ingest_hk_job`：等 HKEX/Futu 真源 (spec/04 §4)
+- 监控告警：APScheduler `EVENT_JOB_ERROR` 暂只走 logger.exception，未接 Sentry/钉钉
+- 多副本协调：当前是"哪个 pod 配 `SCHEDULER_ENABLED=true` 哪个跑"，没用 PG advisory
+  lock 做分布式互斥；规模上来后再补
 
 ---
 

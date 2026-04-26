@@ -14,6 +14,7 @@ from app.api.v1 import router as v1_router
 from app.cache import RateLimitExceeded
 from app.core.config import get_settings
 from app.core.logging import logger, setup_logging
+from app.scheduler import shutdown_scheduler, start_scheduler
 
 
 @asynccontextmanager
@@ -25,8 +26,18 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "no LLM credential configured. /agent endpoints will return a hint message."
         )
-    yield
-    logger.info("app.stop")
+
+    # BE-007: 后台 IPO 入库 scheduler. 失败不应阻塞 web 启动, 故 try/except.
+    try:
+        await start_scheduler(settings)
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"scheduler.startup_failed: {e}")
+
+    try:
+        yield
+    finally:
+        await shutdown_scheduler()
+        logger.info("app.stop")
 
 
 def create_app() -> FastAPI:
