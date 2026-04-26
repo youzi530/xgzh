@@ -172,16 +172,26 @@ async def patch_session_factory(
     get_engine.cache_clear()
 
     import app.db as db_pkg
+    import app.services.agent.tools.historical as agent_historical_mod
+    import app.services.agent.tools.hybrid_search as agent_hybrid_search_mod
+    import app.services.agent.tools.peers as agent_peers_mod
     import app.services.ipo_ingest_service as ingest_mod
     import app.services.ipo_service as ipo_service_mod
 
-    # 三处都要 patch: 各 module 在 import 时把 ``get_session_factory`` 拷到自己
+    # 多处都要 patch: 各 module 在 import 时把 ``get_session_factory`` 拷到自己
     # namespace, 改 ``app.db`` 不会影响 service module 的 local 引用. 漏 patch
     # 会导致 service 走真 DSN, 整条 e2e 看到空表. 用 setattr/getattr 字符串路径
     # 是因为 mypy 看不到 ``import xxx as alias`` 重新 export, 静态检查会报
     # ``attr-defined``; 测试代码本身就是要修这种 monkey-patch hack 行为, 直接
     # 走运行期反射.
-    targets = [db_pkg, ingest_mod, ipo_service_mod]
+    targets = [
+        db_pkg,
+        ingest_mod,
+        ipo_service_mod,
+        agent_peers_mod,
+        agent_historical_mod,
+        agent_hybrid_search_mod,
+    ]
     originals: list[object] = [
         getattr(mod, "get_session_factory") for mod in targets  # noqa: B009
     ]

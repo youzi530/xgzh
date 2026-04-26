@@ -61,7 +61,7 @@
 | BE-S2-004 | rag | 招股书 PDF 解析 + 语义切分 + 批量 Embedding 入库 | 1d | BE-S2-000, BE-S2-002, BE-S2-003 | P0 | ✅ |
 | BE-S2-005 | rag | 混合检索 + RRF 融合 + bge-reranker 重排 | 1d | BE-S2-003 | P0 | ✅ |
 | BE-S2-006a | agent | Tool 注册中心 + 2 个最简工具（basic_info / financial）| 1d | BE-S2-001 | P0 | ✅ |
-| BE-S2-006b | agent | 余下 3 个 Tool（peers / sentiment_placeholder / historical）+ 沙盒 | 1d | BE-S2-006a | P0 | ⬜ |
+| BE-S2-006b | agent | 余下 3 个 Tool（peers / sentiment_placeholder / historical）+ hybrid_search Tool 化 | 1d | BE-S2-006a | P0 | ✅ |
 | BE-S2-007 | agent | LangGraph 主循环 + 引用源装配 + 合规端层 disclaimer | 1.5d | BE-S2-002, BE-S2-005, BE-S2-006b | P0 | ⬜ |
 | BE-S2-008 | quota | Agent 配额管理（免费 5/天 + VIP 无限 + 滑动窗口）| 0.5d | BE-S2-007 | P0 | ⬜ |
 | BE-S2-009 | eval | 评测集 80 条 + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）| 1d | BE-S2-007 | P0 | ⬜ |
@@ -281,11 +281,11 @@ apps/api/tests/integration/test_chat_tables.py             # downgrade -1 → do
 
 | 候选 | 理由 |
 |------|------|
-| **BE-S2-006b** (余下 3 Tool: peers / sentiment_placeholder / historical, + 把 hybrid_search 也包成 Tool, 1d) | RAG 主线 BE-S2-000 ✅ → BE-S2-004 ✅ → BE-S2-005 ✅ + Tool Use 第 1 层 BE-S2-006a ✅ 全部落地；BE-S2-006a 已搭好 Tool / Sandbox / Registry 三件套基础设施，BE-S2-006b 只是按相同 pattern 追加 3 个 Tool + 把 BE-S2-005 hybrid_search 注册成 Tool，单 PR 增量小 |
-| BE-S2-007 (LangGraph 主循环 + 引用源装配, 1.5d) | 三依赖齐: BE-S2-002 facade ✅ + BE-S2-005 hybrid_search ✅ + BE-S2-006a Tool 注册中心 ✅；只差 BE-S2-006b 的 5 Tool 全数注册到位即可起 ReAct 循环 |
-| BE-S2-008 (Agent 配额管理, 0.5d) | 还要等 BE-S2-007，主循环写入 chat_messages 之后才有"成功调用 1 次"的口径 |
+| **BE-S2-007** (LangGraph 主循环 + 引用源装配 + 端层 disclaimer, 1.5d) | 三依赖齐: BE-S2-002 facade ✅ + BE-S2-005 hybrid_search ✅ + BE-S2-006a Tool 注册中心 ✅ + BE-S2-006b 5 Tool ✅；现在 6 个 Tool 全部注册到位 (basic_info / financial / peers / sentiment_placeholder / historical / hybrid_search), ReAct 主循环可以起了 |
+| BE-S2-008 (Agent 配额管理, 0.5d) | 要等 BE-S2-007，主循环写入 chat_messages 之后才有"成功调用 1 次"的口径 |
+| BE-S2-009 (评测集 80 条 + 离线评测脚手架, 1d) | 也要等 BE-S2-007，主循环跑通才有"召回@5 / 幻觉率 / LLM-as-judge" 输入 |
 
-→ **建议下一步走 BE-S2-006b**（余下 3 Tool + hybrid_search Tool 化：spec Tool Use 主线 BE-S2-006a ✅ → **BE-S2-006b** → BE-S2-007。BE-S2-006b PR 内会落地：`tools/peers.py`（同业对标 placeholder, 实现走 ipos 表 industry filter + 简单排序）+ `tools/sentiment.py`（情感分布 placeholder, 当前数据源未接入直接返回固定中性 + warning）+ `tools/historical.py`（历史中签率, 走 ipos.one_lot_winning_rate 聚合）+ `tools/hybrid_search.py`（包装 BE-S2-005 现成 hybrid_search 函数为 Tool, 给 LLM ReAct 注入 RAG 检索能力）+ 各自单测）
+→ **建议下一步走 BE-S2-007**（LangGraph 主循环 + 引用源装配：spec Agent 主线 BE-S2-006a ✅ → BE-S2-006b ✅ → **BE-S2-007** → BE-S2-008。BE-S2-007 PR 内会落地：`app/services/agent/graph.py`（LangGraph StateGraph 主循环：node 1 plan = LLM with tools call 决策, node 2 act = 拿 tool_calls → 走 tool_registry.get(name).runner(args, session=...) 并行调用; node 3 reflect = 把 tool messages 喂回 LLM 决定再循环 / 收尾, 最多 N 轮）+ `agent/citation.py`（引用源装配: 把每个 chunk 的 doc_id / page → ``[1] 招股书 P12`` 编号 + sources 数组返回端层）+ `app/api/v1/chat.py`（POST /v1/chat/diagnose SSE 端层: 监控 token usage 写入 chat_token_usage + tool calls 写入 chat_tool_calls + 每条 message 末尾 append DISCLAIMER）+ E2E 集成测试）
 
 ---
 
@@ -717,12 +717,12 @@ LLM tool message  (BE-S2-007 主循环 json.dumps 入 chat_tool_calls)
 
 | Tool name | 状态 | 说明 |
 |-----------|------|------|
-| `get_ipo_basic_info` | ✅ 本 PR | IPO 基础信息（发行价 / PE / 募资额 / 上市日期 / 行业 / 状态） |
-| `get_financial_statements` | ✅ 本 PR | 财务摘要（financial_summary / highlights / risks）+ 缺数据 warning |
-| `get_peer_comparison` | ⬜ BE-S2-006b | 同业对标 |
-| `get_sentiment_summary` | ⬜ BE-S2-006b | 情感分布 placeholder |
-| `get_historical_winning_rate` | ⬜ BE-S2-006b | 历史中签率 |
-| `hybrid_search` | ⬜ BE-S2-006b | 包装 BE-S2-005 现成 hybrid_search 函数为 Tool |
+| `get_ipo_basic_info` | ✅ BE-S2-006a | IPO 基础信息（发行价 / PE / 募资额 / 上市日期 / 行业 / 状态） |
+| `get_financial_statements` | ✅ BE-S2-006a | 财务摘要（financial_summary / highlights / risks）+ 缺数据 warning |
+| `get_peer_comparison` | ✅ BE-S2-006b | 同业对标（industry_l2 优先 → industry_l1 fallback, 5 dim metrics） |
+| `get_sentiment_summary` | ✅ BE-S2-006b | 情感分布 placeholder（counts=0 + warning, 留口 BE-S3 接文章源） |
+| `get_historical_winning_rate` | ✅ BE-S2-006b | 历史中签率聚合（industry / sponsor / year_range, 走 ipos.extra JSONB） |
+| `hybrid_search` | ✅ BE-S2-006b | 包装 BE-S2-005 hybrid_search 函数为 Tool（session deps 注入 / 默认走 factory） |
 
 **测试矩阵（46 条新增）**
 
@@ -751,6 +751,95 @@ LLM tool message  (BE-S2-007 主循环 json.dumps 入 chat_tool_calls)
 3. **OpenAI 自托管 LLM (Qwen-2.5) 解析 `title` 字段挑剔** — pydantic `model_json_schema()` 默认带 `title` 字段，OpenAI 接收但部分自托管 LLM 报错；`Tool.to_openai_schema()` 主动 `params.pop("title", None)` 防御
 4. **`raw_args=None` 与 `raw_args={}` 必须等价** — LLM tool_call 没参数时可能传 None，沙盒入参解码层必须接住，否则 pydantic 直接抛 AttributeError；改成 `raw_args = raw_args or {}` 归一为 dict 后再 validate
 5. **runner 内部声明的 `elapsed_ms` 必须被沙盒覆写** — runner 实现可能拷错或忘改 elapsed，让真实计时统一在沙盒侧（dataclass `replace` 风格重建 ToolResult）
+
+### BE-S2-006b 实施成果（2026-04-26 落地）
+
+**改动文件**
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `apps/api/app/services/agent/tools/peers.py` | 新建 220 行 | `get_peer_comparison` Tool（同 industry_l2 优先 → industry_l1 fallback；PE 直接列 + PB/ROE/GrossMargin/Revenue 从 `extra.financial_summary` 提；Literal 5 维约束） |
+| `apps/api/app/services/agent/tools/sentiment.py` | 新建 100 行 | `get_sentiment_summary` placeholder Tool（counts=0 + `data_source_status="not_connected"` + warning；BE-S3 接文章源后只换实现不动 schema） |
+| `apps/api/app/services/agent/tools/historical.py` | 新建 215 行 | `get_historical_winning_rate` Tool（走 `ipos.extra->>'one_lot_winning_rate'` 聚合 avg/min/max/count；industry / sponsor (jsonb @>) / year_range 三个 optional 过滤；first_day_performance=null 留口 BE-S3） |
+| `apps/api/app/services/agent/tools/hybrid_search.py` | 新建 195 行 | `hybrid_search` Tool（包装 BE-S2-005 `services/rag/hybrid_search` 函数；deps 注入 session, 不传走 `get_session_factory()`；UUID/SearchResult 序列化；空结果 warning） |
+| `apps/api/app/services/agent/tools/__init__.py` | 修改 | 追加 4 个新模块 side effect import（peers / sentiment / historical / hybrid_search） |
+| `apps/api/tests/integration/conftest.py` | 修改 | `patch_session_factory` targets 扩展 3 个新模块（peers / historical / hybrid_search），让 `get_session_factory()` 模块拷贝在测试时拉到测试库 |
+| `apps/api/tests/test_sentiment_tool.py` | 新建 7 测 | placeholder 形状 / code upper().strip() 归一 / window_days 默认 7 / window_days 越界 / OpenAI schema |
+| `apps/api/tests/test_hybrid_search_tool.py` | 新建 9 测 | happy（显式 session 注入 + ipo_code 大写归一 + UUID→str 序列化）/ 不传 session 走 factory / 空结果 warning / lang 透传 / 入参校验 / 上游异常归一 / OpenAI schema title 剔除 |
+| `apps/api/tests/integration/test_peers_tool.py` | 新建 9 测 | l2 优先排序 + 排除自己 / l1 fallback 凑齐 limit / 该行业第一只→空 peers + warning / target 不存在 → failure / 自定义 dimensions 子集 / Literal dim 拒收 / code 校验 / limit 边界 / OpenAI schema |
+| `apps/api/tests/integration/test_historical_tool.py` | 新建 13 测 | industry 过滤聚合 / industry_l1 与 l2 都匹配 / sponsor jsonb @> 过滤 / year_range 单年 / year_range 闭区间 / 全市场 / 命中 0 warning / 全 NULL warning / 排除非 listed / year_range 长度/顺序/越界校验 / OpenAI schema |
+| `spec/09-sprint-2-backlog.md` | 状态 + 实施成果 + 下一步 | 记录 BE-S2-006b 落地, 下一步指向 BE-S2-007 |
+| `README.md / apps/api/README.md` | 同步 | README 更新（411 passed, 6 个 Tool 全数注册到位） |
+
+**架构（Tool Use 第 2 层）**
+
+```
+                   Tool Registry
+                   ┌──────────────────────────────────────┐
+                   │  get_ipo_basic_info       (006a)     │
+                   │  get_financial_statements (006a)     │
+                   │  get_peer_comparison      (006b 本 PR)│
+                   │  get_sentiment_summary    (006b 本 PR)│
+                   │  get_historical_winning_rate (006b)  │
+                   │  hybrid_search            (006b)     │
+                   └──────────────────────────────────────┘
+                        ▲
+                        │ tools/__init__.py side effect import
+                        │ (BE-S2-007 LangGraph 主循环 import 即注册)
+                        │
+   ┌────────────────────┼────────────────────┐
+   │                    │                    │
+   ▼                    ▼                    ▼
+peers.py           historical.py       hybrid_search.py
+(get_session_      (raw SQL 走         (deps 注入 session;
+ factory 起        extra->> JSONB     未传时 get_session_
+ 临时 session)     聚合)              factory 起临时)
+                        │
+                        ▼
+                   sentiment.py
+                   (纯占位, 无 IO)
+```
+
+**关键设计决策**
+
+1. **peers 走"已上市同行业新股"而非"行业指数 PE"**：spec/04 §3.1 原意"找最近上市的可比新股"，IPO 表本身就是真相；AKShare 行业指数 PE 是 Sprint 3 接入 baseline 的事，本 Tool 接口不变实现层切就行
+2. **peers `industry_l2` 优先 + `industry_l1` fallback**：l2 更精细但样本少，单纯走 l2 容易空；fallback 兼容 hkex / akshare 两端 ingest 时主辅分类倒置（也匹配 `industry_l1 == target.industry_l1 OR industry_l2 == target.industry_l1`）
+3. **peers `dimensions` 走 `Literal["PE","PB","ROE","GrossMargin","Revenue"]`**：与 spec/04 §3.1 严格对齐；新增维度先改 spec 再改 Tool，防止 LLM 通过 prompt 注入未支持的维度名
+4. **sentiment 走 placeholder（不报 fail）**：`ok=True` + `data_source_status="not_connected"` + warning，让 LLM 知道是"数据源未接入"而非"调用失败"，可以选择走 `hybrid_search` 在招股书"风险因素 / 行业前景"章节兜底；接入 BE-S3 文章源后只换 _run 实现不动 schema
+5. **historical `one_lot_winning_rate` 从 `extra` JSONB 提**：`IPO` ORM 没有这一列（schema 设计时藏在 extra），走 PG `extra->>'one_lot_winning_rate'`+`::numeric` cast 聚合；与 BE-007 `ipo_service` / `favorite_service` 对该字段的读路径一致（避免 schema 演进）
+6. **historical sponsor 过滤走 `sponsors @> '["保荐人"]'::jsonb`**：JSONB 数组成员匹配是 PG 原生操作符 `@>`，用 `json.dumps([sponsor], ensure_ascii=False)` 安全转义防 SQL 注入；ORM 没现成 helper 走 raw `text(...)` + `bindparam` 同 BE-S2-005 风格
+7. **historical `first_day_performance: null` 显式留口**：spec 原文有"首日表现统计"但 IPO 表没有 `first_day_close` 字段（K 线源未接），返回 null + note 让 LLM 知道字段存在但 BE-S3 才有
+8. **hybrid_search 走"deps 注入 + factory fallback"**：BE-S2-007 LangGraph 主循环已经持有 session 时直接 `runner(args, session=...)`；单测 / 默认时内部走 `get_session_factory()` 起临时 session 不强依赖主循环（解耦层级）
+9. **hybrid_search 入参收窄到 5 个语义参数**：BE-S2-005 `hybrid_search` 函数有 9 个调优参数（rrf_k / rerank_pool / ...），LLM 不需要也不应该看到；只暴露 `query / ipo_code / doc_type / lang / top_k`
+10. **整套 Tool 入参 `code` 走 `upper().strip()` 归一**：LLM 可能输出 `0700.hk` / `  0700.HK ` 等变体；与 `ipo_service` / `favorite_service` 对 code 的归一约定一致
+11. **`patch_session_factory` 集中扩展（不让单测自己 patch）**：测试时 ORM 模块 import 后 `get_session_factory` 已经拷到模块 namespace，必须 patch 到 module 而非 `app.db.base`；统一在 conftest 一处加目标 module 让以后再加 Tool 不用每次复制 monkeypatch
+
+**测试矩阵（38 条新增）**
+
+| 测试文件 | 用例数 | 覆盖 |
+|---------|-------|------|
+| `tests/test_sentiment_tool.py` | 7 | placeholder 形状 / code upper+strip / window_days 默认 7 / 自定义 / 缺 code / window 太小 / window 太大 / OpenAI schema |
+| `tests/test_hybrid_search_tool.py` | 9 | 显式 session 透传（含 ipo_code 归一 + final_top_k 映射 + UUID→str 序列化）/ 不传 session 走 factory / 空结果 warning / lang+doc_type 透传 / 缺 query / 空 query / top_k 越界 / 上游 RuntimeError 归一 / OpenAI schema 含 title 剔除 |
+| `tests/integration/test_peers_tool.py` | 9 | l2 优先排序+排除自己（DESC 取最新）/ l1 fallback 凑齐 limit / 该行业第一只 → 空 peers + warning / target 不存在 → failure / 自定义 dimensions 子集 / Literal 拒收非法 dim / code 长度校验 / limit 边界（0 / 999）/ OpenAI schema |
+| `tests/integration/test_historical_tool.py` | 13 | industry 过滤（含 NULL 行业排除）/ industry 同时匹配 l1 + l2 / sponsor jsonb @> 过滤 / year_range 单年 / year_range 闭区间 / 全市场无过滤 / 命中 0 warning / 全 NULL warning / status≠listed 排除 / year_range 长度 3 拒收 / start>end 拒收 / 越界 1800 拒收 / OpenAI schema |
+
+**实施成果（2026-04-26 落地）**
+
+| 维度 | Before BE-S2-006b | After BE-S2-006b |
+|------|------|------|
+| pytest | 373 passed | **411 passed** (+38) |
+| ruff | 46 errors | 44 errors（持平 / 略减，BE-S2-006b 触动文件 0 增量） |
+| mypy | 23 errors | 23 errors（持平，BE-S2-006b 触动文件 0 增量） |
+| 新建文件 | — | `tools/peers.py` + `tools/sentiment.py` + `tools/historical.py` + `tools/hybrid_search.py` 4 src 文件 + 4 测试文件 |
+| 已注册 Tool 数 | 2 (a 子任务) | **6** (basic_info / financial / peers / sentiment_placeholder / historical / hybrid_search) |
+| Alembic head | 0004_fts | 0004_fts（BE-S2-006b 不动 schema） |
+
+**关键 bug & 修复（PR 内自查发现）**
+
+1. **`one_lot_winning_rate` 不在 `IPO` ORM 列里** — 先按"直接列"写 SQLAlchemy 聚合，mypy 直接 attr-defined error；查阅 BE-007 schema 才发现是 `extra.one_lot_winning_rate` JSONB；改走 raw SQL `extra->>...::numeric` 与 `ipo_service` / `favorite_service` 现有读路径对齐
+2. **`IPO.code.notin_(set | True)` mypy 不通过** — set 可能为空时短路 `True` 不是 `ColumnElement`；analyze 后 set 至少含 target code 不会空，直接去掉短路
+3. **mypy 推断 `binds` 元素类型** — 第一个 `bindparam(type_=String())` 让 binds 被推为 `list[BindParameter[str]]`，后续 append `Integer` 时类型不兼容；显式 `binds: list[Any] = []` 解决
+4. **集成测试 fixture 调用 `get_session_factory()` 拉到生产 DSN** — peers / historical / hybrid_search 三个 Tool module import 时把 `get_session_factory` 拷到自己 namespace 了；patch `app.db.base` 不影响子 module 的 local 引用；统一在 `tests/integration/conftest.py::patch_session_factory` 的 targets 列表追加这 3 个新模块（与 BE-S2-006a `ipo_service_mod` 同思路）
 
 ## ✅ Sprint 2 完成后的产出物
 

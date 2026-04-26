@@ -16,12 +16,12 @@ sandbox`` 之后就能 ``list_all()`` 拿全部 Tool, 不需要主循环手动 i
 
 Tool 清单 (与 spec/04 §3.1 对齐)
 ================================
-- ``get_ipo_basic_info``: IPO 基础信息 (BE-S2-006a, 本 PR)
-- ``get_financial_statements``: 财务报表 / 财务摘要 (BE-S2-006a, 本 PR)
-- ``get_peer_comparison``: 同业对标 (BE-S2-006b)
-- ``get_sentiment_summary``: 情感分布 (BE-S2-006b, placeholder, 占位实现)
-- ``get_historical_winning_rate``: 历史中签率 (BE-S2-006b)
-- ``hybrid_search``: 招股书 RAG 检索 (BE-S2-006b 包装 services/rag/hybrid_search.py)
+- ``get_ipo_basic_info``: IPO 基础信息 (BE-S2-006a)
+- ``get_financial_statements``: 财务报表 / 财务摘要 (BE-S2-006a)
+- ``get_peer_comparison``: 同业对标 (BE-S2-006b, 本 PR)
+- ``get_sentiment_summary``: 情感分布 (BE-S2-006b, 本 PR; placeholder 占位实现)
+- ``get_historical_winning_rate``: 历史中签率 (BE-S2-006b, 本 PR)
+- ``hybrid_search``: 招股书 RAG 检索 (BE-S2-006b, 本 PR; 包装 services/rag/hybrid_search.py)
 
 side effect: import 各子模块 → 触发 ``register(...)``.
 """
@@ -29,6 +29,20 @@ side effect: import 各子模块 → 触发 ``register(...)``.
 from __future__ import annotations
 
 # 显式 import 子模块, 触发模块级 register() side effect
-from app.services.agent.tools import basic_info, financial
+from app.services.agent.tools import (
+    basic_info,
+    financial,
+    historical,
+    hybrid_search,
+    peers,
+    sentiment,
+)
 
-__all__ = ["basic_info", "financial"]
+__all__ = [
+    "basic_info",
+    "financial",
+    "historical",
+    "hybrid_search",
+    "peers",
+    "sentiment",
+]

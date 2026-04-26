@@ -96,6 +96,13 @@ Schema（Alembic `0001_init` + `0002_chat` + `0003_chunks`，PG 14 + pgvector 0.
   - **2 个最简 Tool（对接现有 IPO 表 / 不接 AKShare）**：`get_ipo_basic_info`（基本面 — 委托 `ipo_service.get_ipo`, Decimal/date 序列化为 JSON 友好类型）+ `get_financial_statements`（财务摘要 — 委托 `ipo_service.get_ipo_detail`, 缺数据走 `warning` 而非 failure，让 LLM 决定是改 Tool 还是回答"暂无数据"）
   - **OpenAI tool name 约束**（`^[a-zA-Z0-9_-]{1,64}$`）注册时强校验：防止后续 Tool 起名带空格 / 中文导致 LLM provider 拒收
   - **不在本 PR 做**：① LangGraph 主循环 / ReAct 步进（BE-S2-007）② Tool 调用回写 `chat_tool_calls`（BE-S2-007 在主循环内做，这里只管"算结果"）③ 限频 / 单用户日预算 / 单 session step cap（BE-S2-007 + BE-S2-008 配额）④ `hybrid_search` Tool 包装（BE-S2-006b 与 peers / sentiment / historical 一并落地）
+- Sprint 2 (BE-S2-006b)：余下 3 Tool + hybrid_search Tool 化 — 6 个 Tool 全数注册到位
+  - **`tools/peers.py` (`get_peer_comparison`)**：industry_l2 优先 → industry_l1 fallback 找 5 家可比公司；`Literal["PE","PB","ROE","GrossMargin","Revenue"]` 5 维 metrics（PE 直接列 + 其余从 `extra.financial_summary` 提）；该行业第一只 IPO 时返回空 peers + warning（不算 failure，让 LLM 选择走 hybrid_search 在招股书"同业"章节兜底）
+  - **`tools/sentiment.py` (`get_sentiment_summary`)** — placeholder：Sprint 2 没接 BE-S3 文章源（搜狗微信 / 雪球 / 智通财经 / 财联社属 Sprint 3 范围），返回固定 `counts={positive:0,neutral:0,negative:0}` + `data_source_status="not_connected"` + warning；保护 LLM 工具集合形状稳定（避免主循环 prompt 说"你有 5 个工具"时 LLM 幻觉一个工具名出来）
+  - **`tools/historical.py` (`get_historical_winning_rate`)**：industry / sponsor / year_range 三 optional 过滤聚合中签率（`extra->>'one_lot_winning_rate'::numeric`）；sponsor 走 PG `sponsors @> '["..."]'::jsonb`；status≠listed 排除；命中 0 / 全 NULL 都返回 success + warning；`first_day_performance: null` 显式留口给 BE-S3 接 K 线源（AKShare/Futu）
+  - **`tools/hybrid_search.py`**：包装 BE-S2-005 现成的 `services/rag/hybrid_search` 函数为 Tool；**deps 注入 session**：BE-S2-007 主循环传 session 时 `runner(args, session=...)` 直接用，不传时内部走 `get_session_factory()` 起临时 session 解耦层级；入参收窄到 5 个语义参数（query / ipo_code / doc_type / lang / top_k），9 个调优参数（rrf_k / rerank_pool 等）走 settings 默认避免 LLM 误调；UUID/SearchResult frozen dataclass 序列化为 JSON-friendly dict
+  - **集中 patch 模式**：在 `tests/integration/conftest.py::patch_session_factory` 的 targets 列表追加 peers / historical / hybrid_search 3 个新模块，让 Tool 内 module-level `get_session_factory()` 拷贝在测试时拉到测试库（BE-S2-006a 的 ipo_service_mod 同思路；以后再加 Tool 加一行 import + 加目标 module 即可，不用每次复制 monkeypatch）
+  - **不在本 PR 做**：① 真接入文章源 / 情感打标（BE-S3-xxx）② 首日表现 K 线接入（BE-S3 接 AKShare/Futu）③ peers 接入"行业指数 PE 中位数"作为 baseline（BE-S3 接入后实现层切，本 Tool schema 不变）④ LangGraph 主循环 / 引用源装配（BE-S2-007）
 
 缓存层（`app/cache/`）:
 
@@ -536,7 +543,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 373 passed in ~36s (Sprint 1 + BE-S2-001/002/003/000/004/005/006a)
+# → 411 passed in ~35s (Sprint 1 + BE-S2-001/002/003/000/004/005/006a/006b · 6 Tool 全数注册到位)
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e
