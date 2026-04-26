@@ -21,7 +21,7 @@
 | BE-002 ✅ | backend | OTP 校验 + 注册/登录 + JWT 颁发 | 0.5d | BE-001 | P0 |
 | BE-003 ✅ | backend | JWT 中间件 + `current_user` 依赖 | 0.5d | BE-002 | P0 |
 | BE-004 ✅ | backend | Refresh token + 黑名单 | 0.5d | BE-003 | P0 |
-| BE-005 | backend | 微信小程序登录（code → openid → unionid → 绑定） | 1d | BE-002 | P0 |
+| BE-005 ✅ | backend | 微信小程序登录（code → openid → unionid → 绑定） | 1d | BE-002 | P0 |
 | BE-006 | backend | 邀请码生成 + 绑定（注册时落入 referrer） | 0.5d | BE-002 | P0 |
 | BE-007 | backend | IPO 表持久化 + AKShare 调度入库 | 1d | INFRA-001 | P0 |
 | BE-008 | backend | `GET /ipos` 切回数据库 + 筛选 + Redis 缓存 | 0.5d | BE-007, INFRA-002 | P0 |
@@ -352,20 +352,64 @@ curl -H "Authorization: Bearer <已 logout 的 access>" localhost:8001/api/v1/me
 
 ---
 
-### BE-005 · 微信小程序登录
+### BE-005 · 微信小程序登录 ✅ DONE
 
-**改动文件**
-- `apps/api/app/api/v1/auth.py`（`POST /auth/login/wechat-mp`）
-- `apps/api/app/adapters/wechat/__init__.py`
-- `apps/api/app/adapters/wechat/mp_login.py`（调 `code2Session`）
-- `apps/api/.env.example` 加 `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET`
-- `apps/api/tests/test_wechat_login.py`（用 `respx` mock 微信 API）
+**改动文件**（已实装）
+- `apps/api/app/adapters/wechat/__init__.py`、`mp_login.py`（`code2Session` 客户端 + `WechatAuthError` / `WechatAPIError` 二分错误模型 + DI 单例）
+- `apps/api/app/services/user_service.py` 加 `find_user_by_wechat_unionid` / `find_user_by_wechat_openid`
+- `apps/api/app/services/auth_service.py` 加 `find_or_create_user_by_wechat` + `verify_wechat_mp_login` + `_create_user_with_wechat`
+- `apps/api/app/schemas/auth.py` 加 `WechatMpLoginRequest`
+- `apps/api/app/api/v1/auth.py` 加 `POST /auth/login/wechat-mp`（限流 + 503/401/502 错误映射）
+- `apps/api/app/core/config.py` + `.env(.example)` 加 `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` / `WECHAT_CODE2SESSION_URL` / `WECHAT_CODE2SESSION_TIMEOUT_SECONDS`
+- `apps/api/tests/test_wechat_login.py`（21 用例：10 个 adapter 单元 [respx] + 11 个路由端到端 [DB + stub client]）
+- ⚠️ **不需要新 alembic migration**：`users.wechat_openid` (unique) + `users.wechat_unionid` (索引) 在 INFRA-001 就已建好
 
-**AC**
-- [ ] `POST /auth/login/wechat-mp {code}` → 调 `https://api.weixin.qq.com/sns/jscode2session` → 拿 openid/unionid
-- [ ] 用户表新增 `wechat_unionid` 字段索引
-- [ ] 已绑定 unionid 的用户直接登录；新用户自动注册
-- [ ] respx 单测：mock 成功 / mock 失败（微信返回 errcode）
+**AC**（已验证）
+- [x] `POST /auth/login/wechat-mp {code}` → 调 `https://api.weixin.qq.com/sns/jscode2session` → 拿 openid/unionid
+- [x] `users.wechat_unionid` 索引就位（INFRA-001 内已建）
+- [x] 已绑定 unionid 的用户直接登录；新用户自动注册（含 invite_code 冲突重试）
+- [x] **跨小程序场景**：同 unionid 但 openid 变了，命中老用户后 openid 字段自动同步覆盖
+- [x] **unionid 回填**：先用 openid 注册的老用户，后续登录拿到 unionid 时补回 user 行
+- [x] 错误码二分映射:
+   - `40029` (invalid code) / `41008` (missing code) → `WechatAuthError` → 401 `wechat_code_invalid`
+   - `-1` / `45011` / `40013` 等 → `WechatAPIError` → 502 `wechat_upstream_error`
+   - 网络超时 / HTTP 5xx / 非 JSON → 502
+   - 未配置 AppSecret → 503 `wechat_mp_not_configured`
+   - 老用户 `status != 1` → 401 `user_disabled`（不可借微信登录绕过封禁）
+- [x] **限流**：同 code 1min 内 5 次，第 6 次 429（namespace=`wechat_mp_login`，key=code[:32]）
+- [x] **合规护栏**：`session_key` 不进 `Code2SessionResult`、不入库、不打日志
+- [x] respx 单测覆盖 happy（含/不含 unionid、空串 unionid）+ 用户类 errcode + 系统类 errcode + 超时 + HTTP 5xx + 非 JSON
+- [x] 路由端到端：新用户、老用户(unionid 命中 + openid 跨小程序覆盖)、老用户(openid fallback)、老用户(unionid 回填)、401/502/503/422/429/disabled
+- [x] 测试结果：`pytest -q` → **131 passed** with DB / 75 passed + 56 skipped without DB
+- [x] 烟测验证 503 / 422 / 200(新用户+unionid) / 200(老用户) / 401(40029) / 502(-1) 全路径
+
+**关键设计点**
+- **错误码二分**：用户态 (40029/41008) vs 服务态 (-1/40013/45011/网络/超时)。前者让前端 `wx.login()` 重取 code，后者让前端 retry 或提示稍后再试 — 两个方向的错误恢复 UX 不同，所以路由层要分开 401 vs 502。
+- **session_key 合规**：腾讯红线，落库或回传客户端立刻封号；适配器层 dataclass 直接不收这个字段，从源头杜绝。
+- **可注入的单例 client**：`get_wechat_mp_client` / `set_wechat_mp_client` / `reset_wechat_mp_client` 三件套，路由测试不用 respx monkey-patch ASGI 栈，直接换 stub class 即可，避免 respx + ASGITransport 的兼容坑。
+- **unionid > openid**：unionid 是开放平台跨小程序/公众号身份，openid 仅在单一小程序内稳定。优先按 unionid 找用户，找到后 openid 用本次登录拿到的最新值覆盖（用户在另一关联小程序登录后会换 openid，但 unionid 不变）。
+- **fail-close, not fail-open**：微信侧 5xx / 超时一律 502 拒绝登录，绝不"假设成功"放过去，否则等于绕过身份验证。
+- **限流 key 选 code 前缀而非用户**：路由层还没有用户身份；wx.login 的 code 微信侧本身只能用一次，但加这层 5/min 防 code 被偷后暴力试。
+
+**Smoke test**
+
+```bash
+cd apps/api && source .venv/bin/activate
+PYTHONUNBUFFERED=1 uvicorn app.main:app --host 127.0.0.1 --port 8001
+# 503 (未配置 AppSecret)
+curl -X POST localhost:8001/api/v1/auth/login/wechat-mp \
+  -H "Content-Type: application/json" -d '{"code":"081Test1234567890"}'
+# 422 (code 太短)
+curl -X POST localhost:8001/api/v1/auth/login/wechat-mp \
+  -H "Content-Type: application/json" -d '{"code":"x"}'
+
+# 配真实 AppID/AppSecret 后 (或本地 mock 微信接口):
+WECHAT_MP_APP_ID=xxx WECHAT_MP_APP_SECRET=yyy \
+  uvicorn app.main:app --host 127.0.0.1 --port 8001
+# 200 (含 unionid 的小程序)
+curl -X POST localhost:8001/api/v1/auth/login/wechat-mp \
+  -H "Content-Type: application/json" -d '{"code":"<wx.login 拿到的 code>"}'
+```
 
 ---
 

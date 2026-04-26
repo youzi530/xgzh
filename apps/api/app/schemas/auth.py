@@ -4,7 +4,7 @@ Sprint 1 内的鉴权流:
 - BE-001: ``OTPSendRequest`` / ``OTPSendResponse``
 - BE-002: ``PhoneLoginRequest`` / ``LoginResponse`` / ``UserPublic`` / ``TokenPair``
 - BE-004: ``RefreshRequest`` / ``LogoutRequest`` / ``LogoutResponse``
-- BE-005: ``WechatMpLoginRequest`` (后续 PR 加)
+- BE-005: ``WechatMpLoginRequest``
 """
 
 from __future__ import annotations
@@ -100,3 +100,14 @@ class LogoutResponse(BaseModel):
     logged_out: bool = True
     revoked_access: bool = Field(..., description="本次是否拉黑了 access token")
     revoked_refresh: bool = Field(..., description="本次是否拉黑了 refresh token")
+
+
+class WechatMpLoginRequest(BaseModel):
+    """微信小程序 ``wx.login`` 拿到的 ``code`` (5min 有效, 一次性)."""
+
+    code: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="小程序端 wx.login() 回调返回的 code, 5 分钟有效, 一次性",
+    )

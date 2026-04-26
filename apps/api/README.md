@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005）
 
 API:
 
@@ -13,6 +13,7 @@ API:
 - `POST /api/v1/agent/diagnose` AI 一键诊断（DeepSeek-V3 SSE 流式）
 - `POST /api/v1/auth/otp/send` 手机号 OTP 发送（dev 走 Mock SMS，60s 限流，5min TTL）
 - `POST /api/v1/auth/login/phone` OTP 校验 + 自动注册 + 颁发 access/refresh JWT（5/5min 限流）
+- `POST /api/v1/auth/login/wechat-mp` 微信小程序 code → openid/unionid → 注册/登录 + JWT（同 code 5/min 限流）
 - `POST /api/v1/auth/refresh` Refresh token rotation：旧 refresh 拉黑 + 颁发新 access+refresh（5/min 限流）
 - `POST /api/v1/auth/logout` 拉黑当前 access（+ 可选拉黑 refresh），需 `Authorization`
 - `GET /api/v1/me` 当前用户基本信息（需 `Authorization: Bearer <access_token>`）
@@ -123,6 +124,40 @@ curl -X POST localhost:8000/api/v1/auth/logout \
 
 # 之后 /me 立刻 401 token_revoked
 ```
+
+鉴权层 - 微信小程序登录（`app/adapters/wechat/` + `app/services/auth_service.py`，BE-005）:
+
+- `POST /auth/login/wechat-mp {code}` → 调微信 `jscode2session` 拿 `(openid, unionid)` → 找/建用户 → 颁发 access/refresh
+- 用户匹配优先级：**unionid > openid**；命中后 openid 字段总是覆盖为本次登录的最新值（跨小程序场景），unionid 字段用于回填（先按 openid 注册的老用户后续登录拿到 unionid 时补上）
+- 错误模型分两类:
+  - `WechatAuthError`（用户态: 40029 invalid_code / 41008 missing_code）→ 401 `wechat_code_invalid`，前端应让用户重新触发 `wx.login()`
+  - `WechatAPIError`（系统态: -1 system busy / 45011 frequency / 40013 invalid appid / 网络超时 / HTTP 5xx / 非 JSON）→ 502 `wechat_upstream_error`，前端 retry
+  - 未配置 AppSecret → 503 `wechat_mp_not_configured`（让运维补 .env）
+  - 老用户 `status != 1` → 401 `user_disabled`，封禁状态不能借微信登录绕过
+- **合规护栏**：`session_key` 永不进 dataclass、不入库、不打日志（违反即封号）
+- 限流：同 `code[:32]` 1min 内 5 次，第 6 次 429（防 code 被盗后暴力试）
+- 测试用 `set_wechat_mp_client(stub)` 直接注 stub class，不必 respx + ASGITransport 互相打架
+
+```bash
+# 200 (新用户首次登录, 含 unionid 的小程序)
+curl -X POST localhost:8000/api/v1/auth/login/wechat-mp \
+  -H 'content-type: application/json' \
+  -d '{"code":"<wx.login() 拿到的 code>"}'
+# {"user":{...,"invite_code":"H6EZQ70K"},
+#  "tokens":{"access_token":"...","refresh_token":"...","expires_in":1800,"refresh_expires_in":2592000},
+#  "is_new_user":true}
+
+# 401 (40029 invalid code)
+# {"detail":{"code":"wechat_code_invalid","message":"...","errcode":40029}}
+
+# 502 (-1 system busy / 网络/HTTP 错)
+# {"detail":{"code":"wechat_upstream_error","message":"...","errcode":-1}}
+
+# 503 (未配置)
+# {"detail":{"code":"wechat_mp_not_configured","message":"微信小程序登录暂未启用..."}}
+```
+
+⚠️ 生产前必做: 在 `.env` 配 `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET`（微信公众平台 → 小程序 → 开发设置）。
 
 鉴权层 - 当前用户依赖（`app/security/deps.py`，BE-003）:
 
@@ -237,7 +272,8 @@ app/
 ├── adapters/       # 外部数据源 / 通道
 │   ├── akshare_client.py
 │   ├── llm_client.py
-│   └── sms/        # SMS 通道 (base / mock / aliyun / factory)
+│   ├── sms/        # SMS 通道 (base / mock / aliyun / factory)
+│   └── wechat/     # 微信小程序 jscode2session (BE-005)
 ├── security/       # JWT 颁发 / 解析 + FastAPI 鉴权依赖 + 黑名单
 │   ├── jwt.py        # HS256 access + refresh, 严格 typ 隔离
 │   ├── deps.py       # get_current_user / get_optional_user

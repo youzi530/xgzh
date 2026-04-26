@@ -113,6 +113,46 @@ async def _create_user_with_phone(session: AsyncSession, phone: str) -> User:
     ) from last_err
 
 
+async def _create_user_with_wechat(
+    session: AsyncSession, *, openid: str, unionid: str | None
+) -> User:
+    """新建微信用户 + 生成唯一 invite_code (冲突重试).
+
+    并发处理: openid 唯一约束 (``uq_users_wechat_openid``) 撞了说明另一请求刚注册完,
+    fetch 一次返回。unionid 没有 unique 约束 (允许多账号同 unionid? 否, 业务上一个 unionid
+    只对一个用户; 不过是否唯一约束属于业务策略, INFRA-001 里只加了索引, 这里不强制)。
+    """
+    last_err: Exception | None = None
+    for _ in range(INVITE_CODE_RETRY):
+        invite_code = _generate_invite_code()
+        user = User(
+            wechat_openid=openid,
+            wechat_unionid=unionid,
+            invite_code=invite_code,
+        )
+        session.add(user)
+        try:
+            await session.flush()
+        except IntegrityError as e:
+            await session.rollback()
+            last_err = e
+            origin = str(e.orig).lower()
+            if "uq_users_wechat_openid" in origin:
+                existing = await user_service.find_user_by_wechat_openid(session, openid)
+                if existing is not None:
+                    return existing
+                raise
+            # invite_code 冲突, 重试
+            continue
+        await session.refresh(user)
+        return user
+
+    assert last_err is not None
+    raise RuntimeError(
+        f"failed to allocate unique invite_code after {INVITE_CODE_RETRY} retries"
+    ) from last_err
+
+
 async def find_or_create_user_by_phone(
     session: AsyncSession, phone: str
 ) -> tuple[User, bool]:
@@ -185,6 +225,85 @@ async def verify_phone_login(
 
 
 USER_STATUS_ACTIVE = 1
+
+
+async def find_or_create_user_by_wechat(
+    session: AsyncSession,
+    *,
+    openid: str,
+    unionid: str | None,
+) -> tuple[User, bool]:
+    """微信登录的"找用户"入口. 返回 ``(user, is_new)``。
+
+    匹配优先级:
+        1. ``unionid`` (若有) — 跨小程序/公众号稳定; 命中时顺手把 openid 同步进 user
+        2. ``openid`` — 当前小程序内稳定的 fallback; 命中时顺手把 unionid 补上 (如有)
+        3. 都未命中 → 创建新用户
+    """
+    user: User | None = None
+    if unionid:
+        user = await user_service.find_user_by_wechat_unionid(session, unionid)
+    if user is None:
+        user = await user_service.find_user_by_wechat_openid(session, openid)
+
+    if user is not None:
+        # 同步可能缺失的字段; 跨小程序场景 openid 可能换, 但 unionid 一致, 我们以 unionid 优先,
+        # openid 字段始终覆盖为本次登录拿到的最新 openid (代表"最近一次登录的小程序")。
+        changed = False
+        if user.wechat_openid != openid:
+            user.wechat_openid = openid
+            changed = True
+        if unionid and user.wechat_unionid != unionid:
+            user.wechat_unionid = unionid
+            changed = True
+        if changed:
+            try:
+                await session.flush()
+            except IntegrityError as e:
+                # openid 唯一索引冲突: 这个 openid 已经绑在另一用户上 (跨账号迁移?),
+                # 不在 MVP 范围, 报错回路由层 502/409 让人工介入
+                await session.rollback()
+                raise RuntimeError(
+                    f"wechat openid {openid!r} conflicts with another user"
+                ) from e
+        return user, False
+
+    user = await _create_user_with_wechat(session, openid=openid, unionid=unionid)
+    return user, True
+
+
+async def verify_wechat_mp_login(
+    session: AsyncSession,
+    *,
+    openid: str,
+    unionid: str | None,
+    settings: Settings | None = None,
+) -> tuple[User, bool, IssuedTokens]:
+    """已经从微信侧拿到 (openid, unionid) 后的本地业务流: 找/建用户 + 颁发 token。
+
+    与 ``verify_phone_login`` 的区别仅在"凭据从哪来", 后续步骤完全复用。
+    """
+    settings = settings or get_settings()
+
+    user, is_new = await find_or_create_user_by_wechat(
+        session, openid=openid, unionid=unionid
+    )
+    if user.status != USER_STATUS_ACTIVE:
+        # 老账号被风控/封禁, 不能借微信登录绕过
+        logger.warning(
+            f"auth.wechat.disabled user_id={user.user_id} status={user.status}"
+        )
+        raise RefreshUserUnavailable("user disabled")
+
+    await _touch_last_active(session, user.user_id)
+    await session.commit()
+
+    tokens = _issue_token_pair(user.user_id, settings)
+    logger.info(
+        f"auth.wechat.ok user_id={user.user_id} new={is_new} "
+        f"has_unionid={unionid is not None}"
+    )
+    return user, is_new, tokens
 
 
 def _issue_token_pair(user_id: uuid.UUID, settings: Settings) -> IssuedTokens:
@@ -303,8 +422,10 @@ __all__ = [
     "RefreshTokenRevoked",
     "RefreshUserUnavailable",
     "find_or_create_user_by_phone",
+    "find_or_create_user_by_wechat",
     "refresh_tokens",
     "revoke_access_token",
     "revoke_refresh_token",
     "verify_phone_login",
+    "verify_wechat_mp_login",
 ]

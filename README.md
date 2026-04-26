@@ -15,10 +15,11 @@
   - ✅ **BE-002**：OTP 校验 + 注册/登录 + JWT 颁发（`POST /api/v1/auth/login/phone`，HS256 access 30min + refresh 30d，verify 5/5min 限流）
   - ✅ **BE-003**：JWT 中间件 + `current_user` 依赖（`GET /api/v1/me`，6 种 401 reason，typ 强制隔离，`get_optional_user` 支持匿名混合接口）
   - ✅ **BE-004**：Refresh token rotation + 黑名单（`POST /api/v1/auth/refresh` + `POST /api/v1/auth/logout`，旧 refresh 一次性，access/refresh 双拉黑，jti 粒度）
-  - 进行中：BE-005 (微信小程序登录 code2Session)
+  - ✅ **BE-005**：微信小程序登录（`POST /api/v1/auth/login/wechat-mp`，`code2Session` 拿 openid/unionid，unionid > openid 优先，错误码二分映射 401/502/503，session_key 不落库）
+  - 进行中：BE-006 (邀请码生成 + 绑定)
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 65 passed / 45 skipped
-  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 110 passed
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 75 passed / 56 skipped
+  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 131 passed
 
 ## 📖 设计文档
 

@@ -30,3 +30,31 @@ async def find_user_by_id(session: AsyncSession, user_id: uuid.UUID) -> User | N
     stmt = select(User).where(User.user_id == user_id).where(User.deleted_at.is_(None))
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def find_user_by_wechat_unionid(
+    session: AsyncSession, unionid: str
+) -> User | None:
+    """优先按 unionid 查 — 同一开放平台下跨小程序/公众号的稳定身份."""
+    stmt = (
+        select(User)
+        .where(User.wechat_unionid == unionid)
+        .where(User.deleted_at.is_(None))
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def find_user_by_wechat_openid(
+    session: AsyncSession, openid: str
+) -> User | None:
+    """openid 仅在单一小程序内稳定; 没拿到 unionid 时 fallback 用."""
+    stmt = (
+        select(User)
+        .where(User.wechat_openid == openid)
+        .where(User.deleted_at.is_(None))
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()

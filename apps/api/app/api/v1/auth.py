@@ -5,7 +5,7 @@ Sprint 1:
 - BE-002: ``POST /auth/login/phone``  OTP 校验 + 注册/登录 + JWT
 - BE-004: ``POST /auth/refresh``       Refresh token rotation
 - BE-004: ``POST /auth/logout``        拉黑 access (+ 可选 refresh)
-- BE-005: ``POST /auth/login/wechat-mp`` (后续 PR)
+- BE-005: ``POST /auth/login/wechat-mp`` 小程序 code → openid/unionid → 注册/登录
 """
 
 from __future__ import annotations
@@ -15,6 +15,11 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.sms import SMSDeliveryError
+from app.adapters.wechat import (
+    WechatAPIError,
+    WechatAuthError,
+    get_wechat_mp_client,
+)
 from app.cache import rate_limit
 from app.core.config import get_settings
 from app.db import get_session
@@ -29,6 +34,7 @@ from app.schemas.auth import (
     RefreshRequest,
     TokenPair,
     UserPublic,
+    WechatMpLoginRequest,
 )
 from app.security import (
     ACCESS_TOKEN_TYPE,
@@ -297,4 +303,91 @@ async def logout(
         logged_out=True,
         revoked_access=revoked_access,
         revoked_refresh=revoked_refresh,
+    )
+
+
+# ----------------------------- BE-005 -----------------------------
+
+
+def _wechat_code_rate_limit_key(req: WechatMpLoginRequest, **_: object) -> str:
+    """同一 code 1 分钟 5 次防暴力 (理论上 wx.login 的 code 只能用一次, 这是多重保险)."""
+    return f"code:{req.code[:32]}"
+
+
+@router.post(
+    "/login/wechat-mp",
+    response_model=LoginResponse,
+    status_code=status.HTTP_200_OK,
+    summary="微信小程序登录: code → openid/unionid → 注册/登录 → JWT",
+    responses={
+        401: {"description": "code 无效 / 已被使用 / 已过期"},
+        429: {"description": "同一 code 1 分钟内尝试次数过多"},
+        502: {"description": "微信侧故障 / 我方 AppSecret 配置错"},
+        503: {"description": "服务未启用 (WECHAT_MP_APP_ID/SECRET 未配置)"},
+    },
+)
+@rate_limit(
+    times=5,
+    per_seconds=60,
+    namespace="wechat_mp_login",
+    key_func=_wechat_code_rate_limit_key,
+)
+async def login_wechat_mp(
+    req: WechatMpLoginRequest,
+    session: AsyncSession = Depends(get_session),
+) -> LoginResponse:
+    settings = get_settings()
+    if not settings.wechat_mp_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "wechat_mp_not_configured",
+                "message": "微信小程序登录暂未启用, 请使用手机号登录",
+            },
+        )
+
+    client = get_wechat_mp_client(settings)
+    try:
+        result = await client.code2session(req.code)
+    except WechatAuthError as e:
+        logger.info(f"auth.wechat.code_invalid errcode={e.errcode}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "wechat_code_invalid",
+                "message": "微信 code 无效或已过期, 请重新获取",
+                "errcode": e.errcode,
+            },
+        ) from e
+    except WechatAPIError as e:
+        logger.warning(f"auth.wechat.api_error errcode={e.errcode} {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "wechat_upstream_error",
+                "message": "微信服务暂时不可用, 请稍后重试",
+                "errcode": e.errcode,
+            },
+        ) from e
+
+    try:
+        user, is_new, tokens = await auth_service.verify_wechat_mp_login(
+            session, openid=result.openid, unionid=result.unionid
+        )
+    except RefreshUserUnavailable as e:
+        # 老用户被禁用 / 封号; 不能借微信登录绕过
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "user_disabled", "message": "账户已被禁用"},
+        ) from e
+
+    return LoginResponse(
+        user=UserPublic.model_validate(user),
+        tokens=TokenPair(
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            expires_in=tokens.access_expires_in,
+            refresh_expires_in=tokens.refresh_expires_in,
+        ),
+        is_new_user=is_new,
     )

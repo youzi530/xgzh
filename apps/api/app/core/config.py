@@ -76,6 +76,23 @@ class Settings(BaseSettings):
 
     free_agent_daily_limit: int = Field(default=5)
 
+    wechat_mp_app_id: str = Field(
+        default="",
+        description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",
+    )
+    wechat_mp_app_secret: str = Field(default="", description="微信小程序 AppSecret. 严禁泄漏.")
+    wechat_code2session_url: str = Field(
+        default="https://api.weixin.qq.com/sns/jscode2session",
+        description="腾讯官方 jscode2session 接口. 测试时可指向本地 mock.",
+    )
+    wechat_code2session_timeout_seconds: float = Field(
+        default=5.0, description="jscode2session HTTP 超时. 微信侧 P99 < 1s, 留 5x buffer."
+    )
+
+    @property
+    def wechat_mp_configured(self) -> bool:
+        return bool(self.wechat_mp_app_id and self.wechat_mp_app_secret)
+
     @property
     def cors_origin_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
