@@ -20,7 +20,7 @@
 | BE-001 ✅ | backend | User 模型 + phone OTP 发送（dev 走 mock 短信） | 0.5d | INFRA-001, INFRA-002 | P0 |
 | BE-002 ✅ | backend | OTP 校验 + 注册/登录 + JWT 颁发 | 0.5d | BE-001 | P0 |
 | BE-003 ✅ | backend | JWT 中间件 + `current_user` 依赖 | 0.5d | BE-002 | P0 |
-| BE-004 | backend | Refresh token + 黑名单 | 0.5d | BE-003 | P0 |
+| BE-004 ✅ | backend | Refresh token + 黑名单 | 0.5d | BE-003 | P0 |
 | BE-005 | backend | 微信小程序登录（code → openid → unionid → 绑定） | 1d | BE-002 | P0 |
 | BE-006 | backend | 邀请码生成 + 绑定（注册时落入 referrer） | 0.5d | BE-002 | P0 |
 | BE-007 | backend | IPO 表持久化 + AKShare 调度入库 | 1d | INFRA-001 | P0 |
@@ -295,17 +295,60 @@ curl -i -H "Authorization: Bearer <refresh>" localhost:8001/api/v1/me  # 401 tok
 
 ---
 
-### BE-004 · Refresh token + 黑名单
+### BE-004 · Refresh token + 黑名单 ✅ DONE
 
 **改动文件**
-- `apps/api/app/api/v1/auth.py`（`POST /auth/refresh`、`POST /auth/logout`）
-- `apps/api/app/security/blacklist.py`（基于 Redis）
-- `apps/api/tests/test_refresh.py`
+- `apps/api/app/security/blacklist.py`（新增，Redis SETEX，TTL=token 剩余有效期）
+- `apps/api/app/security/__init__.py`（导出 `blacklist_jti` / `is_jti_blacklisted`）
+- `apps/api/app/security/deps.py`（`_resolve_user_from_token` 加 jti 黑名单检查 → 401 `token_revoked`）
+- `apps/api/app/services/auth_service.py`（`refresh_tokens` rotation + `revoke_access_token` + `revoke_refresh_token` + 4 个错误类型）
+- `apps/api/app/schemas/auth.py`（`RefreshRequest` / `LogoutRequest` / `LogoutResponse`）
+- `apps/api/app/api/v1/auth.py`（`POST /auth/refresh` + `POST /auth/logout`）
+- `apps/api/tests/test_refresh.py`（17 个端到端用例）
 
 **AC**
-- [ ] `POST /auth/refresh {refresh_token}` 返回新 access_token
-- [ ] `POST /auth/logout` 把 refresh_token 加入黑名单（TTL = 剩余有效期）
-- [ ] 黑名单中的 refresh 拒绝刷新（401）
+- [x] `POST /auth/refresh {refresh_token}` 返回新 **access + refresh**（rotation，不是只换 access）
+- [x] `POST /auth/logout` 拉黑当前 access 的 jti（**TTL=剩余有效期**）；body 带 `refresh_token` 时连同拉黑（且 sub 必须与 `current_user` 一致，**拒绝拉黑别人的 token**）
+- [x] 黑名单中的 refresh 拒绝刷新 → 401 `token_revoked`
+- [x] 黑名单中的 access 拒绝访问任何受保护接口 → 401 `token_revoked`（`get_current_user` 兜底）
+- [x] refresh 限流：同一 refresh_token 1 分钟 5 次（`namespace="token_refresh"`），第 6 次 429
+- [x] Redis 失败时 `is_jti_blacklisted` **fail-open**（避免单点故障导致全员 401），`blacklist_jti` 失败抛错（"以为已登出但其实没"是更严重的错觉）
+- [x] 单测覆盖：refresh happy / chain / 旧 refresh 重放 / access 当 refresh / 篡改 / 过期 / 用户禁用 / logout 拉黑 access+refresh / logout 不带 body / logout 不带 Authorization / **logout 别人的 refresh 拒绝**（关键安全测试） / 限流 / blacklist 单元 / fail-open
+
+**关键设计**
+
+1. **Refresh Rotation**：每次 refresh 都拉黑旧 refresh 的 jti，**颁发新 access + 新 refresh**。这是工业界默认做法（OAuth2 RFC 6749 §10.4 推荐）；旧 refresh 被中间人复制后第二次也用不了。
+2. **Logout 双拉黑**：access TTL 短（30min），但用户登出后立即生效是基本预期，所以 access 也必须拉黑而不是"等过期"。`get_current_user` 在解 token 后查一次 `is_jti_blacklisted` 实现这个。
+3. **黑名单粒度=jti 而非 user_id**：同一用户多设备并存时，登出"这台手机"不该影响 PC 端登录。"踢全员"是 BE-011 之后的 `user_token_epoch` 机制，不在本 PR 内。
+4. **Fail-open vs fail-close**：黑名单查询失败 → 放行（业务可用）；黑名单写入失败 → 抛错（防止"以为登出了"的安全错觉）。两边方向不对称，但符合实际威胁模型。
+5. **Access TTL 设计**：30min 是黑名单存量上限的关键控制器。即便 logout 风暴打来，单条目最多存活 30min，Redis 内存压力可控。
+
+**烟测命令**
+```bash
+# 0. 起服务
+cd apps/api && PYTHONUNBUFFERED=1 uvicorn app.main:app --host 127.0.0.1 --port 8001
+
+# 1. 走完登录拿 access/refresh (略, 见 BE-002)
+
+# 2. refresh -> 200 + 新 access/refresh, 旧 refresh 被拉黑
+curl -X POST localhost:8001/api/v1/auth/refresh \
+  -H 'content-type: application/json' \
+  -d "{\"refresh_token\":\"<refresh>\"}"
+
+# 3. 旧 refresh 复用 -> 401 token_revoked
+curl -X POST localhost:8001/api/v1/auth/refresh \
+  -H 'content-type: application/json' \
+  -d "{\"refresh_token\":\"<旧 refresh>\"}"
+
+# 4. logout (Authorization access + refresh body) -> revoked_access=true / revoked_refresh=true
+curl -X POST localhost:8001/api/v1/auth/logout \
+  -H "Authorization: Bearer <access>" \
+  -H 'content-type: application/json' \
+  -d "{\"refresh_token\":\"<refresh>\"}"
+
+# 5. logout 后 /me -> 401 token_revoked
+curl -H "Authorization: Bearer <已 logout 的 access>" localhost:8001/api/v1/me
+```
 
 ---
 

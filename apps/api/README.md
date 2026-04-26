@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004）
 
 API:
 
@@ -13,6 +13,8 @@ API:
 - `POST /api/v1/agent/diagnose` AI 一键诊断（DeepSeek-V3 SSE 流式）
 - `POST /api/v1/auth/otp/send` 手机号 OTP 发送（dev 走 Mock SMS，60s 限流，5min TTL）
 - `POST /api/v1/auth/login/phone` OTP 校验 + 自动注册 + 颁发 access/refresh JWT（5/5min 限流）
+- `POST /api/v1/auth/refresh` Refresh token rotation：旧 refresh 拉黑 + 颁发新 access+refresh（5/min 限流）
+- `POST /api/v1/auth/logout` 拉黑当前 access（+ 可选拉黑 refresh），需 `Authorization`
 - `GET /api/v1/me` 当前用户基本信息（需 `Authorization: Bearer <access_token>`）
 
 Schema（Alembic `0001_init`，PG 16 + pgvector 0.8.2）:
@@ -93,6 +95,35 @@ curl -X POST localhost:8000/api/v1/auth/login/phone \
 
 ⚠️ 生产前必做: `JWT_SECRET` 替换成 `openssl rand -hex 32` 生成的随机串, 否则启动时会打 ERROR 日志。
 
+鉴权层 - Refresh + 黑名单（`app/security/blacklist.py` + `app/services/auth_service.py`，BE-004）:
+
+- `POST /auth/refresh {refresh_token}` → **rotation**：拉黑旧 refresh 的 jti（TTL=旧 refresh 剩余有效期）+ 颁发新 access+refresh
+- `POST /auth/logout` 需 `Authorization: Bearer <access>`，body 可选 `{refresh_token}`
+  - 拉黑当前 access（即便 30min 还没过期，下一次请求立刻 401 `token_revoked`）
+  - body 带 refresh 时一并拉黑；**sub 与 `current_user` 不一致直接拒绝**（防止恶意 logout 别人）
+- 黑名单 key：`xgzh:blacklist:jti:{jti}`，value=`"1"`，每条只占 ~80 字节
+- `is_jti_blacklisted` **fail-open**（Redis 故障返回 False，业务可用优先）；`blacklist_jti` 失败抛错（"以为登出了但其实没"是更严重的安全错觉）
+- 黑名单粒度=**jti** 而不是 user_id，登出"这台手机"不影响 PC 端登录；"踢全员"是 `user_token_epoch` 机制，留待 BE-011 之后
+
+```bash
+# refresh -> 200 + 新 access/refresh, 旧 refresh 一次性
+curl -X POST localhost:8000/api/v1/auth/refresh \
+  -H 'content-type: application/json' \
+  -d "{\"refresh_token\":\"<refresh>\"}"
+
+# 旧 refresh 复用 -> 401 token_revoked
+# 第 6 次/分钟 refresh -> 429
+
+# logout (拉黑 access + refresh)
+curl -X POST localhost:8000/api/v1/auth/logout \
+  -H "Authorization: Bearer <access>" \
+  -H 'content-type: application/json' \
+  -d "{\"refresh_token\":\"<refresh>\"}"
+# {"logged_out":true,"revoked_access":true,"revoked_refresh":true}
+
+# 之后 /me 立刻 401 token_revoked
+```
+
 鉴权层 - 当前用户依赖（`app/security/deps.py`，BE-003）:
 
 - `get_current_user(request, session)` — 强校验依赖，业务路由 `Depends(get_current_user)` 即可
@@ -103,6 +134,7 @@ curl -X POST localhost:8000/api/v1/auth/login/phone \
   - `token_scheme_invalid`：scheme 不是 Bearer（如 Basic）
   - `token_invalid`：签名错 / 篡改 / aud / iss 错 / **typ 不是 access**（refresh 不能当 access 用）
   - `token_expired`：access 已过期 → 前端 silent refresh
+  - `token_revoked`：jti 在 BE-004 黑名单（已 logout 或被风控踢下线）
   - `user_not_found`：sub UUID 在 DB 不存在或已软删
   - `user_disabled`：`status != 1`
 - token 内 `status` 不可信：每次都查 DB 一次，被禁用/软删的用户即使握合法 token 也立刻 401
@@ -206,9 +238,10 @@ app/
 │   ├── akshare_client.py
 │   ├── llm_client.py
 │   └── sms/        # SMS 通道 (base / mock / aliyun / factory)
-├── security/       # JWT 颁发 / 解析 + FastAPI 鉴权依赖
-│   ├── jwt.py      # HS256 access + refresh, 严格 typ 隔离
-│   └── deps.py     # get_current_user / get_optional_user
+├── security/       # JWT 颁发 / 解析 + FastAPI 鉴权依赖 + 黑名单
+│   ├── jwt.py        # HS256 access + refresh, 严格 typ 隔离
+│   ├── deps.py       # get_current_user / get_optional_user
+│   └── blacklist.py  # jti 粒度黑名单 (Redis SETEX, fail-open 读)
 ├── schemas/        # Pydantic 模型 (ipo / agent / auth)
 ├── utils/          # 通用工具 (phone E.164 + mask)
 ├── db/             # SQLAlchemy 2.0 async Base + ORM models
