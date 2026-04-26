@@ -48,7 +48,18 @@ extend-exclude = [".venv", "__pycache__"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "ASYNC"]
-ignore = ["E501"]
+# QA-S2-002 baseline 清理后保留的项目惯例 ignore 集合 (其余规则零容忍, CI 守):
+# - E501  : 行长度由 line-length=100 + black/ruff format 兜底, 显式开线超长就让它过
+# - B008  : FastAPI 路由强约定 ``Depends(...)`` 必须在参数默认值里出现, 这是
+#           FastAPI 官方文档惯例 (spec/09 §BE-S2-008 已定: 全项目所有路由统一保留
+#           此风格, 不动)
+# - N818  : 项目里的 ``RefreshTokenInvalid`` / ``RateLimitExceeded`` 等业务异常
+#           走"行为名"而非"<X>Error"后缀; 这是 spec/06 异常体系定的命名约定
+# - N812  : 让 ``from datetime import date as Date`` 与表字段名 ``date`` 区分,
+#           项目里 schemas/ipo.py / favorite.py 都用此惯例
+# - N814  : ``from decimal import Decimal as _D`` 是 favorite_service 里的局部缩写
+#           惯例 (减少噪音字符宽度); 不影响可读性
+ignore = ["E501", "B008", "N818", "N812", "N814"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

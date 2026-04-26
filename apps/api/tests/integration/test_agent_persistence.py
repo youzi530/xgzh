@@ -25,7 +25,6 @@ from app.db.models.chat import (
 )
 from app.services.agent import persistence
 
-
 # ─── chat_sessions ────────────────────────────────────────────────────────
 
 

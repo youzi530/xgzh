@@ -28,11 +28,11 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from alembic import command
 from app.adapters.wechat import (
     Code2SessionResult,
     WechatAPIError,
@@ -50,7 +50,6 @@ from app.core.config import Settings, get_settings
 from app.db.base import get_session
 from app.db.models import User
 from app.main import create_app
-
 
 # =====================================================================
 # 1. adapter 单元 (无 DB, 仅 respx)
@@ -558,7 +557,7 @@ async def test_route_rate_limit_kicks_in(
 ) -> None:
     """同 code 1min 5 次 (key 取 code[:32]). 第 6 次 429."""
     statuses: list[int] = []
-    for i in range(6):
+    for _ in range(6):
         # adapter 总是抛 invalid_code, 但限流的 key 是 code 本身, 不论结果都计数
         wechat_stub.error = WechatAuthError("invalid code", errcode=40029)
         r = await client.post(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -69,7 +70,7 @@ class IPO(Base, TimestampMixin):
         nullable=True,
         comment="upcoming/subscribing/listed/withdrawn",
     )
-    extra: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    extra: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     data_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
@@ -133,7 +134,7 @@ class IPODocument(Base, TimestampMixin):
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     text_content: Mapped[str] = mapped_column("text", Text, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
-    doc_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    doc_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)
 
     # ─── BE-S2-003 新增 (Sprint 2 RAG 流水线必需) ────────────────────
     chunk_index: Mapped[int | None] = mapped_column(

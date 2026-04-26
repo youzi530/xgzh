@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -82,7 +83,7 @@ def _parse_code(raw: str) -> tuple[str, Market]:
 async def add_favorite(
     session: AsyncSession,
     *,
-    user_id,
+    user_id: uuid.UUID,
     code: str,
     notify_on_subscribe: bool = True,
 ) -> FavoriteUpsertResult:
@@ -137,7 +138,7 @@ async def add_favorite(
 async def remove_favorite(
     session: AsyncSession,
     *,
-    user_id,
+    user_id: uuid.UUID,
     code: str,
 ) -> tuple[str, Market, bool]:
     """幂等删除. 返回 ``(code, market, removed)``; ``removed=False`` 表示本来就没收藏."""
@@ -150,7 +151,7 @@ async def remove_favorite(
         )
     )
     await session.commit()
-    removed = (result.rowcount or 0) > 0
+    removed = (result.rowcount or 0) > 0  # type: ignore[attr-defined]
     logger.info(
         f"favorite.remove user_id={user_id} code={code_norm} market={market} removed={removed}"
     )
@@ -191,7 +192,7 @@ def _row_to_item(r: Any) -> FavoriteItem:
 
 
 async def list_favorites(
-    session: AsyncSession, *, user_id
+    session: AsyncSession, *, user_id: uuid.UUID
 ) -> FavoriteListResponse:
     """``user_favorites`` ⨝ ``ipos`` (LEFT JOIN) 拉用户全部自选."""
     stmt = (

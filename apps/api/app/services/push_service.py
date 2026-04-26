@@ -116,7 +116,7 @@ async def unregister_token(
         )
     )
     await session.commit()
-    removed = (result.rowcount or 0) > 0
+    removed = (result.rowcount or 0) > 0  # type: ignore[attr-defined]
     logger.info(
         f"push.unregister user_id={user_id} platform={platform} device_id={device_id} "
         f"removed={removed}"

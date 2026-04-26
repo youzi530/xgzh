@@ -32,7 +32,9 @@ router = APIRouter(prefix="/invite", tags=["invite"])
 
 
 def _bind_rate_limit_key(
-    req: InviteBindRequest, current_user: User, **_: object
+    req: InviteBindRequest,  # noqa: ARG001 - 形参名对齐 rate_limit kwargs
+    current_user: User,
+    **_kwargs: object,
 ) -> str:
     """限流 key 取 user_id, 防止用户拿一堆 code 暴力试 (即使一次性也别让试).
 
@@ -40,7 +42,6 @@ def _bind_rate_limit_key(
     传给 ``rate_limit`` 装饰器), 否则 missing positional. ``req`` 这里不直接用,
     但保留它否则 kwargs 里有同名 key 会撞。
     """
-    _ = req  # 仅用于参数签名对齐
     return f"user:{current_user.user_id}"
 
 

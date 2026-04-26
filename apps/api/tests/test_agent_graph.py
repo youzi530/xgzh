@@ -22,7 +22,6 @@ from app.services.agent.graph import (
 )
 from app.services.agent.tool_registry import ToolResult
 
-
 # ─── _result_preview ──────────────────────────────────────────────────────
 
 

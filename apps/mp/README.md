@@ -25,7 +25,19 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - 空态：☆ 图标 + 引导文案 + "去发现新股"CTA 跳首页
   - 下拉刷新：`loadOnce(force=true)` + `uni.stopPullDownRefresh`
   - 跨页响应式：详情页 ★ / ☆ 切换 → 自选列表立即同步（Pinia store 单源真相，无需 reload）
-- AI 诊断页：DeepSeek-V3 流式输出（SSE）
+- **AI 对话页（FE-S2-001 升级）**：多轮 ReAct + 6 类 SSE 事件 + 引用源 + 配额闸门
+  - 顶部三段固定区：免责 banner（黄）/ IPO 锚定 chip + "续聊中"标签 / 全局 banner（auth 红 + quota 金渐变）
+  - 主体消息列表：user 蓝色右气泡 / assistant 深色左气泡，气泡内分四段：tool_call 折叠卡 → content + ▋ 流式光标 → citations chip → 内嵌 error 条（按 kind 红/金/紫）
+  - tool_call 折叠步骤卡：默认折叠仅显示 `name + status badge + latency`（ok/error/timeout 三色），点开看 `args` / `result_preview` / `error` 的 JSON pretty-print
+  - 锚定 IPO 时给 4 条 quick prompts（"基本面如何 / 主要风险 / 招股价合理吗 / 行业可比"），未锚定给"通用对话"3 条引导（"本周新股 / 港股规则 / 破发风险"）
+  - 多轮自动衔接：`session_id` 由后端 SSE `start` 事件回填，后续提问自动携带，进同一只 IPO 起新一轮（切 IPO `setIpoContext` 自动 reset）
+  - 错误兜底 4 类分级：
+    - **HTTP 429 quota** → 顶部金色 banner + 套餐/已用/retry_after + "升级 VIP"占位 modal（FE-S2-004 实装支付路径）
+    - **HTTP 401/403 auth** → 顶部红色 banner + "重新登录 / 暂不登录"双按钮（流接口不做 silent refresh，避免中途换 token 风险）
+    - **SSE event=error** → assistant 气泡内嵌错误条 + "重试"按钮（保留 user 上下文，删失败 assistant 后重发）
+    - **网络断 / parse 失败** → 同上但 kind=network
+  - 离页 `onUnload` 强 `reset()` 防"返回页发现上次会话还在 → 用户困惑"; Sprint 3 加历史会话列表页时改持久化
+  - 不在本 PR 范围：打字机精细动画 + Markdown 增量解析（FE-S2-002）/ 引用源 ActionSheet 抽屉（FE-S2-003）/ VIP 升级支付通道（FE-S2-004）
 - **登录页（FE-001）**：手机 OTP + 微信小程序一键登录
   - 双 Tab：手机号 + 验证码（全平台）/ 微信一键（仅 `MP-WEIXIN` 条件编译）
   - 60s 倒计时（前端镜像 + 后端 429 兜底）
@@ -85,23 +97,25 @@ apps/mp/
 │   │   └── favorites.vue     # 我的自选（stats + IPOCard 列表 + 长按移除 + 空态，FE-006）
 │   └── ipo/
 │       ├── detail.vue        # 详情页（FE-005：风险 banner + 关注按钮 + 4-tab 招股要点 + AI CTA）
-│       └── agent.vue         # AI 诊断页
+│       └── agent.vue         # AI 对话页（FE-S2-001：多轮 chat + 6 SSE event + tool_call 折叠 + 配额 banner）
 ├── components/
 │   ├── IPOCard.vue           # FE-004: 复用卡片, default / hero 双密度, 状态色块
 │   ├── IPOCalendar.vue       # FE-004: 打新日历, 按日期 group + 横滚日期轴
 │   └── FavoriteButton.vue    # FE-005: 关注按钮, 未登录跳登录 / 乐观更新 / 错误码分类 toast
 ├── api/
 │   ├── ipo.ts                # IPO 接口 (列表 + IPODetail 详情) + statusLabel / statusPalette helpers
-│   ├── agent.ts              # Agent 流式接口
+│   ├── agent.ts              # Sprint 1 单轮 Agent 流式接口（/v1/agent/diagnose；保留向后兼容，Sprint 3 砍）
+│   ├── chat.ts               # FE-S2-001: 多轮 chat SSE 客户端（/v1/chat/diagnose）+ 6 类事件类型 + ChatQuotaError / ChatAuthError
 │   ├── auth.ts               # OTP / 手机登录 / 微信登录 / refresh / logout + parseAuthError
 │   ├── favorites.ts          # FE-005: addFavorite / removeFavorite / listFavorites + parseFavoriteError
 │   └── invite.ts             # 邀请码绑定 (BE-006) + parseInviteError
 ├── stores/
 │   ├── auth.ts               # FE-002 Pinia 鉴权 store（hydrate from storage + silent refresh 并发去重）
-│   └── favorites.ts          # FE-005 Pinia 自选 store（isFavored / 乐观更新 / watch loggedIn 自动 reset）
+│   ├── favorites.ts          # FE-005 Pinia 自选 store（isFavored / 乐观更新 / watch loggedIn 自动 reset）
+│   └── chat.ts               # FE-S2-001 Pinia chat store（多轮会话 + tool_call / citations / quota / phase 状态机）
 ├── utils/
 │   ├── request.ts            # uni.request 封装 + Authorization 注入 + 401 silent refresh + 跳登录
-│   ├── sse.ts                # 跨端 SSE 流式接收
+│   ├── sse.ts                # 跨端 SSE 流式接收（H5 fetch + MP enableChunked + Authorization 注入 + 429/401 statusCode 暴露）
 │   └── auth-storage.ts       # access/refresh/user storage helper（store 调用它做持久化）
 ├── App.vue / main.ts / pages.json / manifest.json
 └── tsconfig.json / vite.config.ts

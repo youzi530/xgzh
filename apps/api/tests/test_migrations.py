@@ -19,10 +19,11 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+
+from alembic import command
 
 pytestmark = pytest.mark.db
 

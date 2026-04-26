@@ -14,7 +14,8 @@
 #   或本地 Homebrew Postgres 14 + Redis 7 跑着.
 
 .PHONY: help test test-db-init test-unit test-e2e test-all lint typecheck \
-        eval-sprint2-smoke eval-sprint2-retrieval eval-sprint2 eval-sprint2-judge
+        eval-sprint2-smoke eval-sprint2-retrieval eval-sprint2 eval-sprint2-judge \
+        ci-smoke ci-integration
 
 # 默认 dev / test 库 DSN; 用户可以通过 ``make TEST_DATABASE_URL=...  test-e2e`` 覆盖
 DEV_DB_URL ?= postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh
@@ -70,3 +71,27 @@ eval-sprint2:  ## 端到端评测 (需 PG + LLM key; 不调 judge)
 
 eval-sprint2-judge:  ## 端到端 + LLM-as-judge (需 PG + LLM key; 最贵)
 	uv run python -m evals.cli --mode end_to_end --use-judge
+
+# ─── QA-S2-002 CI 聚合 target ──────────────────────────────────────────
+# 本地一行预演 GitHub Actions 的 fast lane / integration lane,
+# 让 commit 前能在本地复现 CI 行为, 不必等 PR 跑完才发现红。
+#
+# CI 上对应 .github/workflows/ci.yml :: jobs.fast / jobs.integration.
+
+ci-smoke:  ## 本地预演 CI fast lane (lint + typecheck + 单测 + eval-smoke; 无 PG/Redis)
+	@echo "==> [1/4] ruff lint"
+	@$(MAKE) lint
+	@echo "==> [2/4] mypy typecheck"
+	@$(MAKE) typecheck
+	@echo "==> [3/4] pytest unit (跳过 tests/integration)"
+	@$(MAKE) test-unit
+	@echo "==> [4/4] eval-sprint2-smoke (评测集 schema 自检)"
+	@$(MAKE) eval-sprint2-smoke
+	@echo "==> ci-smoke ok ✅"
+
+ci-integration:  ## 本地预演 CI integration lane (test-all; 需 PG + Redis 起着)
+	@echo "==> [1/2] test-db-init"
+	@$(MAKE) test-db-init
+	@echo "==> [2/2] pytest 全量 (含 integration)"
+	@$(MAKE) test-all
+	@echo "==> ci-integration ok ✅"

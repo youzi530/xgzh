@@ -16,15 +16,14 @@ import asyncio
 import os
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.db.models  # noqa: F401  ← 关键: 触发所有 model 注册到 Base.metadata
+from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
-
-import app.db.models  # noqa: F401  ← 关键: 触发所有 model 注册到 Base.metadata
 
 config = context.config
 

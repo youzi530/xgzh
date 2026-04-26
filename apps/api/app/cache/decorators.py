@@ -63,7 +63,7 @@ class RateLimitExceeded(Exception):
         super().__init__(msg)
 
 
-def _hash_args(args: tuple, kwargs: dict) -> str:
+def _hash_args(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
     """把 args/kwargs 序列化为 16 字节稳定哈希, 作为 cache key 后缀.
 
     用 ``default=str`` 兜底 datetime/Decimal 等; 非 JSON 友好对象不应直接
@@ -113,14 +113,14 @@ def cached(
 
             if payload is not None:
                 try:
-                    return json.loads(payload)
+                    return json.loads(payload)  # type: ignore[no-any-return]
                 except json.JSONDecodeError:
                     logger.warning(f"cached payload corrupt, refetch: {key}")
 
             result = await func(*args, **kwargs)
 
             if skip_if_none and result is None:
-                return result  # type: ignore[return-value]
+                return result
 
             try:
                 await client.set(

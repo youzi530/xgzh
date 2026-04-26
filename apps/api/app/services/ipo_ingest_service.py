@@ -128,7 +128,7 @@ async def upsert_ipos(
     expected_inserts = sum(1 for k in keys if k not in existing_set)
     expected_updates = len(keys) - expected_inserts
 
-    stmt = pg_insert(IPO.__table__).values(rows)
+    stmt = pg_insert(IPO.__table__).values(rows)  # type: ignore[arg-type]
     excl = stmt.excluded
     cur = IPO.__table__.c
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -46,7 +46,6 @@ from app.db.models.chat import (
     ChatToolCall,
 )
 from app.db.models.ipo import IPO
-
 
 # ─── 测试夹具: 可编程的 streaming LLM mock ────────────────────────────────
 

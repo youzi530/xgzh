@@ -66,7 +66,7 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         nullable=False,
     )
 
-    favorites: Mapped[list["UserFavorite"]] = relationship(
+    favorites: Mapped[list[UserFavorite]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True,

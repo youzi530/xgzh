@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -18,7 +19,7 @@ from app.scheduler import shutdown_scheduler, start_scheduler
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     setup_logging(settings.log_level)
     logger.info(f"app.start name={settings.app_name} env={settings.app_env}")
@@ -58,7 +59,10 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
-    async def request_id_middleware(request: Request, call_next: Any):
+    async def request_id_middleware(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
         with logger.contextualize(request_id=rid):
             response = await call_next(request)

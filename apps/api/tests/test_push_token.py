@@ -32,11 +32,11 @@ from pathlib import Path
 
 import httpx
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from alembic import command
 from app.adapters.sms import MockSMSAdapter, reset_sms_adapter, set_sms_adapter
 from app.cache import (
     InMemoryRedisClient,

@@ -120,7 +120,7 @@ class RealRedisClient:
         self._client = redis_async.from_url(url, decode_responses=True)
 
     async def get(self, key: str) -> str | None:
-        return await self._client.get(namespaced_key(key))
+        return await self._client.get(namespaced_key(key))  # type: ignore[no-any-return]
 
     async def set(self, key: str, value: str, ttl_seconds: int | None = None) -> None:
         await self._client.set(namespaced_key(key), value, ex=ttl_seconds)
@@ -156,7 +156,7 @@ class RealRedisClient:
 
         Lua 在 Redis 单线程中原子执行, 取代等价但有竞态的两步: ``INCR; EXPIRE``.
         """
-        result = await self._client.eval(
+        result = await self._client.eval(  # type: ignore[misc]
             _INCR_EXPIRE_LUA, 1, namespaced_key(key), str(ttl_seconds)
         )
         return int(result)
@@ -166,7 +166,7 @@ class RealRedisClient:
 
     async def ping(self) -> bool:
         try:
-            return bool(await self._client.ping())
+            return bool(await self._client.ping())  # type: ignore[misc]
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Redis ping failed: {e}")
             return False
@@ -185,7 +185,7 @@ class RealRedisClient:
         """清旧 (score < now - window) + 返回当前窗口内成员数. 不写入."""
         now = now_ms if now_ms is not None else int(time.time() * 1000)
         window_ms = window_seconds * 1000
-        result = await self._client.eval(
+        result = await self._client.eval(  # type: ignore[misc]
             _SLIDING_WINDOW_COUNT_LUA,
             1,
             namespaced_key(key),
@@ -212,7 +212,7 @@ class RealRedisClient:
         now = now_ms if now_ms is not None else int(time.time() * 1000)
         window_ms = window_seconds * 1000
         ttl = ttl_seconds if ttl_seconds is not None else window_seconds
-        result = await self._client.eval(
+        result = await self._client.eval(  # type: ignore[misc]
             _SLIDING_WINDOW_RECORD_LUA,
             1,
             namespaced_key(key),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
@@ -14,7 +15,7 @@ from app.services import agent_service, ipo_service
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 
-def _sse_event(event_type: str, data: dict | str) -> dict:
+def _sse_event(event_type: str, data: dict[str, Any] | str) -> dict[str, str]:
     payload = data if isinstance(data, dict) else {"content": data}
     return {"event": event_type, "data": json.dumps(payload, ensure_ascii=False)}
 
@@ -24,7 +25,7 @@ async def diagnose(req: DiagnoseRequest) -> EventSourceResponse:
     """新股一键诊断 SSE 流."""
     ipo = await ipo_service.get_ipo(req.code)
 
-    async def generator() -> AsyncIterator[dict]:
+    async def generator() -> AsyncIterator[dict[str, str]]:
         yield _sse_event(
             "start",
             {

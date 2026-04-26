@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.adapters.sms.base import SMSAdapter, SMSDeliveryError, SMSSendResult
 
 
@@ -46,7 +48,7 @@ class AliyunSMSAdapter(SMSAdapter):
         )
 
     @classmethod
-    def from_settings(cls, settings) -> "AliyunSMSAdapter":  # noqa: ANN001
+    def from_settings(cls, settings: Any) -> AliyunSMSAdapter:
         return cls(
             access_key_id=getattr(settings, "aliyun_sms_access_key_id", ""),
             access_key_secret=getattr(settings, "aliyun_sms_access_key_secret", ""),

@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001~011 + Sprint 2 BE-S2-000~009 + QA-S2-001）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001~011 + Sprint 2 BE-S2-000~009 + QA-S2-001 + QA-S2-002）
 
 API:
 
@@ -596,6 +596,30 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 复用 `client` fixture（schema/Redis/SMS 已配好），inline `fake_streaming_llm` mock LLM streaming（FIFO 队列脚本化多轮响应），真打 PG（`ipo_service` / `persistence.*`）+ mock `hybrid_search` 上层（避免依赖真 BGE embedding）。
 
 预期 `5 passed in ~1s`（不含 schema 启动），详见 `spec/09-sprint-2-backlog.md` §QA-S2-001 PR 总结。
+
+### QA-S2-002 · CI 门禁 + lint/type baseline 清零 (Sprint 2)
+
+`xgzh/.github/workflows/ci.yml` 是项目第一份 GitHub Actions，三段串联架构：
+
+| Job | 触发 | 依赖 | 内容 | 时长 |
+|-----|------|------|------|------|
+| **fast** | 所有 PR / push:main | — | ruff 0 / mypy 0 / pytest unit / eval-sprint2-smoke | ~2 min |
+| **integration** | 所有 PR / push:main | needs: fast | pgvector:pg16 + redis:7-alpine svc → alembic head → pytest tests/ (e2e + RAG schema) | ~5 min |
+| **eval-retrieval** | 同仓库 PR (非 fork) | needs: integration | pgvector svc + alembic head → `evals.cli --mode retrieval` (recall@5 阈值告警) → 上传报告 artifact | ~3 min |
+
+本地一行预演（与 GitHub Actions step 完全等价）：
+
+```bash
+make ci-smoke         # 等价 fast lane (ruff + mypy + test-unit + eval-smoke; ~15s)
+make ci-integration   # 等价 integration lane (test-db-init + test-all; 需 PG/Redis)
+```
+
+附带把后端 **ruff baseline 52 → 0** + **mypy strict baseline 25 → 0** 一次性清干净，CI 真正起到防 regression 门禁：
+
+- **ruff**：31 处项目惯例 (B008 FastAPI `Depends` / N818 异常命名 / N812 `datetime as Date` / N814 `Decimal as _D`) 全局加 ignore，21 处 `--fix` 自动修，1 处 B007 手工改
+- **mypy**：12 处补缺失类型注解（生产代码 `app/main.py` / `app/api/v1/agent.py` / `app/services/favorite_service.py` / `app/db/models/ipo.py` 等），11 处显式标 stub 边界 ignore（redis-py async / SQLAlchemy 2.0 `Result.rowcount` / pandas `to_datetime`），1 处删 unused ignore，1 处变量名冲突修复
+
+详见 `spec/09-sprint-2-backlog.md` §QA-S2-002 PR 总结。
 
 ## 离线评测 (BE-S2-009)
 

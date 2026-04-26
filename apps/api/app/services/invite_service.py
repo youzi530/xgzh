@@ -34,14 +34,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import InviteCode, User
-
 
 # ----------------------------- exceptions -----------------------------
 
@@ -119,7 +118,7 @@ async def register_invite_code_for_user(session: AsyncSession, user: User) -> In
 
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def _load_invite_for_update(
@@ -143,7 +142,7 @@ async def _load_invite_for_update(
         # 是 naive datetime. 兼容两种: naive 视作 UTC.
         exp = invite.expires_at
         if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
+            exp = exp.replace(tzinfo=UTC)
         if exp <= _now_utc():
             raise InviteCodeExpiredError(f"invite code {code!r} expired at {exp.isoformat()}")
 
@@ -199,7 +198,7 @@ async def bind_invite(
         .values(invited_by=invite.owner_user_id)
     )
     result = await session.execute(update_stmt)
-    if result.rowcount == 0:
+    if result.rowcount == 0:  # type: ignore[attr-defined]
         raise InviteAlreadyBoundError(
             f"user {current_user.user_id} concurrently bound by another request"
         )

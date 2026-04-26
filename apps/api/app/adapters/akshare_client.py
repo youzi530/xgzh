@@ -63,7 +63,7 @@ def _to_date(value: Any) -> date | None:
         parsed = pd.to_datetime(str(value), errors="coerce")
         if pd.isna(parsed):
             return None
-        return parsed.date()
+        return parsed.date()  # type: ignore[no-any-return]
     except Exception:
         return None
 

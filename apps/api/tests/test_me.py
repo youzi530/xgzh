@@ -22,12 +22,12 @@ from pathlib import Path
 
 import httpx
 import pytest
-from alembic import command
 from alembic.config import Config
 from fastapi import APIRouter, Depends
 from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from alembic import command
 from app.adapters.sms import (
     MockSMSAdapter,
     reset_sms_adapter,
@@ -43,7 +43,6 @@ from app.db.models import User
 from app.main import create_app
 from app.security import (
     create_access_token,
-    create_refresh_token,
     get_optional_user,
 )
 from app.services import otp_service
