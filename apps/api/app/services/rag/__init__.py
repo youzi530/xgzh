@@ -14,6 +14,6 @@
    提前留好命名空间
 """
 
-from app.services.rag import chunker, prospectus_ingest_service
+from app.services.rag import chunker, hybrid_search, prospectus_ingest_service
 
-__all__ = ["chunker", "prospectus_ingest_service"]
+__all__ = ["chunker", "hybrid_search", "prospectus_ingest_service"]

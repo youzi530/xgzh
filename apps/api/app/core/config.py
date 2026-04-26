@@ -193,6 +193,51 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── BE-S2-005 混合检索 (vector + BM25 + RRF + reranker) ────────────
+    rag_vector_top_k: int = Field(
+        default=50,
+        description=(
+            "向量召回先取 N 条. RRF 融合的输入. 50 是 RRF 论文经验值: 太小召回降, "
+            "太大 reranker 阶段成本飙. HNSW + 1024-d 取 50 在毫秒级."
+        ),
+    )
+    rag_bm25_top_k: int = Field(
+        default=50,
+        description=(
+            "BM25 召回先取 N 条. 与 rag_vector_top_k 对称, RRF 融合两路对等. "
+            "PG GIN 索引 + ts_rank_cd 取 50 也在毫秒级."
+        ),
+    )
+    rag_rrf_k: int = Field(
+        default=60,
+        description=(
+            "RRF 融合的衰减常数. ``score = Σ 1/(rrf_k + rank)``, k=60 是 Cormack 2009 "
+            "原论文默认值, 行业事实标准. 越大越平滑 (rank 1 与 rank 50 差距小), "
+            "越小越突出头部 (但容易让两路前 1 名 overdominate)."
+        ),
+    )
+    rag_rerank_pool_size: int = Field(
+        default=20,
+        description=(
+            "送 bge-reranker-v2-m3 的候选池大小. RRF top N 进 rerank, rerank 后再取 "
+            "final_top_k. 20 是性价比拐点: 再大成本升而准确率收敛."
+        ),
+    )
+    rag_final_top_k: int = Field(
+        default=5,
+        description=(
+            "最终返回给 LLM / 调用方的 chunk 数. 5 是 spec/04 P0 KPI 'top5 引用源' 的对齐值; "
+            "BE-S2-007 LangGraph 主循环装 LLM context 时也按 5 段算 token 预算."
+        ),
+    )
+    rag_use_rerank: bool = Field(
+        default=True,
+        description=(
+            "是否走 reranker 二阶段. 关掉时 fallback 到 RRF 排序; 单测/CI 默认关 (不依赖 "
+            "SILICONFLOW_API_KEY); 生产开."
+        ),
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

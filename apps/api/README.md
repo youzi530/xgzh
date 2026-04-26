@@ -79,6 +79,14 @@ Schema（Alembic `0001_init` + `0002_chat` + `0003_chunks`，PG 14 + pgvector 0.
   - **dim 防污染**：embed 返回维度 ≠ `settings.llm_embedding_dim` 时 stage=embed 拒收，防 vector(1024) 索引被 512 维或异常维向量污染
   - **本 PR 不挂 scheduler**：招股书几十 MB × N 只新股，lifespan startup 自动跑会撑爆带宽 / 临时盘；改成手动入口给 Sprint 3 运营触发面板留口
   - 配置层 4 个新字段：`PDF_MAX_SIZE_MB`（50）/ `PDF_REQUEST_TIMEOUT_SECONDS`（60）/ `RAG_CHUNK_SIZE_TOKENS`（500）/ `RAG_CHUNK_OVERLAP_TOKENS`（50）；新依赖 `pypdf>=5.0`
+- Sprint 2 (BE-S2-005)：混合检索（vector + BM25 + RRF + bge-reranker）— Alembic 0004 给 `ipo_documents` 加 `tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', regexp_replace(text, E'([\\u4e00-\\u9fff])', E'\\\\1 ', 'g'))) STORED` + GIN 索引；新建 `app/services/rag/hybrid_search.py`
+  - **不上 zhparser**：装难（sudo make + scws 字典） + CI 跑不了 + 字典维护重；用 PG ``simple`` config + 中文字符级预切替代。**单一真相**：写入端 0004 migration 与查询端 `_cjk_presplit` 用同样正则 `[\u4e00-\u9fff]`，偏差 = 0
+  - **三阶段架构**：`hybrid_search(session, query, *, ipo_code, doc_type, lang, ...)` ❶ vector 召回 (HNSW cosine `embedding <=> CAST(:q AS vector)` ORDER ASC) ❷ BM25 召回 (`tsv @@ plainto_tsquery('simple', ...) ORDER BY ts_rank_cd DESC`) ❸ Reciprocal Rank Fusion (Cormack 2009, `score = Σ 1/(rrf_k + rank_i)`, k=60) ❹ bge-reranker-v2-m3 cross-encoder 二阶段精排
+  - **过滤推 SQL**：`ipo_code` / `doc_type` / `lang` / `embedding_dim = settings.llm_embedding_dim` 全在 WHERE，利用现有 `(ipo_code, doc_type)` btree 索引；多版本 embedding 隔离（将来 bge-m4 共存）
+  - **失败链路**：vector 失败 → 仅 BM25；BM25 失败 → 仅 vector；两路都失败 → 抛 `RuntimeError` (上层明确感知); rerank 失败 → fallback RRF 顺序；空 query / 全标点 query / dim mismatch 全有兜底
+  - **不在本 PR 做 query rewrite / HyDE / 语义缓存**：那些是 BE-S2-007 LangGraph 主循环里干（有 LLM context 才能改写）；本层只做单 query 检索原语
+  - **ORM 不反映 tsv 列**：generated column read-only，BM25 走 raw SQL；ORM INSERT 时字段不在映射 = 不会被写入 = PG 自动按生成表达式填值 = BE-S2-004 业务代码 0 改动
+  - 配置层 6 个新字段：`RAG_VECTOR_TOP_K=50` / `RAG_BM25_TOP_K=50` / `RAG_RRF_K=60` / `RAG_RERANK_POOL_SIZE=20` / `RAG_FINAL_TOP_K=5` / `RAG_USE_RERANK=true`
 
 缓存层（`app/cache/`）:
 
@@ -519,7 +527,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 306 passed in ~31s (Sprint 1 + BE-S2-001/002/003/000/004)
+# → 327 passed in ~30s (Sprint 1 + BE-S2-001/002/003/000/004/005)
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e

@@ -382,8 +382,9 @@ async def test_0003_downgrade_then_upgrade_is_idempotent(
             }
             assert new_cols.issubset(cols), f"head 状态缺新列: {new_cols - cols}"
 
-        # downgrade -1 → 回到 0002_chat
-        await asyncio.to_thread(command.downgrade, cfg, "-1")
+        # downgrade 到 0002_chat (BE-S2-005 加 0004 后 head 不再是 0003,
+        # 改用 revision 显式回退, 不走 -1 偏移)
+        await asyncio.to_thread(command.downgrade, cfg, "0002_chat")
 
         async with engine.connect() as conn:
             cols = {
@@ -445,3 +446,94 @@ async def test_0003_downgrade_then_upgrade_is_idempotent(
         assert new_indexes.issubset(idx), f"upgrade 后仍缺新索引: {new_indexes - idx}"
     finally:
         await engine.dispose()
+
+
+# ─── 7. BE-S2-005 0004 migration: tsvector generated col + GIN ────────────
+
+
+async def test_0004_added_tsvector_generated_column_and_gin_index(
+    db_engine: AsyncEngine,
+    truncate_all: None,  # noqa: ARG001
+) -> None:
+    """0004 给 ipo_documents 加了 tsv 生成列 + GIN 索引;
+    生成表达式包含 ``to_tsvector('simple', ...)`` 与中文字符级预切.
+    """
+    async with db_engine.connect() as conn:
+        # 1. tsv 列存在 + 是 tsvector 类型 + 是 generated stored
+        col_row = (
+            await conn.execute(
+                text(
+                    "SELECT data_type, is_generated, generation_expression "
+                    "FROM information_schema.columns "
+                    "WHERE table_name='ipo_documents' AND column_name='tsv'"
+                )
+            )
+        ).one_or_none()
+        assert col_row is not None, "0004 没加 tsv 列"
+        assert col_row.data_type == "tsvector"
+        assert col_row.is_generated == "ALWAYS"
+        # 生成表达式应含 to_tsvector('simple') + regexp_replace 预切
+        expr = col_row.generation_expression or ""
+        assert "to_tsvector" in expr.lower()
+        assert "simple" in expr.lower()
+        assert "regexp_replace" in expr.lower()
+
+        # 2. GIN 索引存在 + 索引在 tsv 上
+        idx_row = (
+            await conn.execute(
+                text(
+                    "SELECT indexdef FROM pg_indexes "
+                    "WHERE schemaname='public' AND tablename='ipo_documents' "
+                    "AND indexname='ix_ipo_documents_tsv'"
+                )
+            )
+        ).one_or_none()
+        assert idx_row is not None, "0004 没加 ix_ipo_documents_tsv"
+        assert "USING gin" in idx_row.indexdef
+        assert "(tsv)" in idx_row.indexdef
+
+
+async def test_0004_tsvector_indexes_chinese_chars_and_english_words(
+    db_engine: AsyncEngine,
+    truncate_all: None,  # noqa: ARG001
+) -> None:
+    """生成列在 INSERT 时自动算 tsv; 中文字符级 + 英文词级 BM25 都可用."""
+    async with db_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO ipo_documents "
+                "(doc_id, doc_type, ipo_code, text, content_hash) "
+                "VALUES (:d, 'prospectus', :ip, :t, :h)"
+            ),
+            {
+                "d": "test_0004_tsv",
+                "ip": "TEST.HK",
+                "t": "腾讯控股招股书 IPO subscription overview",
+                "h": hashlib.sha256(b"0004-tsv").hexdigest(),
+            },
+        )
+
+    # 中文字符级 BM25 命中
+    async with db_engine.connect() as conn:
+        hit_zh = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM ipo_documents "
+                    "WHERE doc_id='test_0004_tsv' "
+                    "AND tsv @@ plainto_tsquery('simple', '招 股')"
+                )
+            )
+        ).scalar_one()
+        assert hit_zh == 1, "中文字符级 BM25 召回失败"
+
+        # 英文词级 BM25 命中
+        hit_en = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM ipo_documents "
+                    "WHERE doc_id='test_0004_tsv' "
+                    "AND tsv @@ plainto_tsquery('simple', 'subscription')"
+                )
+            )
+        ).scalar_one()
+        assert hit_en == 1, "英文词级 BM25 召回失败"

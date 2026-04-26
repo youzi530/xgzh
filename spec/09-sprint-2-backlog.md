@@ -59,7 +59,7 @@
 | BE-S2-002 | adapter | LLM facade 重构（chat/embedding/rerank 三入口 + multi-provider）| 0.5d | — | P0 | ✅ |
 | BE-S2-003 | db | pgvector `ipo_documents` 扩展 + 防重 + Alembic 0003 | 0.5d | BE-S2-001 | P0 | ✅ |
 | BE-S2-004 | rag | 招股书 PDF 解析 + 语义切分 + 批量 Embedding 入库 | 1d | BE-S2-000, BE-S2-002, BE-S2-003 | P0 | ✅ |
-| BE-S2-005 | rag | 混合检索 + RRF 融合 + bge-reranker 重排 | 1d | BE-S2-003 | P0 | ⬜ |
+| BE-S2-005 | rag | 混合检索 + RRF 融合 + bge-reranker 重排 | 1d | BE-S2-003 | P0 | ✅ |
 | BE-S2-006a | agent | Tool 注册中心 + 2 个最简工具（basic_info / financial）| 1d | BE-S2-001 | P0 | ⬜ |
 | BE-S2-006b | agent | 余下 3 个 Tool（peers / sentiment_placeholder / historical）+ 沙盒 | 1d | BE-S2-006a | P0 | ⬜ |
 | BE-S2-007 | agent | LangGraph 主循环 + 引用源装配 + 合规端层 disclaimer | 1.5d | BE-S2-002, BE-S2-005, BE-S2-006b | P0 | ⬜ |
@@ -281,11 +281,11 @@ apps/api/tests/integration/test_chat_tables.py             # downgrade -1 → do
 
 | 候选 | 理由 |
 |------|------|
-| **BE-S2-005** (混合检索 + RRF + reranker, 1d) | BE-S2-004 已灌 chunks 进 `ipo_documents`，现在终于有真数据可以跑召回@5 / cosine ANN / RRF + reranker。RAG 主线最后一块拼图，跑通后端到端可问 IPO 了 |
-| BE-S2-006a (Tool 注册中心 + 2 工具, 1d) | 已可起；BE-S2-007 才真用 Tool Use，可与 BE-S2-005 并行（无依赖），但 RAG 主线优先级更高 |
-| BE-S2-007 (LangGraph 主循环, 1.5d) | 还差 BE-S2-005（hybrid_search 工具）+ BE-S2-006b（5 个 IPO 数据 Tool）才能起 |
+| **BE-S2-006a** (Tool 注册中心 + 2 个最简工具 basic_info / financial, 1d) | RAG 主线 BE-S2-000 ✅ → BE-S2-004 ✅ → BE-S2-005 ✅ 全部落地；现在切到 Tool Use 主线。BE-S2-006a 只依赖 BE-S2-001（chat_tool_calls 表），可立即起；BE-S2-007 LangGraph 主循环要先有 Tool 注册中心 + hybrid_search Tool 才能跑 ReAct 循环 |
+| BE-S2-006b (余下 3 Tool: peers / sentiment / historical, 1d) | 依赖 BE-S2-006a 的 Tool 注册基础设施 |
+| BE-S2-007 (LangGraph 主循环 + 引用源装配, 1.5d) | 三依赖齐: BE-S2-002 facade ✅ + BE-S2-005 hybrid_search ✅ + BE-S2-006b 5 Tool。BE-S2-005 已让 hybrid_search 直接可作为 Tool 注入 |
 
-→ **建议下一步走 BE-S2-005**（混合检索 + RRF + reranker；spec RAG 主线 BE-S2-000 ✅ → BE-S2-004 ✅ → **BE-S2-005** → BE-S2-006 → BE-S2-007。BE-S2-005 PR 内会落地：pgvector cosine 路径 + PG `tsvector` BM25 路径（含 0004 中文分词器迁移）+ RRF 融合 + bge-reranker-v2-m3 重排 + 评测脚手架的离线召回@5）
+→ **建议下一步走 BE-S2-006a**（Tool 注册中心 + 2 工具：spec RAG 主线 BE-S2-000 ✅ → BE-S2-004 ✅ → BE-S2-005 ✅ → **BE-S2-006a** → BE-S2-006b → BE-S2-007。BE-S2-006a PR 内会落地：`app/services/agent/tool_registry.py` 注册中心（OpenAI tool schema 协议）+ `basic_info` / `financial` 两个对接 BE-007 现有 IPO 表的最简工具 + 沙盒（超时 / 异常归一）+ 单测）
 
 ---
 
@@ -552,6 +552,94 @@ prospectus_ingest_service.run_ingest_prospectus(session, ipo_code, prospectus_ur
 1. `InvalidColumnReferenceError: no constraint matching` — 见决策 8，partial UNIQUE 的 `index_where` 必给
 2. `estimate_tokens` 纯 CJK 时多 +1 token — 公式 `cjk + max(1, other//4)` 在 `other_chars=0` 时强制 +1；改成 `other_chars > 0 才计 ceil(other_chars/4)`，且最小保底 1 token 走"纯 ASCII 短串"分支
 3. mypy `page_no` 重定义 — `_locate_chunk_page(chunk, ...)` 返回值变量名与上方 `for pno, page_text in extract_result.pages` 冲突；改 outer 循环变量为 `pno`
+
+---
+
+### BE-S2-005 实施成果（2026-04-26 落地）
+
+**改动文件**
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `apps/api/alembic/versions/0004_ipo_documents_fts.py` | 新建 90 行 | tsvector 生成列 + GIN 索引 (CJK 字符级预切 + simple config) |
+| `apps/api/app/services/rag/hybrid_search.py` | 新建 380 行 | `hybrid_search` 主入口 + RRF 融合 + rerank fallback + SearchResult / HybridSearchOutput |
+| `apps/api/app/services/rag/__init__.py` | +1 export | 暴露 `hybrid_search` 子模块 |
+| `apps/api/app/core/config.py` | +6 字段 | `rag_vector_top_k` / `rag_bm25_top_k` / `rag_rrf_k` / `rag_rerank_pool_size` / `rag_final_top_k` / `rag_use_rerank` |
+| `apps/api/.env.example` | 同步 | 上述 6 字段示例 |
+| `apps/api/tests/test_hybrid_search.py` | 新建 19 测 | CJK 预切 + RRF 单元 + 6 大 DB 集成场景 |
+| `apps/api/tests/integration/test_document_chunks_schema.py` | +2 测 / 修 1 测 | 0004 生成列 + GIN 检查 + tsv BM25 召回 + downgrade 适配多 head |
+| `spec/09-sprint-2-backlog.md` | 状态 + 实施成果 | 记录 BE-S2-005 落地 |
+| `README.md / apps/api/README.md` | 同步 | README 更新 |
+
+**三阶段架构（vector + BM25 + RRF + rerank）**
+
+```
+hybrid_search(session, query, *, ipo_code, doc_type, lang,
+              vector_top_k=50, bm25_top_k=50, rrf_k=60,
+              rerank_pool=20, final_top_k=5, use_rerank=True,
+              query_embedding?=None, settings?=None)
+  │
+  ├─[stage A vector]→ embed(query) [可注入 query_embedding]
+  │                   → SQL: embedding <=> CAST(:q_emb AS vector)
+  │                          ORDER BY <=> ASC LIMIT :vector_top_k
+  │                          (HNSW cosine / WHERE embedding IS NOT NULL
+  │                           AND embedding_dim = :emb_dim AND filters)
+  │                   → list[row]; 失败 → vector_failed=True 并仅走 BM25
+  │
+  ├─[stage B bm25]→ _cjk_presplit(query) → plainto_tsquery('simple', ...)
+  │                 → SQL: tsv @@ plainto_tsquery('simple', :q_text)
+  │                        ORDER BY ts_rank_cd DESC LIMIT :bm25_top_k
+  │                        (GIN tsv / 同样 filters)
+  │                 → list[row]; query 全标点 → 跳 BM25; 失败 → bm25_failed=True
+  │
+  ├─[stage C RRF]→ score(d) = Σ 1/(rrf_k + rank_i(d))  for i in {vec, bm25}
+  │                融合 unique chunk_id → 注入 rrf_score / vector_rank / bm25_rank
+  │                → 按 rrf_score DESC + chunk_id ASC 稳定排序
+  │
+  └─[stage D rerank]→ POST /v1/rerank (query, top rerank_pool docs)
+                      → 重排 top_n=final_top_k → 返回 (orig_idx, score)
+                      → 失败 → logger.warning + fallback 走 RRF 顺序
+                      (use_rerank=False 直接跳过, 单测 / CI 默认走这条)
+```
+
+**关键设计决策（提前定）**
+
+1. **不上 zhparser**：装难（sudo make + scws 字典）+ CI 跑不了 + 字典维护重；用 PG ``simple`` config + 中文字符级预切替代。**单一真相**：写入端 0004 migration 用 `regexp_replace(text, E'([\u4e00-\u9fff])', E'\\1 ', 'g')` 生成 tsv，查询端 `_cjk_presplit` 用同样正则。两边偏差 = 0
+2. **CJK 字符级 BM25 baseline 召回率高 / 精度低**：刚好对位 RRF + cross-encoder rerank 二阶段 —— 让向量 + reranker 把精度补回来，用 BM25 兜召回。spec/04 §核心壁垒"混合检索"原始设计意图就是这样
+3. **Vector / BM25 SQL 分别打**（不走 UNION ALL）：HNSW 与 GIN 走各自 planner 计划，不互相干扰；应用层做 RRF 也方便 mock + 单测
+4. **rrf_k=60 锁定 Cormack 2009 经验值**：这是 IR 领域事实标准；越大平滑（rank 1 vs rank 50 差距小），越小突出头部（容易被两路前 1 名 overdominate）
+5. **Pool size 锁 20 不锁 50**：rerank 是 cross-encoder（双输入过 Transformer），成本是 embedding 的 50-100x；20 是性价比拐点。final_top_k=5 对齐 spec/04 P0 KPI "top5 引用源"
+6. **rerank 失败 → fallback RRF**：硅基流动 quota / 网络抖动不让整条链路断；CI 默认 `rag_use_rerank=False` 也走这条，省 API key 调用
+7. **embedding 维度强校验**：`WHERE embedding_dim = :emb_dim` 推 SQL，把多版本 embedding（将来 bge-m4 共存）默认隔离；query embedding 维度 ≠ settings 时直接 vector_failed → BM25 兜底
+8. **过滤推 SQL（不走应用层）**：`ipo_code` / `doc_type` / `lang` 全在 WHERE，利用现有 `(ipo_code, doc_type)` btree 索引；应用层只负责 RRF 融合 + rerank
+9. **不在本 PR 做 query rewrite / HyDE**：那些是 BE-S2-007 LangGraph 主循环里干（有 LLM context 才能改写）；本层只做单 query 检索原语
+10. **不在本 PR 做语义缓存**：检索 query 命中率低，加缓存收益小；BE-S2-007 LangGraph 轮内 cache 已够用
+11. **ORM 不反映 tsv 列**：generated column read-only，BM25 走 raw SQL；ORM INSERT 时字段不在映射里 = 不会被写入 = PG 自动按生成表达式填值 = 业务代码 0 改动
+12. **session 不做事务管理**：read-only path，调用方决定 session 生命周期，方便测试 + 上层批量 search 复用同一 session
+
+**测试矩阵（21 条新增 = 19 hybrid_search + 2 schema）**
+
+| 测试文件 | 用例数 | 覆盖 |
+|---------|-------|------|
+| `tests/test_hybrid_search.py` | 19 | `_cjk_presplit` 4 + `_rrf_fuse` 3 + DB 集成 12（vector-only / bm25-only / RRF 融合 / ipo_code 过滤 / doc_type 过滤 / rerank reorder / rerank fail fallback / 空 query / whitespace / dim mismatch fallback / 全标点 query / final_top_k 截断）|
+| `tests/integration/test_document_chunks_schema.py` | +2 | 0004 schema (tsv generated ALWAYS / 含 to_tsvector simple + regexp_replace 表达式 / GIN 索引在 tsv 上) + tsv BM25 中英双语真实召回 |
+
+**实施成果（2026-04-26 落地）**
+
+| 维度 | Before BE-S2-005 | After BE-S2-005 |
+|------|------|------|
+| pytest | 306 passed | **327 passed** (+21) |
+| ruff | 46 errors | 46 errors（持平，BE-S2-005 触动文件 0 增量） |
+| mypy | 23 errors | 23 errors（持平，BE-S2-005 0 增量） |
+| 新建文件 | — | `0004_ipo_documents_fts.py` 90 行 + `hybrid_search.py` 380 行 + 1 个 19 测试文件 + 1 个补 2 测试 |
+| 配置项 | 39 字段 | 45 字段（+6 RAG 检索参数） |
+| Alembic head | 0003_chunks | **0004_fts** |
+
+**关键 bug & 修复（PR 内自查发现）**
+
+1. **`test_0003_downgrade_then_upgrade_is_idempotent` 退到错版本** — 原 `command.downgrade(cfg, "-1")` 当 head=0003 时回 0002（无 RAG 列）；现 head=0004 后 `-1` 只回 0003（仍有 RAG 列）→ assert 失败。改成 `command.downgrade(cfg, "0002_chat")`，显式 revision 不再依赖 `head - 1` 偏移，未来 0005/0006 加进来也不需再改
+2. **`SIM108` ternary 简化** — `_seed_chunk` 的 `emb_param` 初始化 if/else 换三元表达式
+3. **`F401` 未用 import** — `tests/test_hybrid_search.py` 删 `from app.adapters import llm_client`（已经从子路径单独 import）
 
 ---
 
