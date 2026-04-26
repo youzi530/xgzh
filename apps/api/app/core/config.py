@@ -238,6 +238,35 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── BE-S2-007 ReAct 主循环 ────────────────────────────────────────
+    agent_max_steps: int = Field(
+        default=5,
+        description=(
+            "ReAct 主循环的最大步数 (含 tool 调用步 + 最终回答步). spec/04 §3.2 给的"
+            "经验值 5; 防 LLM tool_call 死循环耗 token. 用户在请求里可覆盖, 但不能超过 10."
+        ),
+    )
+    agent_max_tool_calls_per_step: int = Field(
+        default=4,
+        description=(
+            "单步 LLM 一次允许并行调几个 tool. 4 是 OpenAI tool_choice 主流默认 + 留点空间. "
+            "超过则截断 + logger.warning, 防恶意 prompt 引发的工具放大攻击."
+        ),
+    )
+    agent_decision_temperature: float = Field(
+        default=0.0,
+        description=(
+            "ReAct 决策步 (LLM 选 tool / 写最终回答) 的 temperature. 0 = 决策性强 + tool "
+            "name 拼写不漂. 流式输出仍走 settings.llm_chat_default_temperature 让回答自然."
+        ),
+    )
+    agent_max_tokens_per_step: int = Field(
+        default=1500,
+        description=(
+            "单步 LLM 输出 token 上限. 1500 ~ 4500 中文字, 够最终回答 5 维度展开."
+        ),
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

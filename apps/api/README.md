@@ -543,7 +543,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 411 passed in ~35s (Sprint 1 + BE-S2-001/002/003/000/004/005/006a/006b · 6 Tool 全数注册到位)
+# → 465 passed in ~35s (Sprint 1 + BE-S2-001/002/003/000/004/005/006a/006b/007 · ReAct Agent 主循环 + 引用源装配 + SSE 端层全数到位)
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e

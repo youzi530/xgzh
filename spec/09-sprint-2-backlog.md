@@ -62,7 +62,7 @@
 | BE-S2-005 | rag | 混合检索 + RRF 融合 + bge-reranker 重排 | 1d | BE-S2-003 | P0 | ✅ |
 | BE-S2-006a | agent | Tool 注册中心 + 2 个最简工具（basic_info / financial）| 1d | BE-S2-001 | P0 | ✅ |
 | BE-S2-006b | agent | 余下 3 个 Tool（peers / sentiment_placeholder / historical）+ hybrid_search Tool 化 | 1d | BE-S2-006a | P0 | ✅ |
-| BE-S2-007 | agent | LangGraph 主循环 + 引用源装配 + 合规端层 disclaimer | 1.5d | BE-S2-002, BE-S2-005, BE-S2-006b | P0 | ⬜ |
+| BE-S2-007 | agent | LangGraph 主循环 + 引用源装配 + 合规端层 disclaimer | 1.5d | BE-S2-002, BE-S2-005, BE-S2-006b | P0 | ✅ |
 | BE-S2-008 | quota | Agent 配额管理（免费 5/天 + VIP 无限 + 滑动窗口）| 0.5d | BE-S2-007 | P0 | ⬜ |
 | BE-S2-009 | eval | 评测集 80 条 + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）| 1d | BE-S2-007 | P0 | ⬜ |
 
@@ -840,6 +840,121 @@ peers.py           historical.py       hybrid_search.py
 2. **`IPO.code.notin_(set | True)` mypy 不通过** — set 可能为空时短路 `True` 不是 `ColumnElement`；analyze 后 set 至少含 target code 不会空，直接去掉短路
 3. **mypy 推断 `binds` 元素类型** — 第一个 `bindparam(type_=String())` 让 binds 被推为 `list[BindParameter[str]]`，后续 append `Integer` 时类型不兼容；显式 `binds: list[Any] = []` 解决
 4. **集成测试 fixture 调用 `get_session_factory()` 拉到生产 DSN** — peers / historical / hybrid_search 三个 Tool module import 时把 `get_session_factory` 拷到自己 namespace 了；patch `app.db.base` 不影响子 module 的 local 引用；统一在 `tests/integration/conftest.py::patch_session_factory` 的 targets 列表追加这 3 个新模块（与 BE-S2-006a `ipo_service_mod` 同思路）
+
+### BE-S2-007 实施成果（2026-04-26 落地）
+
+**改动文件**
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `apps/api/app/core/config.py` | 修改 | 追加 4 个 Agent 主循环配置：`agent_max_steps=5` / `agent_max_tool_calls_per_step=4` / `agent_decision_temperature=0.0` / `agent_max_tokens_per_step=1500`（防 LLM tool_call 死循环 + tool 放大攻击 + 决策步零温度） |
+| `apps/api/app/services/agent/citation.py` | 新建 165 行 | `Citation` / `CitationBundle` dataclass + `build_citations`（chunk_id 去重 + 1-based [n] 编号 + 200 字 snippet 截断 + score float cast） + `validate_citations_in_text`（剔除越界 [n] 占位）+ `assemble` 入口 |
+| `apps/api/app/schemas/chat.py` | 新建 105 行 | `ChatDiagnoseRequest` 入参（query / session_id / ipo_code / temperature override）+ 6 个 SSE 事件 payload schema（Start / Delta / ToolCall / Sources / End / Error）+ `ChatCitation` / `ChatTokenUsageDTO` 复用 DTO |
+| `apps/api/app/services/agent/system_prompt.py` | 新建 95 行 | `build_system_prompt(ipo_code=...)`：静态 9 条合规红线（CRS 中性 / 无强行投资建议 / 引用必须来自 [n] / 数据缺失明示）+ 动态嵌入 `tool_registry.list_all()` 的 6 个 tool 描述 + 可选会话锚点 IPO code |
+| `apps/api/app/services/agent/persistence.py` | 新建 250 行 | 4 张表的薄包装：`get_or_create_session`（resume / new + 64 字 title 截断 + bogus session_id 兜底新建）+ `insert_user/assistant/tool_role_message` + `insert_tool_call_pending` + `finalize_tool_call`（4KB error_message 截断 + status ok/error 流转 + latency 写回）+ `insert_token_usage`（Decimal 成本透传）+ `session_history_to_messages` （tool role 不回放给 LLM） |
+| `apps/api/app/services/agent/graph.py` | 新建 410 行 | ReAct 主循环：`StartedEvent` / `TokenDeltaEvent` / `ToolCallEvent` / `FinalAnswerEvent` / `StepErrorEvent` 5 类事件；`run()` async 生成器 N 步循环（plan: `astream_chat_with_meta` 流式拉 delta + tool_calls + usage; act: `_dispatch_tool_calls` 并行 sandbox 调 tool 并落 `chat_tool_calls`; reflect: tool result 喂回 LLM 再循环）；`forbidden_pattern_filter` + `ensure_disclaimer` 收尾；token usage 聚合后 `insert_token_usage`；buffered delta 仅在终步无 tool_call 时回放（中间步 thought 直接丢） |
+| `apps/api/app/api/v1/chat.py` | 新建 195 行 | `POST /v1/chat/diagnose` SSE 端层：解析 `ChatDiagnoseRequest` + `get_optional_user`（匿名也可调）+ `get_or_create_session` + `insert_user_message` → `agent_graph.run()` 流转 → `_sse(event_type, payload)` 把 5 类 `AgentEvent` 翻译成 SSE event/data 帧 + 引用源装配后单帧 `sources` 事件 + 每个回答末尾自动 append DISCLAIMER + 错误分支不忘 commit 审计行（事务管理 + try/except + finally rollback） |
+| `apps/api/app/api/v1/__init__.py` | 修改 | 注册新路由 `chat.router` |
+| `apps/api/tests/test_agent_citation.py` | 新建 14 测 | build_citations 顺序+去重+空 chunk_id 跳过+score float cast+长 snippet 截断+短 snippet 不带省略号 / validate 保留有效 [n] / 剔除越界 / 空文本 / 无 [n] 直通 / 全部越界全剔 / assemble happy / assemble 空 / Citation.to_dict 字段集 |
+| `apps/api/tests/test_agent_system_prompt.py` | 新建 5 测 | 红线全在 / 注册 tool 全在 / IPO 锚点段落 / 无 IPO 锚点段落不在 / [n] 引用约定 |
+| `apps/api/tests/test_agent_graph.py` | 新建 18 测 | `_result_preview` None / 长字符串 / list+dict 压缩 / dict 大量 key 截断；`_serialize_tool_result_for_llm` ok / failure / 不可序列化 fallback；`_aggregate_usage` 空 / 累加；`_resolve_provider` siliconflow / deepseek_native / zhipu / unknown→siliconflow；5 个 AgentEvent dataclass frozen 形状 |
+| `apps/api/tests/integration/test_agent_persistence.py` | 新建 12 测 | 新建会话 / resume 现有 / 64 字截断 / bogus session_id 兜底新建 / user+assistant 落表 / tool role openai_tool_call_id 留存 / list_session_messages 时序 / session_history_to_messages 跳过 tool role / pending→ok 流转 / 4KB error_message 截断 / Decimal cost 透传 / 级联删除 chat_session 清子表 |
+| `apps/api/tests/integration/test_chat_diagnose.py` | 新建 5 测 | 无 tool 直接终答 happy / `get_ipo_basic_info` tool call → 终答 / `LLMProviderError` 友好 SSE error / 续聊 history 注入 / `hybrid_search` tool 调用后引用源装配落帧 |
+| `spec/09-sprint-2-backlog.md` | 状态 + 实施成果 + 下一步 | 记录 BE-S2-007 落地, 下一步指向 BE-S2-008 |
+
+**架构（Tool Use 第 4 层 - ReAct 主循环）**
+
+```
+                                   POST /v1/chat/diagnose (SSE)
+                                          │
+                  ┌───────────────────────┴────────────────────────┐
+                  │                                                │
+              端层 chat.py                                  agent_graph.run()
+              ─────────────                                 ─────────────────
+                  │
+   ┌──────────────┼──────────────┐
+   │              │              │
+   ▼              ▼              ▼
+get_optional   persistence.    _sse(event,
+_user (匿       get_or_create  payload) → SSE
+名也可调)        _session       帧装配
+                                                   ┌────────────────────────────┐
+                                                   │  ReAct N 步 (max=5)         │
+                                                   │  ┌──────────────────────┐  │
+                                                   │  │ plan:                │  │
+                                                   │  │  astream_chat_with   │  │
+                                                   │  │  _meta + tools schema│  │
+                                                   │  │  → delta / tool_calls│  │
+                                                   │  │   / usage            │  │
+                                                   │  └────────┬─────────────┘  │
+                                                   │           │                │
+                                                   │  has tool_calls?           │
+                                                   │     │           │          │
+                                                   │     ▼ yes       ▼ no       │
+                                                   │  act: parallel  yield      │
+                                                   │  sandbox 调 tool buffered  │
+                                                   │  → ToolResult   delta      │
+                                                   │  → tool role    + Final    │
+                                                   │  msg 喂回 LLM   AnswerEvent│
+                                                   │     │                      │
+                                                   │     └─→ 下一步              │
+                                                   └────────────────────────────┘
+                                                              │
+                                                              ▼
+                                          insert_token_usage + ensure_disclaimer
+                                                              │
+                                                              ▼
+                                          assemble citations from hybrid_search
+                                                              │
+                                                              ▼
+                                       SSE: start → delta* → tool_call* → sources → end
+```
+
+**关键设计决策**
+
+1. **不引 LangGraph 库, 自实现 ReAct 主循环**：spec/04 §3.2 给的"plan / act / reflect"3 节点是固定 graph 不会变, LangGraph 的 StateGraph + Channel 抽象对当前需求是过度工程；自实现 410 行 `graph.py` 反而看得清主循环边界 + 不引入二级依赖。后期需要分支决策（如 router pattern）再切 LangGraph，接口不变
+2. **buffered delta + 终步回放**：ReAct 主循环里 LLM 中间步 plan 可能也输出文字（"我先查一下基本面..."），但这是 LLM 内部 reasoning, 不该流到用户 UI。改成全程 buffer delta, 只在该步无 tool_calls（即"终步"）时回放为 `TokenDeltaEvent`；中间步直接丢, 让前端只看到"工具调用 + 最终回答"的清爽流
+3. **DB 事务边界放在端层**：`AsyncSession` 在 `chat.py::chat_diagnose` 起, 一路传给 `agent_graph.run` → `persistence.*`；整次请求（用户 msg + N 步 LLM + N 个 tool_call + 终步 assistant + N 条 token_usage）= 1 个事务。错误分支也走 `try/except` 把已经 emit 的审计行 commit 掉（运维查问题需要看到"在哪一步炸的"）
+4. **tool result 序列化在 graph 层做**：`_serialize_tool_result_for_llm` 把 `ToolResult.data` json.dumps（fallback 到 str repr）；不在 Tool sandbox 内做, 因为 sandbox 不需要知道 LLM 协议；所有"喂回 LLM 的字符串"集中在 graph.py 一处, 改成 yaml / xml format 时只动一行
+5. **citation 只对 `hybrid_search` 工具结果做**：spec/04 §3.3 C 项严格要求"引用必须来自检索结果", 其他 tool 返回的是结构化数据（PE / 同业 ROE / 招股书页码）走 LLM 自然语言提及；citation pipeline 只扫 graph 全部步里 `hybrid_search` 的 result, 装成 1-based 数组喂 SSE `sources` 帧
+6. **匿名也可调 `/v1/chat/diagnose`**：依赖 `get_optional_user`（不强制 JWT）, 让"未注册用户"也能 trial 一轮（BE-S2-008 配额会再加"匿名 = IP 限流 / 注册 = 用户限流"分支）；匿名时 `chat_session.user_id=NULL`, 续聊靠 session_id 维持
+7. **system prompt 分两段**：静态 `_BASE`（9 条合规红线 + 输出格式 + 引用约定）+ 动态 `_format_tool_catalog()`（注册中心 list_all 转人类可读）；新加 Tool 自动出现在 prompt 里, 不用手动同步两处
+8. **DISCLAIMER 自动追加**：`ensure_disclaimer` 在终步 LLM 输出后做"未带 DISCLAIMER 字符串就 append"；不靠 LLM 自己加（LLM 偶尔会忘 + 偶尔会篡改），端层硬上一道闸门
+9. **`forbidden_pattern_filter` 端层兜底**：哪怕 system prompt + LLM 双层都失守, 端层走完整字符串过滤"必涨 / 稳赚 / 内部消息"等违规词 → 替换为 ★, 再 SSE 出去；与 BE-S2-002 LLM facade `forbidden_pattern_filter` 共用同一份正则词表
+10. **`bogus session_id` 不抛 404 而兜底新建**：客户端可能本地缓存了过期的 session_id（DB 已被运营清理）, 强 404 会让用户体验差；改成"找不到就静默新建"+ 返回真 session_id 给前端覆写本地缓存。同侧, title 64 字符截断 + error_message 4KB 截断都是防 LLM 输出超长撑爆列宽
+11. **SSE 帧最简且自描述**：每帧 `event:` + `data:` 双行, payload 严格按 `ChatStartPayload` / `ChatDeltaPayload` / ... 6 个 schema；前端解析时按 `event` 字段 dispatch 不用脑补 union 类型
+
+**测试矩阵（54 条新增, 累计 465 passed）**
+
+| 测试文件 | 用例数 | 覆盖 |
+|---------|-------|------|
+| `tests/test_agent_citation.py` | 14 | build_citations 顺序 / chunk_id 去重 / 空 chunk_id 跳过 / score float cast / 长 snippet 截断 / 短文本不带省略号 / validate 保留有效 / 剔除越界 / 空文本 / 无 [n] 直通 / 全越界 / assemble happy / 无结果 assemble / Citation.to_dict 字段集 |
+| `tests/test_agent_system_prompt.py` | 5 | 红线全在 / 注册 tool 全在 / IPO 锚点段落 / 无 IPO 锚点段落不在 / [n] 引用约定 |
+| `tests/test_agent_graph.py` | 18 | _result_preview 4 形 / _serialize_tool_result_for_llm 3 形 / _aggregate_usage 2 形 / _resolve_provider 4 形 / 5 AgentEvent dataclass frozen 形 |
+| `tests/integration/test_agent_persistence.py` | 12 | session 新建 / resume / title 截断 / bogus 兜底 / user+assistant 落表 / tool role openai_tool_call_id 留存 / 时序 / session_history 跳 tool role / pending→ok / 4KB error 截断 / Decimal cost / 级联删 |
+| `tests/integration/test_chat_diagnose.py` | 5 | 无 tool 直接终答 / get_ipo_basic_info tool call → 终答 / LLMProviderError 友好 SSE / 续聊 history 注入 / hybrid_search → 引用源装配 |
+
+**实施成果（2026-04-26 落地）**
+
+| 维度 | Before BE-S2-007 | After BE-S2-007 |
+|------|------|------|
+| pytest | 411 passed | **465 passed** (+54) |
+| ruff | 44 errors | 44 errors（持平 / B008 在 chat.py 复刻全项目 FastAPI 路由风格债） |
+| mypy | 23 errors | 23 errors（持平，BE-S2-007 触动文件 0 增量） |
+| 新建文件 | — | `services/agent/citation.py` + `services/agent/system_prompt.py` + `services/agent/persistence.py` + `services/agent/graph.py` + `schemas/chat.py` + `api/v1/chat.py` 6 src 文件 + 5 测试文件 |
+| 已注册 Tool 数 | 6 | 6（BE-S2-007 不动 Tool 层） |
+| Alembic head | 0004_fts | 0004_fts（BE-S2-007 不动 schema） |
+| API 路由数 | — | +1 (`POST /v1/chat/diagnose` SSE) |
+
+**关键 bug & 修复（PR 内自查发现）**
+
+1. **SSE 帧分隔符 `\r\n\r\n` 而非 `\n\n`** — `sse_starlette` 实际写出的是 `\r\n` 行尾（HTTP 标准），`\r\n\r\n` 块分隔；测试 `_parse_sse` 工具按 `\n\n` 分会拿到一个大块。改成"先 normalize `\r\n` → `\n` 再 split `\n\n`"，前端 EventSource 浏览器侧自带兼容不需改
+2. **buffered delta 在中间步丢失** — 初版 `graph.py` 走"先 yield delta 再判断有无 tool_calls"流程, 结果中间步 plan 的"我先查一下..."文字会泄漏到用户 UI；改成"先全程 buffer, 终步统一回放"模式（即"middle-step thought = silent" 的 ReAct 经典约定）
+3. **`session_history_to_messages` 不能把 tool role 喂回 LLM** — OpenAI tool role message 必须紧跟 assistant tool_call 后面（有 `tool_call_id` 配对）, 续聊时单独再喂会触发 400。`session_history_to_messages` 显式过滤 role=tool（保留 user / assistant）
+4. **Decimal `cost_cny=0` 不能 None** — `chat_token_usage.cost_cny` NOT NULL；价格表 fallback 时 `_PRICE_CNY_PER_M_TOKENS.get(model, Decimal('0'))` 必须返回 `Decimal('0')` 不是 None；BE-S2-002 facade 已经做了这一层, BE-S2-007 直接复用 `TokenUsage.cost_cny: Decimal`
+5. **`bogus session_id` 抛 NoResultFound** — 用户客户端可能本地缓存了过期 session, `select(...).one()` 直接 NoResultFound 撑爆 SSE 流；改成 `select(...).one_or_none()` + None 时 fallthrough 走"新建"路径
+
+→ **建议下一步走 BE-S2-008**（Agent 配额管理：spec Agent 主线 BE-S2-007 ✅ → **BE-S2-008** → FE-S2-001。BE-S2-008 PR 内会落地：`app/services/agent/quota.py`（用户日额度 5/天 / VIP 无限 / 滑动窗口 + 匿名 IP 限流）+ `app/api/v1/chat.py`（POST /v1/chat/diagnose SSE 端层入口前置校验, 超额返回 429 + 升级引导 payload）+ tests）
 
 ## ✅ Sprint 2 完成后的产出物
 
