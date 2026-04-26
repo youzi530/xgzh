@@ -58,6 +58,21 @@ class Settings(BaseSettings):
     otp_resend_interval_seconds: int = Field(
         default=60, description="同手机号重发间隔 (rate_limit 用)"
     )
+    otp_verify_max_attempts: int = Field(
+        default=5, description="同手机号 OTP 校验最大尝试次数 (滑动窗 = otp_ttl)"
+    )
+
+    jwt_secret: str = Field(
+        default="dev-only-do-not-use-in-prod-please-set-JWT_SECRET",
+        description="HS256 密钥. 生产环境必须从 .env 注入 ≥ 32 字节随机串.",
+    )
+    jwt_algorithm: str = Field(default="HS256")
+    jwt_issuer: str = Field(default="xgzh-api")
+    jwt_audience: str = Field(default="xgzh-mp")
+    jwt_access_ttl_seconds: int = Field(default=30 * 60, description="access token 30min")
+    jwt_refresh_ttl_seconds: int = Field(
+        default=30 * 24 * 3600, description="refresh token 30 天"
+    )
 
     free_agent_daily_limit: int = Field(default=5)
 

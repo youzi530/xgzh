@@ -12,10 +12,11 @@
   - ✅ **INFRA-001**：Alembic + 7 张表 + pgvector(1024)
   - ✅ **INFRA-002**：Redis cache 封装（`@cached` / `@rate_limit` Lua 原子 + InMemory fake）
   - ✅ **BE-001**：手机号 OTP 发送（`POST /api/v1/auth/otp/send`，Mock SMS + 60s 限流 + Redis 落库）
-  - 进行中：BE-002 (OTP 校验 + JWT 颁发)
+  - ✅ **BE-002**：OTP 校验 + 注册/登录 + JWT 颁发（`POST /api/v1/auth/login/phone`，HS256 access 30min + refresh 30d，verify 5/5min 限流）
+  - 进行中：BE-003 (`current_user` 依赖 + `GET /me`)
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 55 passed / 3 skipped
-  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 58 passed
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 65 passed / 14 skipped
+  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 79 passed
 
 ## 📖 设计文档
 

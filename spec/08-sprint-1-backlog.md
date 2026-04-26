@@ -18,7 +18,7 @@
 | INFRA-001 ✅ | infra | PostgreSQL 初始 schema（Alembic + pgvector） | 0.5d | - | P0 |
 | INFRA-002 ✅ | infra | Redis cache 封装 + 限流装饰器 | 0.5d | - | P0 |
 | BE-001 ✅ | backend | User 模型 + phone OTP 发送（dev 走 mock 短信） | 0.5d | INFRA-001, INFRA-002 | P0 |
-| BE-002 | backend | OTP 校验 + 注册/登录 + JWT 颁发 | 0.5d | BE-001 | P0 |
+| BE-002 ✅ | backend | OTP 校验 + 注册/登录 + JWT 颁发 | 0.5d | BE-001 | P0 |
 | BE-003 | backend | JWT 中间件 + `current_user` 依赖 | 0.5d | BE-002 | P0 |
 | BE-004 | backend | Refresh token + 黑名单 | 0.5d | BE-003 | P0 |
 | BE-005 | backend | 微信小程序登录（code → openid → unionid → 绑定） | 1d | BE-002 | P0 |
@@ -191,32 +191,59 @@ redis-cli get  'xgzh:rate:otp_send:phone:+8613800138000'  # 1
 
 ---
 
-### BE-002 · OTP 校验 + 注册/登录 + JWT
+### BE-002 · OTP 校验 + 注册/登录 + JWT ✅ DONE
 
-**改动文件**
-- `apps/api/app/api/v1/auth.py`（`POST /auth/login/phone`）
-- `apps/api/app/services/auth_service.py`（OTP verify + 自动注册）
-- `apps/api/app/security/jwt.py`（`create_access_token`, `create_refresh_token`）
-- `apps/api/app/schemas/auth.py`
-- `apps/api/tests/test_auth_login.py`
+**目标**：实现 `POST /api/v1/auth/login/phone`，OTP 一次性消费 + 自动注册 + 颁发 access/refresh 双 token。
+
+**改动文件**（已实装）
+- `apps/api/app/security/`（新目录）
+  - `jwt.py`：`create_access_token` / `create_refresh_token` / `decode_token`，HS256，强制校验 `iss/aud/sub/typ/jti/iat/exp`，过期单独抛 `TokenExpiredError`
+  - `__init__.py`：导出 `ACCESS_TOKEN_TYPE` / `REFRESH_TOKEN_TYPE` / `*Payload` / 异常等
+- `apps/api/app/services/auth_service.py`（新）：
+  - `verify_phone_login` 编排（OTP 常量时间比较 → consume → find_or_create_user → touch last_active → 颁发双 token）
+  - `find_or_create_user_by_phone`、`_create_user_with_phone` 含 invite_code 冲突重试 + phone 并发注册降级
+- `apps/api/app/services/user_service.py`：BE-001 已加的 `find_user_by_phone` 直接复用
+- `apps/api/app/schemas/auth.py`：`PhoneLoginRequest` / `TokenPair` / `UserPublic` / `LoginResponse`
+- `apps/api/app/api/v1/auth.py`：`POST /auth/login/phone`，`@rate_limit(5, 300, namespace="otp_verify")`
+- `apps/api/app/core/config.py` + `.env(.example)`：加 `JWT_SECRET` / `JWT_ALGORITHM` / `JWT_ISSUER` / `JWT_AUDIENCE` / `JWT_ACCESS_TTL_SECONDS` / `JWT_REFRESH_TTL_SECONDS` / `OTP_VERIFY_MAX_ATTEMPTS`
+- `apps/api/pyproject.toml`：加 `pyjwt>=2.8.0`
+- `apps/api/tests/test_auth_login.py`（新，11 用例，依赖 PG）：新用户 / 老用户 / 错码 / 过期 / 一次性 / 错码不消费 / 限流 / token 可解 / typ 隔离
+- `apps/api/tests/test_jwt.py`（新，10 用例，纯单元）：签名 / aud / iss / typ / 过期 / 篡改 / sub UUID / jti 唯一
 
 **AC**
-- [ ] `POST /auth/login/phone {phone, code}`：OTP 正确就返回 `{access_token, refresh_token, user}`
-- [ ] 用户不存在则自动注册（写入 users 表）
-- [ ] OTP 一次有效，校验后立即从 Redis 删除（防重放）
-- [ ] access_token 30min / refresh_token 30 天，HS256，secret 来自 `.env`
-- [ ] 单测：新用户登录、老用户登录、错误 OTP、过期 OTP
+- [x] `POST /auth/login/phone {phone, code}` 正确时返回 `{user, tokens, is_new_user}`
+- [x] 用户不存在则自动注册（写 `users.phone`、`invite_code`、`status=1`、`region=CN`、`last_active_at`）
+- [x] OTP 一次有效（成功登录后立刻 `consume_otp`，错码不消费让用户在 5/5min 限流内可重试）
+- [x] access 30min / refresh 30 天，HS256，secret 来自 `.env`；带 `iss/aud/typ/jti`，typ 严格隔离
+- [x] OTP 校验用 `hmac.compare_digest` 常量时间比较，避免侧信道
+- [x] verify 限流：5 次/5min，与 send 限流分桶（`namespace="otp_verify"` vs `"otp_send"`）
+- [x] 错误码：`401 otp_invalid` / `401 otp_expired` / `400 invalid_phone` / `429 too_many_requests`
+- [x] 单测覆盖：11 端到端 + 10 纯 JWT 单元，全套 79/79 PASS（含 PG）
 
-**Cursor Prompt**
+**关键设计决策**
+1. **OTP 错码不消费**：用户输错码不应让 OTP 立刻失效（否则用户得等 60s 重发限流），但错码会计入 verify 限流计数。
+2. **invite_code 冲突重试**：8 字符 (大写+数字) 空间足够大，但仍 5 次重试兜底；phone 唯一约束冲突时降级为 fetch（处理并发注册）。
+3. **JWT typ 隔离**：access / refresh 在 `decode_token` 时都强制对比 `expected_type`，避免 refresh 被当 access 用绕过过期。
+4. **dev secret 警告**：`jwt.py._warn_if_dev_secret` 在非 dev 环境检测到占位 secret 或长度 < 32 时打 ERROR 日志，但不 raise（避免线上突然 500）。
+5. **session 事务边界**：service 显式 commit，路由层 `get_session` dep 仅在异常时 rollback，事务粒度由业务层把控。
 
-```
-在 BE-001 之上实现 OTP 校验与 JWT 颁发：
-- POST /api/v1/auth/login/phone {phone, code}
-- 校验通过后从 Redis 删除 OTP（一次性）
-- 用户不存在则插入 users（设置 phone, created_at, last_login_at）
-- 颁发 access(30m, HS256) + refresh(30d) JWT
-- secret 从 settings.jwt_secret 读取（pyproject 里没有就加，default 必须给一个 dev 占位 + 警告日志）
-- 必须有 4 个单测：新用户、老用户、错码、过期码
+**Smoke 命令**
+
+```bash
+PYTHONUNBUFFERED=1 uv run uvicorn app.main:app --port 8000
+
+# 1. send + 拿 OTP (dev mock)
+curl -X POST localhost:8000/api/v1/auth/otp/send \
+  -H 'content-type: application/json' -d '{"phone":"13800138000"}'
+CODE=$(redis-cli get 'xgzh:otp:+8613800138000')
+
+# 2. login -> 200 + access/refresh
+curl -X POST localhost:8000/api/v1/auth/login/phone \
+  -H 'content-type: application/json' -d "{\"phone\":\"13800138000\",\"code\":\"$CODE\"}"
+
+# 3. 复用同一 OTP -> 401 otp_expired
+curl -X POST localhost:8000/api/v1/auth/login/phone \
+  -H 'content-type: application/json' -d "{\"phone\":\"13800138000\",\"code\":\"$CODE\"}"
 ```
 
 ---

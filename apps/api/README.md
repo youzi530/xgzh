@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001 + BE-002）
 
 API:
 
@@ -12,6 +12,7 @@ API:
 - `GET /api/v1/ipos/{code}` 新股详情
 - `POST /api/v1/agent/diagnose` AI 一键诊断（DeepSeek-V3 SSE 流式）
 - `POST /api/v1/auth/otp/send` 手机号 OTP 发送（dev 走 Mock SMS，60s 限流，5min TTL）
+- `POST /api/v1/auth/login/phone` OTP 校验 + 自动注册 + 颁发 access/refresh JWT（5/5min 限流）
 
 Schema（Alembic `0001_init`，PG 16 + pgvector 0.8.2）:
 
@@ -40,7 +41,7 @@ async def fetch_ipo_basic(code: str) -> dict: ...
 async def send_otp(phone: str) -> None: ...
 ```
 
-鉴权层（`app/adapters/sms/` + `app/services/otp_service.py`，BE-001）:
+鉴权层 - OTP 发送（`app/adapters/sms/` + `app/services/otp_service.py`，BE-001）:
 
 - `MockSMSAdapter` — dev 用，把 `phone+code` 打到 loguru，便于本地手测
 - `AliyunSMSAdapter` — Sprint 2 接入占位
@@ -61,6 +62,35 @@ curl -X POST localhost:8000/api/v1/auth/otp/send \
 # {"level":"INFO","logger":"app.adapters.sms.mock",
 #  "msg":"[MOCK SMS] to=+8613800138000 code=126894 ttl=300s rid=..."}
 ```
+
+鉴权层 - OTP 校验 + JWT 颁发（`app/security/jwt.py` + `app/services/auth_service.py`，BE-002）:
+
+- HS256 access (30min) + refresh (30d) 双 token；带 `iss/aud/sub/typ/jti/iat/exp`
+- `decode_token(token, expected_type=ACCESS_TOKEN_TYPE)` 强制按 typ 解，access ≠ refresh 不可互用
+- OTP 校验用 `hmac.compare_digest` 常量时间比较
+- 校验通过后 OTP 一次性消费（`consume_otp`）；错码不消费 → 用户在 5/5min verify 限流内可重试
+- 用户不存在自动注册：生成 8 字符大写+数字 invite_code，冲突重试 5 次；phone 唯一约束撞了说明并发，降级为 fetch
+- verify 限流：5 次/5min（`namespace="otp_verify"`），与 send 60s 桶物理隔离
+
+```bash
+# 1) send 拿 OTP（dev mock）
+curl -X POST localhost:8000/api/v1/auth/otp/send \
+  -H 'content-type: application/json' -d '{"phone":"13800138000"}'
+CODE=$(redis-cli get 'xgzh:otp:+8613800138000')
+
+# 2) login -> 200 + tokens
+curl -X POST localhost:8000/api/v1/auth/login/phone \
+  -H 'content-type: application/json' -d "{\"phone\":\"13800138000\",\"code\":\"$CODE\"}"
+# {"user":{"user_id":"...","invite_code":"I3FB4CHU",...},
+#  "tokens":{"access_token":"eyJ...","refresh_token":"eyJ...",
+#            "token_type":"Bearer","expires_in":1800,"refresh_expires_in":2592000},
+#  "is_new_user":true}
+
+# 3) 同 OTP 复用 -> 401 otp_expired (一次性)
+# 4) 错码 5 次 + 1 -> 第 6 次 429 too_many_requests (verify 限流)
+```
+
+⚠️ 生产前必做: `JWT_SECRET` 替换成 `openssl rand -hex 32` 生成的随机串, 否则启动时会打 ERROR 日志。
 
 ## 启动（首次）
 
@@ -147,11 +177,12 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 app/
 ├── api/v1/         # 路由 (ipos / agent / auth)
 ├── core/           # 配置、日志
-├── services/       # 业务逻辑 (ipo_service / agent_service / otp_service / user_service)
+├── services/       # 业务逻辑 (ipo / agent / otp / user / auth)
 ├── adapters/       # 外部数据源 / 通道
 │   ├── akshare_client.py
 │   ├── llm_client.py
 │   └── sms/        # SMS 通道 (base / mock / aliyun / factory)
+├── security/       # JWT 颁发 / 解析 (HS256 access + refresh)
 ├── schemas/        # Pydantic 模型 (ipo / agent / auth)
 ├── utils/          # 通用工具 (phone E.164 + mask)
 ├── db/             # SQLAlchemy 2.0 async Base + ORM models
