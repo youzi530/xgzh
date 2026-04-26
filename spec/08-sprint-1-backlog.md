@@ -893,18 +893,73 @@ curl -s -X DELETE "localhost:8011/api/v1/push/tokens?platform=ios&device_id=ipho
 
 ---
 
-### FE-001 · 登录页（手机 OTP + 微信一键）
+### FE-001 · 登录页（手机 OTP + 微信一键） ✅ DONE
 
-**改动文件**
-- `apps/mp/pages/auth/login.vue`
-- `apps/mp/pages.json`（新路由）
-- `apps/mp/api/auth.ts`
+**目标**：在 UniApp 端把 BE-001/002/005 三个鉴权接口落地成一个可用登录页，跑通"手机号 → OTP → JWT 入 storage"全链路；小程序端追加微信一键。
+
+**改动文件**（已实装）
+- `apps/mp/api/auth.ts`：类型 + `sendOtp` / `loginPhone` / `loginWechatMp` + `parseAuthError`（按 `detail.code` 拆错误）
+- `apps/mp/utils/auth-storage.ts`：access/refresh/user + 各自过期时间戳的轻量 storage helper；含 `isAccessTokenFresh`（预留 60s 安全边际）/ `isRefreshTokenFresh` / `isLoggedIn` / `snapshot`，给 FE-002 Pinia store 接管
+- `apps/mp/pages/auth/login.vue`：双 Tab（手机号 / 微信一键）+ 60s 倒计时 + 协议勾选 + 合规 footer + 错误码分支 toast
+- `apps/mp/pages.json`：注册 `pages/auth/login`
+- `apps/mp/pages/index/index.vue`：右上角 hero 区域加"登录 / 注册"胶囊（已登录显示昵称首字头像，点击占位提示 FE-003 个人中心）
 
 **AC**
-- [ ] H5 / 小程序双端：手机号 + 验证码登录
-- [ ] 小程序额外提供微信一键登录按钮
-- [ ] 验证码 60 秒倒计时
-- [ ] 必含合规 footer：`登录即同意《用户协议》《隐私政策》《免责声明》`
+- [x] H5 / 小程序双端：手机号 + 验证码登录
+- [x] 小程序额外提供微信一键登录按钮（`#ifdef MP-WEIXIN` 条件编译）
+- [x] 验证码 60 秒倒计时（前端镜像 + 429 兜底拉起）
+- [x] 必含合规 footer：`登录即同意《用户协议》《隐私政策》《免责声明》`
+- [x] 协议未勾选时所有提交按钮不可达 + toast 提示
+- [x] 登录成功 `uni.reLaunch` 回首页（清返回栈，避免后退看到登录态残留）
+- [x] 后端错误码（`otp_invalid` / `otp_expired` / `otp_send_rate_limited` / `otp_verify_rate_limited` / `wechat_code_invalid` / `wechat_mp_disabled` / `wechat_upstream_error`）逐个映射到差异化 UX
+
+**关键设计决策**
+1. **TS 字段名 1:1 对齐后端**（`access_token` 不写成驼峰 `accessToken`）：spec/08 的 BE-002 schema 注释里就明确"字段名对齐 OAuth2，前端不再翻译"，前后端共用一套术语，减少双向维护成本。
+2. **微信 Tab 仅 mp-weixin 条件编译**：H5 / App 拿不到 `wx.login` 一次性 code，强行显示按钮只会让用户点了报错；通过 `#ifdef MP-WEIXIN` 在编译期就剪掉 Tab + 整个 form。
+3. **token 存 storage 而非 Pinia state**：FE-001 不引入 Pinia 持久化插件，先用 `uni.setStorageSync` 把 access/refresh/user 拆 5 个 key 存好；FE-002 Pinia store 包一层 reactive layer 即可，迁移成本接近零。
+4. **拆 5 个 key 而非 1 个 JSON**：FE-002 拦截器每个请求都要读 `access_token`，避免 `JSON.parse` 整个对象；过期时间单独存方便 silent refresh 判断。
+5. **过期判断含 60s 安全边际**：`isAccessTokenFresh` 提前 60s 视为过期，防"刚好压在过期边沿的请求在路上时 token 失效"。
+6. **协议勾选 = 一票否决**：未勾时所有"登录"按钮的 disabled 态 + toast 提示，杜绝"用户没看协议就登录"的合规风险（spec/06 §法律隔离）。
+7. **错误码差异化 UX**：
+   - `otp_send_rate_limited` → 倒计时强拉 60s（前端时钟漂移兜底，避免用户狂点）
+   - `otp_invalid` → 清空验证码输入框，让用户直接重输
+   - `otp_expired` → 清验证码 + 重置倒计时，让用户重新发
+   - `wechat_mp_disabled` → 自动切回手机号 Tab，不卡死用户
+8. **错误解析层 `parseAuthError`**：把后端 `HTTPException(detail={"code","message"})` 解析成 `{code, message}` 元组，UI 业务分支只读 `code`，message 兜底显示；APIError 退化形态（字符串 detail）也覆盖。
+9. **首页登录入口**：未登录显示"登录 / 注册"胶囊，已登录显示昵称首字头像（昵称为空走 `invite_code` 首字符兜底）；点击头像目前 toast "FE-003 建设中"占位，不阻塞 FE-001 联调。
+
+**验收方法**（开发者本地手测，因前端工程 `@dcloudio/*` pinned 版本被 npm yank，需先升 deps）
+
+```bash
+# 0. 起后端 (含 mock SMS, OTP 会打到日志)
+cd apps/api && uv run uvicorn app.main:app --port 8000
+
+# 1. 起前端 (H5 模式最快)
+cd apps/mp
+# ⚠️ pnpm install 当前会失败 (deps yank), 暂时手动用微信开发者工具直接打开 ./
+pnpm dev:h5  # 或者 pnpm dev:mp-weixin
+
+# 2. 浏览器打开 http://localhost:5173 → 点右上角 "登录 / 注册"
+# 3. 输入手机号, 点 "获取验证码"
+#    - 后端日志看 [MOCK SMS] code=XXXXXX, 复制
+#    - 前端按钮显示 "60s 后重发"
+# 4. 勾选协议, 输入验证码, 点 "登录 / 注册"
+#    - 成功 toast "欢迎加入新股智汇" / "登录成功", 600ms 后 reLaunch 首页
+#    - 首页右上角 hero 变为"昵称首字"头像
+# 5. 错误路径手测:
+#    - 错误验证码 → toast "验证码错误" + 自动清输入框
+#    - 60s 内重复获取 → toast "60 秒内只能获取一次验证码"
+#    - 不勾协议直接点登录 → toast "请先勾选并同意协议"
+# 6. 微信小程序端 (mp-weixin):
+#    - 切到"微信一键登录" Tab → 点按钮 → 调 uni.login 拿 code → 后端 401/502/503 路径全打通
+```
+
+**遗留 / 后续**
+- **`@dcloudio/*` 版本统一升级**：当前 package.json 里 pin 的 `3.0.0-4060920241225001` 已被 npm yank, `pnpm install` 会失败；建议起独立小 PR 升到 vue3 alpha 通道（`3.0.0-alpha-5000820260420001` 或更新），不在 FE-001 scope 内
+- FE-002（Pinia store + 拦截器）：把 `auth-storage.ts` 升级成响应式 store + 全局请求拦截器自动注入 `Authorization: Bearer` + 401 自动 silent refresh
+- FE-003（个人中心）：替换首页头像点击的占位 toast
+- 协议勾选目前是 modal 占位文本；正式上架前需要把 spec/06 的「用户协议 / 隐私政策 / 免责声明」三份正式文本落到 `apps/mp/static/legal/*.html` 走内嵌 webview 显示
+- 微信小程序 `wx.getUserProfile` 头像/昵称同步：spec/01 提到的"获取用户信息"按钮在 FE-001 不做，待 FE-003 个人中心统一处理
 
 ---
 

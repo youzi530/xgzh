@@ -24,6 +24,14 @@
                 "navigationBarBackgroundColor": "#0F172A",
                 "navigationBarTextStyle": "white"
             }
+        },
+        {
+            "path": "pages/auth/login",
+            "style": {
+                "navigationBarTitleText": "登录 / 注册",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
         }
     ],
     "globalStyle": {

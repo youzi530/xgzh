@@ -22,7 +22,15 @@
   - ✅ **BE-009**：`GET /ipos/{code}` 字段聚合 / 多源 merge（新 schema `IPODetail` 加 `sponsors` / `underwriters` / `prospectus_url` / `highlights` / `risks` / `financial_summary`；`extra` JSONB 提取顶层字段；`@cached(ttl=1800s, namespace="ipos:detail")` `skip_if_none=True` 防 404 穿透；404 标准化错误码 `ipo_not_found`）
   - ✅ **BE-010**：用户自选股 + API（`POST/DELETE /favorites` PG `INSERT ... ON CONFLICT DO UPDATE` 单 SQL 幂等，`RETURNING (xmax=0)` 区分 INSERT/UPDATE 路径；`GET /favorites` LEFT JOIN ipos 拿最新行情；前端只持 `code` 后缀反推 market；HK seed code 也可收藏；3 个路由全部 `Depends(get_current_user)` 401 闸守）
   - ✅ **BE-011**：推送 token 注册（`POST /push/tokens` PG `ON CONFLICT (user_id, platform, device_id) DO UPDATE` 幂等覆盖；`DELETE /push/tokens?platform=&device_id=` 单 SQL 幂等；响应**不回显 token**，敏感凭据保护；`device_id` 强制必填非空规避 PG NULL UNIQUE 老坑；Sprint 4 推送实施时调 `list_user_tokens` 群发）
-  - 🟢 **Sprint 1 后端 P0 + P1 全完成**；下一关切前端 FE-001（登录页）/ QA-001（API 集成测试套件）
+  - ✅ **FE-001**：登录页（手机 OTP + 微信一键，UniApp Vue3）
+    - 双 Tab：手机号 + 验证码（H5 / 小程序 / App 全平台）/ 微信一键（仅 `MP-WEIXIN` 条件编译）
+    - 60s 倒计时（前端镜像 + 429 后端兜底拉起，防前端时钟漂移）
+    - 协议勾选 + 合规 footer（spec/06 §法律隔离要求）
+    - `apps/mp/api/auth.ts` 字段名 1:1 对齐 BE-001/002/005 的 OAuth2 习惯，避免双向翻译；`parseAuthError` 把后端 `detail.code` 拆给业务分支
+    - `apps/mp/utils/auth-storage.ts` 拆 5 个 storage key（access/refresh/user/两个过期时间戳），含 60s 安全边际的 `isAccessTokenFresh` 给 FE-002 silent refresh 接力
+    - 错误码差异化 UX：`otp_invalid` 清验证码、`otp_expired` 重置倒计时、`wechat_mp_disabled` 自动切手机号 Tab
+    - 首页 hero 加"登录 / 注册"胶囊（已登录显示昵称首字头像，点击占位提示 FE-003）
+  - 进行中：FE-002 (Auth Pinia store + uni.request 拦截器，P0)
 - **后端测试**：
   - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 119 skipped
   - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 208 passed

@@ -1,13 +1,36 @@
 <script setup lang="ts">
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import { fetchIPOList, type IPOItem, type Market } from '@/api/ipo'
+import { getStoredUser, isLoggedIn } from '@/utils/auth-storage'
+import type { UserPublic } from '@/api/auth'
 
 const list = ref<IPOItem[]>([])
 const loading = ref(false)
 const error = ref<string>('')
 const market = ref<Market>('HK')
+
+const currentUser = ref<UserPublic | null>(null)
+const loggedIn = computed(() => currentUser.value !== null)
+
+function refreshAuthState() {
+  currentUser.value = isLoggedIn() ? getStoredUser() : null
+}
+
+function nicknameInitial(u: UserPublic): string {
+  if (u.nickname && u.nickname.length > 0) return u.nickname.slice(0, 1)
+  return u.invite_code.slice(0, 1)
+}
+
+function gotoLogin() {
+  uni.navigateTo({ url: '/pages/auth/login' })
+}
+
+function gotoProfile() {
+  // FE-003 个人中心还没建; 先 toast 占位, 不阻塞 FE-001 流程
+  uni.showToast({ title: '个人中心建设中 (FE-003)', icon: 'none' })
+}
 
 async function load() {
   loading.value = true
@@ -42,6 +65,7 @@ function fmtPrice(item: IPOItem) {
 }
 
 onShow(() => {
+  refreshAuthState()
   if (list.value.length === 0) load()
 })
 onPullDownRefresh(() => load())
@@ -50,8 +74,16 @@ onPullDownRefresh(() => load())
 <template>
   <view class="page">
     <view class="hero">
-      <text class="hero-title">新股智汇</text>
-      <text class="hero-subtitle">港 A 股打新 · AI 分析 · 跨境合规</text>
+      <view class="hero-left">
+        <text class="hero-title">新股智汇</text>
+        <text class="hero-subtitle">港 A 股打新 · AI 分析 · 跨境合规</text>
+      </view>
+      <view v-if="!loggedIn" class="auth-pill" @tap="gotoLogin">
+        <text>登录 / 注册</text>
+      </view>
+      <view v-else class="auth-avatar" @tap="gotoProfile">
+        <text class="auth-avatar-text">{{ nicknameInitial(currentUser!) }}</text>
+      </view>
     </view>
 
     <view class="tabs">
@@ -114,6 +146,14 @@ onPullDownRefresh(() => load())
 }
 .hero {
   padding: 16rpx 8rpx 24rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+.hero-left {
+  flex: 1;
+  min-width: 0;
 }
 .hero-title {
   display: block;
@@ -126,6 +166,30 @@ onPullDownRefresh(() => load())
   margin-top: 8rpx;
   font-size: 24rpx;
   color: var(--color-text-muted);
+}
+.auth-pill {
+  flex-shrink: 0;
+  padding: 12rpx 24rpx;
+  border-radius: 999rpx;
+  font-size: 24rpx;
+  color: var(--color-primary);
+  background: rgba(79, 139, 255, 0.1);
+  border: 1rpx solid rgba(79, 139, 255, 0.3);
+}
+.auth-avatar {
+  flex-shrink: 0;
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4f8bff, #f6c453);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.auth-avatar-text {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #fff;
 }
 .tabs {
   display: flex;
