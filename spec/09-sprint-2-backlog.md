@@ -63,7 +63,7 @@
 | BE-S2-006a | agent | Tool 注册中心 + 2 个最简工具（basic_info / financial）| 1d | BE-S2-001 | P0 | ✅ |
 | BE-S2-006b | agent | 余下 3 个 Tool（peers / sentiment_placeholder / historical）+ hybrid_search Tool 化 | 1d | BE-S2-006a | P0 | ✅ |
 | BE-S2-007 | agent | LangGraph 主循环 + 引用源装配 + 合规端层 disclaimer | 1.5d | BE-S2-002, BE-S2-005, BE-S2-006b | P0 | ✅ |
-| BE-S2-008 | quota | Agent 配额管理（免费 5/天 + VIP 无限 + 滑动窗口）| 0.5d | BE-S2-007 | P0 | ⬜ |
+| BE-S2-008 | quota | Agent 配额管理（免费 5/天 + VIP 无限 + 滑动窗口）| 0.5d | BE-S2-007 | P0 | ✅ |
 | BE-S2-009 | eval | 评测集 80 条 + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）| 1d | BE-S2-007 | P0 | ⬜ |
 
 ### 前端 · FE-S2
@@ -954,7 +954,95 @@ _user (匿       get_or_create  payload) → SSE
 4. **Decimal `cost_cny=0` 不能 None** — `chat_token_usage.cost_cny` NOT NULL；价格表 fallback 时 `_PRICE_CNY_PER_M_TOKENS.get(model, Decimal('0'))` 必须返回 `Decimal('0')` 不是 None；BE-S2-002 facade 已经做了这一层, BE-S2-007 直接复用 `TokenUsage.cost_cny: Decimal`
 5. **`bogus session_id` 抛 NoResultFound** — 用户客户端可能本地缓存了过期 session, `select(...).one()` 直接 NoResultFound 撑爆 SSE 流；改成 `select(...).one_or_none()` + None 时 fallthrough 走"新建"路径
 
-→ **建议下一步走 BE-S2-008**（Agent 配额管理：spec Agent 主线 BE-S2-007 ✅ → **BE-S2-008** → FE-S2-001。BE-S2-008 PR 内会落地：`app/services/agent/quota.py`（用户日额度 5/天 / VIP 无限 / 滑动窗口 + 匿名 IP 限流）+ `app/api/v1/chat.py`（POST /v1/chat/diagnose SSE 端层入口前置校验, 超额返回 429 + 升级引导 payload）+ tests）
+### BE-S2-008 ✅ 实施成果（Agent 配额管理: 滑动窗口 5/天 + VIP 无限 + 匿名 IP 限流）
+
+**改动文件**
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `app/cache/redis_client.py` | +180 | 给 `RedisClientProtocol` 加 3 个高层滑动窗口接口 (`sliding_window_count` / `sliding_window_record` / `sliding_window_oldest_ms`)，RealRedisClient 走 Lua 原子脚本 (`ZREMRANGEBYSCORE` + `ZADD` + `EXPIRE` + `ZCARD` 一脚本完成), InMemoryRedisClient 走排序 list + asyncio.Lock 等价语义 |
+| `app/services/agent/quota.py` (NEW, 290 行) | +290 | 核心模块: `QuotaPlan` (StrEnum) / `QuotaStatus` / `QuotaExceeded` / `check_quota` / `record_usage` / `resolve_plan` |
+| `app/core/config.py` | +50 | 4 个 quota 设置 (`agent_quota_window_seconds=86400` / `free_per_window=5` / `anonymous_per_window=2` / `vip_per_window=-1`) + `vip_user_id_whitelist` CSV |
+| `app/api/v1/chat.py` | +90 | SSE 入口前置闸门 (`HTTPException(429, ChatQuotaExceededResponse)`) + `record_usage` (在 `user_message` 写库后立即扣额, fail-open) + race 兜底 (record 时被并发挤超也走 SSE error) + `_resolve_client_ip` 拼匿名 quota key |
+| `app/schemas/chat.py` | +35 | `ChatQuotaPayload` + `ChatQuotaExceededResponse` (HTTP 429 body, OpenAPI 自动收录) |
+| `tests/test_sliding_window.py` (NEW, 12 tests) | +185 | InMemoryRedisClient 滑动窗口 3 个接口的不变量: 同 member 不重复 / 不同 member 累加 / 出窗清旧 / oldest_ms 边界 / count 只读 / key 隔离 |
+| `tests/test_agent_quota.py` (NEW, 18 tests) | +355 | `resolve_plan` (匿名/FREE/VIP CSV 大小写) + `QuotaStatus.has_quota / to_dict` + `check_quota` (VIP 跳过 Redis / FREE 不消费 / 匿名分支) + `record_usage` (累加 / 超额抛 / user 隔离 / 匿名 IP 隔离 / 默认 uuid member 不停滞) + `retry_after` 边界 |
+| `tests/integration/test_chat_diagnose_quota.py` (NEW, 5 tests) | +355 | E2E: 匿名超额 → 429 (含 retry-after header) / 429 时 user_message 不落 DB / FREE 超额 → 429 + plan=free / 多用户 quota key 隔离 / VIP 不限流 (3 次都 200) |
+
+**架构（配额闸门 - 第 5 层 - 进流前 + 进流后双扣）**
+
+```
+┌────────────────── POST /v1/chat/diagnose ──────────────────┐
+│                                                            │
+│  ① get_optional_user (匿名 / 登录都行)                       │
+│  ② _resolve_client_ip (X-F-F 第一段 / request.client.host)  │
+│                                                            │
+│  ③ check_quota(user, anon_key) ────────► Redis ZSET 只读
+│        │                                  (sliding_window_count)
+│        ▼                                  返当前用量
+│   has_quota?                                              
+│      ├── False → HTTPException(429, ChatQuotaExceededResponse)
+│      │                + Retry-After header
+│      │           (FE 拿到 status code 弹升级 modal)
+│      └── True → 进 SSE 流                                   
+│                                                            
+│  ④ session / user_message 写 DB
+│                                                            │
+│  ⑤ record_usage(user, anon_key, member=msg_id) ──► Redis ZSET 写入
+│        │                                  (sliding_window_record:
+│        ▼                                   ZREMRANGEBYSCORE +
+│      QuotaExceeded? (race: check 通过但写时被并发挤超)        ZADD + EXPIRE + ZCARD)
+│      ├── True → SSE event=error + end (ok=false, quota_exceeded=true)
+│      └── False → 继续走 graph.run 主循环                     
+│                                                            
+│  ⑥ async for evt in agent_graph.run(...) → SSE              
+│                                                            
+│  ⑦ commit DB (audit log 保留, 即使 LLM 失败也持久化)          │
+└────────────────────────────────────────────────────────────┘
+```
+
+**关键设计决策**
+
+1. **滑动窗口 (24h ZSET) 而非固定窗口 (INCR + EXPIRE)**：固定窗口边界突发能让用户在窗口切片瞬间拿到 2× 配额（00:59 跑 5 次, 01:00 又能 5 次 = 1 分钟 10 次）, 滑动窗口是"过去 24h 内不超过 5 次"的精确语义；spec/04 §限流原文要求"滑动窗口"
+2. **Lua 原子脚本**：`ZREMRANGEBYSCORE` 清旧 → `ZADD` 写新 → `EXPIRE` → `ZCARD` 单脚本一次 RTT 完成，原子，避免"先读 ZCARD 再 ZADD"中间窗口被清的 race
+3. **check 与 record 分两步**：进流前 `check_quota` 不计数（DB 异常不应该被错扣额）, 进流后 `user_message` 写 DB 之后立即 `record_usage` 扣额；这样"会话初始化失败"不扣, "LLM 失败但 user_message 已落"扣 1
+4. **VIP noop 不写 Redis**：`limit=-1` 时 `record_usage` 直接 return, 节省一次 RTT；Sprint 3 改"VIP 50/天"时只把 settings 改成有限值, 不动接口
+5. **匿名走 IP key (`rate:agent:anon:<ip>`)**：`X-Forwarded-For` 第一段为真实 IP（反代场景）, fallback 到 `request.client.host`（直连）；NAT 共享 IP 用户共用一个 key, 安全侧"宁紧勿松"
+6. **VIP 走 settings whitelist 兜底, 不引 vip_memberships 表**：`vip_user_id_whitelist` CSV 一行配置, Sprint 3 接订阅表后只换 `_resolve_plan` 函数实现, 接口 + 调用方 0 改动；`csv_whitelist_with_spaces` 测试覆盖了大小写 + 空格
+7. **race 容忍**：`check` 与 `record` 两次 RTT 之间极端并发可能 1~2 次溢出, 日均 5 次低频场景可接受；`record_usage` 内部仍判 `used > limit` 抛 `QuotaExceeded` 兜底, 端层 SSE error event 保护体验。Sprint 3 极致原子化时换"INCR 后立即检查"
+8. **fail-open Redis**：`check_quota` / `record_usage` 异常 → `logger.warning` 不阻塞, 让"Redis 挂导致全平台 Agent 不可用"不发生；代价是 Redis 故障窗口内不限流（运维侧告警比业务限流更重要）
+9. **429 body 结构 (`ChatQuotaExceededResponse`)**：`code = "agent_quota_exceeded"` (FE 用 code 判逻辑) + 人话 `message` (FE 默认 toast) + `quota` 详情 (FE 弹升级 modal); `Retry-After` HTTP header 走标准协议, 浏览器自带 backoff 友好
+10. **member = user_msg.message_id**：ZSET 同 member 同 score 不增 ZCARD, 用 message_id 保证每次调用有独立 member（uuid4 兜底）, 计数不漂
+
+**测试矩阵** (35 个新测试, 累计 500 个)
+
+| 文件 | 测试数 | 覆盖点 |
+|------|--------|--------|
+| `tests/test_sliding_window.py` | 12 | InMemoryRedisClient 3 个滑窗 API 不变量 |
+| `tests/test_agent_quota.py` | 18 | resolve_plan / QuotaStatus / check_quota / record_usage / retry_after |
+| `tests/integration/test_chat_diagnose_quota.py` | 5 | 匿名 429 / DB 不落 / FREE 429 / 多用户隔离 / VIP 不限 |
+
+**实施成果**
+
+| 指标 | 改前 (BE-S2-007 ✅) | 改后 (BE-S2-008 ✅) |
+|------|------|------|
+| pytest 通过数 | 465 | **500 (+35)** |
+| ruff 增量错误 | 0 | **0** (BE-S2-008 文件自身 0 增量, baseline 50 总数不变换) |
+| mypy 增量错误 | 0 (baseline 25) | **0 (baseline 25)** |
+| 累计 DB 表 | 11 (含 4 张 chat_*) | 11 (BE-S2-008 不动 schema) |
+| API 路由数 | +1 `POST /v1/chat/diagnose` | 同 (添加 429 响应模型, 路径不动) |
+| 配置项 | — | +5 (`agent_quota_*` 4 项 + `vip_user_id_whitelist`) |
+
+**关键 bug & 修复（PR 内自查发现）**
+
+1. **`enum.Enum + str` 双继承被 ruff UP042 标红** — Python 3.11+ 应该用 `enum.StrEnum` 标准化封装；改成 `class QuotaPlan(StrEnum)` 后 `json.dumps(plan)` 直接拿字符串值, 不需要 `.value`
+2. **`B008` (Depends in argument default)** — chat.py 加 `Request: Request` 参数后又触发 2 个 B008；项目里其他路由 (favorites/invite/me/auth) 都用同样风格, 决定保持惯例不修, 写在"已知 baseline 风格债"里
+3. **`fake_streaming_llm` 跨用例脚本未消费**：测试初版让 LLM 提前 push 多个 script, race 用例的第二次调用又复用同一个 fixture, 导致脚本队列错位；改成"每条用例独立 push, 顺序按 LLM 调用次序"
+4. **测试 `User` 重名 phone 导致 unique 冲突**：`_seed_user_and_token` 第二次调用 phone+invite_code 默认就重了；接收 `phone_suffix` 参数让多用户测试得以隔离
+5. **`Retry-After` header 缺失**：HTTPException 加自定义 header 容易被忽略；测试断言 `r.headers["retry-after"]` 后补上 `headers={"Retry-After": str(retry_after_seconds)}`
+6. **匿名 anon_key=None 共享 key 引发 cross-user 测试串扰**：单测 `test_record_anonymous_unknown_ip_uses_fallback` 验证"None 走 'unknown' 兜底"是有意行为（安全侧）, 但写文档说明; 集成测的 `client` fixture 走 ASGITransport 的 `request.client.host = 'testclient'`, 多用例间 IP 相同, 走 InMemory 隔离不会跨 fixture 串扰
+
+→ **建议下一步走 BE-S2-009**（评测集 80 条 + 离线评测脚手架: spec Agent 主线 BE-S2-008 ✅ → **BE-S2-009** → FE-S2-001 / QA-S2-001。BE-S2-009 PR 内会落地: `eval/dataset/sprint2_80q.jsonl`（80 条标注 query, 覆盖 IPO 基本面 / 风险 / 对标 / RAG 召回 4 类）+ `eval/run_eval.py`（离线评测脚手架: 召回@5 / 幻觉率 / LLM-as-judge 三指标）+ `Makefile eval-sprint2` + 报告 markdown）
 
 ## ✅ Sprint 2 完成后的产出物
 

@@ -267,6 +267,48 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── BE-S2-008 Agent 配额 (滑动窗口 24h) ──────────────────────────
+    agent_quota_window_seconds: int = Field(
+        default=86400,
+        description=(
+            "滑动窗口长度 (秒). 默认 24h; spec/04 §限流给的是'5 次/天 滑动窗口'. "
+            "Sprint 3 改'5 次/小时'只动这一个值."
+        ),
+    )
+    agent_quota_free_per_window: int = Field(
+        default=5,
+        description=(
+            "登录的免费用户每滑动窗口内可调 Agent 次数. spec/04 §限流默认 5/天."
+        ),
+    )
+    agent_quota_anonymous_per_window: int = Field(
+        default=2,
+        description=(
+            "匿名 (无 JWT) 用户每滑动窗口内可调次数, 走 IP key 限流. 比登录用户更紧, "
+            "一是防爬, 二是引导注册. 单 IP 后面 NAT 共享情况下 2 已经偏宽松."
+        ),
+    )
+    agent_quota_vip_per_window: int = Field(
+        default=-1,
+        description="VIP 配额上限. -1 = 无限 (跳过 check), Sprint 3 改成 50/天等具体值.",
+    )
+    vip_user_id_whitelist: str = Field(
+        default="",
+        description=(
+            "VIP 白名单 user_id (UUID), 逗号分隔. 留空 = 当前没人是 VIP. "
+            "Sprint 3 引入 vip_memberships 表后此白名单退化为 dev 兜底, 不再承担生产权限."
+        ),
+    )
+
+    @property
+    def vip_user_id_set(self) -> frozenset[str]:
+        """白名单 UUID set (lower-case 字符串)."""
+        return frozenset(
+            s.strip().lower()
+            for s in self.vip_user_id_whitelist.split(",")
+            if s.strip()
+        )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

@@ -133,12 +133,40 @@ class ChatErrorPayload(BaseModel):
     message: str
 
 
+class ChatQuotaPayload(BaseModel):
+    """配额状态 (BE-S2-008). 用于 429 响应 body + Sprint 3 起 SSE end 事件携带.
+
+    与 ``services/agent/quota.py::QuotaStatus.to_dict()`` 一一对齐, 便于
+    端层 ``status.to_dict()`` 直接 ``model_validate(...)``.
+    """
+
+    plan: Literal["free", "vip", "anonymous"]
+    limit: int = Field(description="-1 = 无限")
+    used: int
+    remaining: int = Field(description="-1 = 无限")
+    window_seconds: int = Field(description="滑动窗口长度 (秒)")
+    retry_after_seconds: int | None = Field(
+        default=None,
+        description="超额时建议等待的秒数; None = 还有余额或 VIP 无限",
+    )
+
+
+class ChatQuotaExceededResponse(BaseModel):
+    """``POST /v1/chat/diagnose`` 超配额时的 HTTP 429 body."""
+
+    code: Literal["agent_quota_exceeded"] = "agent_quota_exceeded"
+    message: str = Field(description="人话提示, FE 默认 toast")
+    quota: ChatQuotaPayload
+
+
 __all__ = [
     "ChatCitation",
     "ChatDeltaPayload",
     "ChatDiagnoseRequest",
     "ChatEndPayload",
     "ChatErrorPayload",
+    "ChatQuotaExceededResponse",
+    "ChatQuotaPayload",
     "ChatSourcesPayload",
     "ChatStartPayload",
     "ChatTokenUsageDTO",

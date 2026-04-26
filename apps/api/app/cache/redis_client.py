@@ -39,6 +39,34 @@ return current
 """
 
 
+# 滑动窗口 ZSET 原子脚本 (BE-S2-008 配额管理).
+#
+# 单脚本完成: ZREMRANGEBYSCORE 清旧 → ZADD 新成员 → ZCARD → EXPIRE
+# 防止"读 ZCARD" 与 "ZADD" 之间被 trim 掉的成员重新算成 N+1, 与跨 RTT race.
+# KEYS[1] = key, ARGV[1] = now_ms, ARGV[2] = window_ms, ARGV[3] = member,
+# ARGV[4] = ttl_seconds. 返回写入后窗口内成员数.
+_SLIDING_WINDOW_RECORD_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local member = ARGV[3]
+local ttl = tonumber(ARGV[4])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+redis.call('ZADD', key, now, member)
+redis.call('EXPIRE', key, ttl)
+return redis.call('ZCARD', key)
+"""
+
+# 只清旧 + 数当前窗口数, 不写入 (BE-S2-008 check_quota 用).
+_SLIDING_WINDOW_COUNT_LUA = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+return redis.call('ZCARD', key)
+"""
+
+
 def namespaced_key(key: str) -> str:
     """给 key 加 ``xgzh:`` 前缀（已带前缀则原样返回，便于复用 namespaced key）."""
     if key.startswith(REDIS_KEY_PREFIX):
@@ -58,6 +86,30 @@ class RedisClientProtocol(Protocol):
     async def ttl(self, key: str) -> int: ...
     async def ping(self) -> bool: ...
     async def aclose(self) -> None: ...
+    # ── 滑动窗口 (BE-S2-008 Agent 配额管理) ──────────────────────
+    async def sliding_window_count(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        now_ms: int | None = None,
+    ) -> int: ...
+    async def sliding_window_record(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        member: str,
+        now_ms: int | None = None,
+        ttl_seconds: int | None = None,
+    ) -> int: ...
+    async def sliding_window_oldest_ms(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        now_ms: int | None = None,
+    ) -> int | None: ...
 
 
 class RealRedisClient:
@@ -122,6 +174,75 @@ class RealRedisClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    # ── 滑动窗口 (BE-S2-008) ────────────────────────────────────
+    async def sliding_window_count(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        now_ms: int | None = None,
+    ) -> int:
+        """清旧 (score < now - window) + 返回当前窗口内成员数. 不写入."""
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        window_ms = window_seconds * 1000
+        result = await self._client.eval(
+            _SLIDING_WINDOW_COUNT_LUA,
+            1,
+            namespaced_key(key),
+            str(now),
+            str(window_ms),
+        )
+        return int(result)
+
+    async def sliding_window_record(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        member: str,
+        now_ms: int | None = None,
+        ttl_seconds: int | None = None,
+    ) -> int:
+        """ZADD 一条 ``(now_ms, member)`` + 清旧 + EXPIRE, 原子.
+
+        - ``member`` 必须独立(uuid / msg_id), 避免重复 ZADD 同 score 同 member 导致计数不变
+        - ``ttl_seconds`` 默认就是 window_seconds (再多没必要存)
+        - 返回 ZCARD = 写入后窗口内成员数 (调用方拿这个判超额)
+        """
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        window_ms = window_seconds * 1000
+        ttl = ttl_seconds if ttl_seconds is not None else window_seconds
+        result = await self._client.eval(
+            _SLIDING_WINDOW_RECORD_LUA,
+            1,
+            namespaced_key(key),
+            str(now),
+            str(window_ms),
+            member,
+            str(ttl),
+        )
+        return int(result)
+
+    async def sliding_window_oldest_ms(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        now_ms: int | None = None,
+    ) -> int | None:
+        """清旧后返回最早一条的 score (ms 时间戳); 空 → None.
+
+        retry_after 算法: ``oldest_ms + window_ms - now_ms`` 转秒.
+        """
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        window_ms = window_seconds * 1000
+        nk = namespaced_key(key)
+        await self._client.zremrangebyscore(nk, "-inf", now - window_ms)
+        rows = await self._client.zrange(nk, 0, 0, withscores=True)
+        if not rows:
+            return None
+        return int(rows[0][1])
+
 
 class InMemoryRedisClient:
     """内存版 Redis 客户端: 单测 / 单机 dev / Redis 故障降级用.
@@ -137,6 +258,11 @@ class InMemoryRedisClient:
 
     def __init__(self) -> None:
         self._store: dict[str, tuple[str, float | None]] = {}
+        # ZSET (用于滑动窗口): {key: list[(score_ms, member)]}, 按 score 升序维护.
+        # 不参与 ``_store`` 的 KV 存储, 也独立于其 TTL — 滑动窗口的过期由
+        # ZREMRANGEBYSCORE 语义负责, 不需要外层 EXPIRE 主动删 (空 zset 留在 dict
+        # 也不会污染计数, 内存占用可忽略).
+        self._zsets: dict[str, list[tuple[int, str]]] = {}
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -208,6 +334,79 @@ class InMemoryRedisClient:
     async def aclose(self) -> None:
         async with self._lock:
             self._store.clear()
+            self._zsets.clear()
+
+    # ── 滑动窗口 (BE-S2-008): InMemory 实现 ─────────────────────
+    def _trim_zset(self, nk: str, cutoff_ms: int) -> None:
+        """删 score <= cutoff_ms 的成员 (与 Redis ZREMRANGEBYSCORE inclusive 一致)."""
+        z = self._zsets.get(nk)
+        if not z:
+            return
+        # zset 按 score 升序; 找到第一个 score > cutoff 的 idx
+        idx = 0
+        while idx < len(z) and z[idx][0] <= cutoff_ms:
+            idx += 1
+        if idx > 0:
+            self._zsets[nk] = z[idx:]
+
+    async def sliding_window_count(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        now_ms: int | None = None,
+    ) -> int:
+        nk = namespaced_key(key)
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        async with self._lock:
+            self._trim_zset(nk, now - window_seconds * 1000)
+            return len(self._zsets.get(nk, []))
+
+    async def sliding_window_record(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        member: str,
+        now_ms: int | None = None,
+        ttl_seconds: int | None = None,  # noqa: ARG002 - 内存版无需 TTL
+    ) -> int:
+        nk = namespaced_key(key)
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        async with self._lock:
+            self._trim_zset(nk, now - window_seconds * 1000)
+            z = self._zsets.setdefault(nk, [])
+            # ZADD: same member 覆盖 score (Redis 行为); 模拟时找一下
+            for i, (_, m) in enumerate(z):
+                if m == member:
+                    z.pop(i)
+                    break
+            # 按 score 升序插入 (单调时间戳大概率追加在尾)
+            inserted = False
+            for i, (s, _) in enumerate(z):
+                if now < s:
+                    z.insert(i, (now, member))
+                    inserted = True
+                    break
+            if not inserted:
+                z.append((now, member))
+            return len(z)
+
+    async def sliding_window_oldest_ms(
+        self,
+        key: str,
+        *,
+        window_seconds: int,
+        now_ms: int | None = None,
+    ) -> int | None:
+        nk = namespaced_key(key)
+        now = now_ms if now_ms is not None else int(time.time() * 1000)
+        async with self._lock:
+            self._trim_zset(nk, now - window_seconds * 1000)
+            z = self._zsets.get(nk)
+            if not z:
+                return None
+            return z[0][0]
 
 
 _client_singleton: RedisClientProtocol | None = None
