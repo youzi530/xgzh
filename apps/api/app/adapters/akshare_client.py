@@ -1,11 +1,12 @@
 """AKShare 数据适配器.
 
-第一刀范围：
-- 港股近期 IPO：AKShare 1.18.57 已无干净的 HK IPO 列表 API（旧版的 `stock_hk_new_em` /
-  `stock_hk_ipo_em` 在新版被移除/重命名）。本 adapter 暂时返回内置的 seed 列表，
-  保证前端联调闭环；待 Sprint 2 接入 HKEX/Futu 数据源后再切换为真实数据。
+范围
+====
 - A 股近期 IPO：使用 `stock_new_ipo_cninfo`（CNINFO 数据源，~500 行，2-3s 返回），
   比东财的 `stock_xgsglb_em`（48s+，3000+ 行）快一个数量级，且字段稳定。
+- HK IPO：BE-S2-000 起改走 ``app.adapters.hkex_client`` 接 hkexnews 真源；
+  本模块的 ``fetch_hk_ipos`` 标 deprecated, 仅转发到 ``hkex_client.get_cold_start_seed``
+  保老 import 兼容（``ipo_service`` / Sprint 1 测试还在调）。
 
 注意：akshare 的接口名/字段名可能随上游变化，所有字段访问都 defensive 处理。
 """
@@ -81,50 +82,6 @@ def _normalize_a_code(raw: str) -> str:
     return f"{code}.SZ"
 
 
-# ─── HK seed 数据（仅用于前端联调，Sprint 2 替换为真实 HKEX 抓取） ───────────────
-_HK_SEED: list[IPOItem] = [
-    IPOItem(
-        code="09660.HK",
-        name="地平线机器人-W",
-        market="HK",
-        industry="自动驾驶/AI 芯片",
-        issue_price=Decimal("3.99"),
-        issue_currency="HKD",
-        listing_date=date(2024, 10, 24),
-        pe_ratio=None,
-        status="listed",
-        data_source="seed",
-        updated_at=datetime.now(),
-    ),
-    IPOItem(
-        code="06677.HK",
-        name="速腾聚创",
-        market="HK",
-        industry="激光雷达",
-        issue_price=Decimal("43.00"),
-        issue_currency="HKD",
-        listing_date=date(2024, 1, 5),
-        pe_ratio=None,
-        status="listed",
-        data_source="seed",
-        updated_at=datetime.now(),
-    ),
-    IPOItem(
-        code="02015.HK",
-        name="理想汽车-W",
-        market="HK",
-        industry="新能源车",
-        issue_price=Decimal("118.00"),
-        issue_currency="HKD",
-        listing_date=date(2021, 8, 12),
-        pe_ratio=None,
-        status="listed",
-        data_source="seed",
-        updated_at=datetime.now(),
-    ),
-]
-
-
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4))
 def _fetch_a_sync() -> pd.DataFrame:
     """同步阻塞调用 akshare（A 股 IPO 列表 - CNINFO 数据源, 快）."""
@@ -134,13 +91,19 @@ def _fetch_a_sync() -> pd.DataFrame:
 
 
 async def fetch_hk_ipos(limit: int = 20) -> list[IPOItem]:
-    """拉取港股近期 IPO 列表.
+    """[DEPRECATED · BE-S2-000] 转发到 ``hkex_client.get_cold_start_seed``.
 
-    当前实现：返回内置 seed 列表（akshare 暂无干净 HK IPO API）。
-    后续：接入 HKEX Disclosure / Futu OpenAPI 真实数据。
+    Sprint 1 时这里返回内置 _HK_SEED；Sprint 2 BE-S2-000 真接入 hkexnews 后
+    种子数据搬到 ``app.adapters.hkex_client``，本函数仅作老 import 兼容层
+    （``ipo_service`` / 旧测试还在调），等 Sprint 3 全清理时整体删掉。
+
+    新代码请直接走:
+    - 入库流水线: ``ipo_ingest_service.run_ingest_hk_job``（抓 hkexnews 真源 → upsert）
+    - cold-start 样例: ``hkex_client.get_cold_start_seed``
     """
-    logger.info("fetch_hk_ipos: using seed data (akshare HK IPO API not available)")
-    return _HK_SEED[:limit]
+    from app.adapters import hkex_client
+
+    return hkex_client.get_cold_start_seed(limit=limit)
 
 
 async def fetch_a_ipos(limit: int = 20) -> list[IPOItem]:

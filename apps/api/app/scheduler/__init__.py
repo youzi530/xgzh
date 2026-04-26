@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -28,7 +29,6 @@ from apscheduler.triggers.date import DateTrigger
 from app.core.config import Settings, get_settings
 from app.core.logging import logger
 from app.services import ipo_ingest_service
-
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -54,13 +54,21 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
 
     可重入: 同 id 已存在时先 ``remove_job`` 再 ``add_job``, 避免 MemoryJobStore
     上 ``replace_existing=True`` 在某些版本不去重导致重复 schedule.
-    """
-    for job_id in ("ipo_ingest_a_initial", "ipo_ingest_a_cron"):
-        try:
-            scheduler.remove_job(job_id)
-        except Exception:
-            pass
 
+    注册的 job:
+    - ``ipo_ingest_a_initial`` / ``ipo_ingest_a_cron``: BE-007 A 股 IPO
+    - ``ipo_ingest_hk_initial`` / ``ipo_ingest_hk_cron``: BE-S2-000 HK IPO
+    """
+    for job_id in (
+        "ipo_ingest_a_initial",
+        "ipo_ingest_a_cron",
+        "ipo_ingest_hk_initial",
+        "ipo_ingest_hk_cron",
+    ):
+        with contextlib.suppress(Exception):
+            scheduler.remove_job(job_id)
+
+    # ─── A 股 (BE-007) ──────────────────────────────────────────
     delay = settings.ipo_ingest_initial_delay_seconds
     if delay > 0:
         run_date = datetime.now(scheduler.timezone) + timedelta(seconds=delay)
@@ -83,9 +91,36 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         name=f"IPO Ingest (A) — cron {hours}:00 {settings.ipo_ingest_timezone}",
     )
 
+    # ─── HK 申请人列表 (BE-S2-000) ──────────────────────────────
+    # 与 A 股错开 5s 启动延迟 (settings 默认 10s vs 5s) 避免双任务同刻打 DB.
+    # cron 时区独立配 Asia/Hong_Kong, 让本地 cron 时刻贴合 HK 市场作息
+    # (开盘前 9 点 + 收盘后 5 点二刀流, 不是 A 股的 8/20).
+    hk_delay = settings.ipo_ingest_hk_initial_delay_seconds
+    if hk_delay > 0:
+        run_date_hk = datetime.now(scheduler.timezone) + timedelta(seconds=hk_delay)
+        scheduler.add_job(
+            ipo_ingest_service.run_ingest_hk_job,
+            trigger=DateTrigger(run_date=run_date_hk, timezone=scheduler.timezone),
+            id="ipo_ingest_hk_initial",
+            name="IPO Ingest (HK) — initial after startup",
+        )
+
+    hk_hours = settings.ipo_ingest_hk_cron_hours.strip() or "9,17"
+    scheduler.add_job(
+        ipo_ingest_service.run_ingest_hk_job,
+        trigger=CronTrigger(
+            hour=hk_hours,
+            minute=0,
+            timezone=settings.ipo_ingest_hk_timezone,
+        ),
+        id="ipo_ingest_hk_cron",
+        name=f"IPO Ingest (HK) — cron {hk_hours}:00 {settings.ipo_ingest_hk_timezone}",
+    )
+
     logger.info(
-        f"scheduler.jobs_registered initial_delay={delay}s "
-        f"cron_hours={hours} tz={settings.ipo_ingest_timezone}"
+        f"scheduler.jobs_registered "
+        f"a:initial_delay={delay}s cron={hours} tz={settings.ipo_ingest_timezone} | "
+        f"hk:initial_delay={hk_delay}s cron={hk_hours} tz={settings.ipo_ingest_hk_timezone}"
     )
 
 

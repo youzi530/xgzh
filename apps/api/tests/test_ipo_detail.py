@@ -34,11 +34,11 @@ from pathlib import Path
 
 import httpx
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from alembic import command
 from app.cache import (
     InMemoryRedisClient,
     reset_redis_client,
@@ -50,7 +50,6 @@ from app.db.models import IPO
 from app.main import create_app
 from app.schemas.ipo import IPOItem
 from app.services import ipo_ingest_service, ipo_service
-
 
 # ─── 共享 fixture ─────────────────────────────────────────
 
@@ -75,48 +74,7 @@ async def app_client(
         yield c
 
 
-# ─── B. HK seed (no DB) ─────────────────────────────────────────
-
-
-async def test_detail_hk_hit_returns_idetail_shape(
-    app_client: httpx.AsyncClient,
-) -> None:
-    r = await app_client.get("/api/v1/ipos/02015.HK")
-    assert r.status_code == 200
-    body = r.json()
-    # 基础字段 (来自 IPOItem)
-    assert body["code"] == "02015.HK"
-    assert body["name"] == "理想汽车-W"
-    assert body["market"] == "HK"
-    # IPODetail 扩展字段都应存在 (即便是 None 也得在 schema 里)
-    for k in (
-        "prospectus_url",
-        "sponsors",
-        "underwriters",
-        "highlights",
-        "risks",
-        "financial_summary",
-    ):
-        assert k in body, f"IPODetail 必须暴露 {k} 字段, 实际 keys={list(body)}"
-    # seed 没有招股书相关字段
-    assert body["prospectus_url"] is None
-    assert body["sponsors"] is None
-    assert body["underwriters"] is None
-    assert body["highlights"] == []
-    assert body["risks"] == []
-    assert body["financial_summary"] is None
-
-
-async def test_detail_hk_not_found_returns_404(
-    app_client: httpx.AsyncClient,
-) -> None:
-    r = await app_client.get("/api/v1/ipos/99999.HK")
-    assert r.status_code == 404
-    body = r.json()
-    assert body["detail"]["code"] == "ipo_not_found"
-
-
-# ─── DB-backed (A 股) ─────────────────────────────────────────
+# ─── DB-backed (BE-S2-000 起 HK 也走这条) ─────────────────────────────────
 
 
 def _build_alembic_config(test_url: str) -> Config:
@@ -387,6 +345,44 @@ async def test_detail_second_call_hits_cache(
     r2 = await db_app_client.get(f"/api/v1/ipos/{code2}")
     assert r2.status_code == 200
     assert counter["db_calls"] == 2
+
+
+# ─── B. HK cold-start fallback / DB 命中 (BE-S2-000) ───
+
+
+@pytest.mark.db
+async def test_detail_hk_db_empty_falls_back_to_cold_start_seed(
+    db_app_client: httpx.AsyncClient,
+) -> None:
+    """DB 空 + HK code 命中 cold-start seed → 200 + IPODetail 形."""
+    r = await db_app_client.get("/api/v1/ipos/02015.HK")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code"] == "02015.HK"
+    assert body["name"] == "理想汽车-W"
+    assert body["market"] == "HK"
+    for k in (
+        "prospectus_url",
+        "sponsors",
+        "underwriters",
+        "highlights",
+        "risks",
+        "financial_summary",
+    ):
+        assert k in body, f"IPODetail 必须暴露 {k} 字段, 实际 keys={list(body)}"
+    assert body["highlights"] == []
+    assert body["risks"] == []
+    assert body["financial_summary"] is None
+
+
+@pytest.mark.db
+async def test_detail_hk_not_found_returns_404(
+    db_app_client: httpx.AsyncClient,
+) -> None:
+    r = await db_app_client.get("/api/v1/ipos/99999.HK")
+    assert r.status_code == 404
+    body = r.json()
+    assert body["detail"]["code"] == "ipo_not_found"
 
 
 @pytest.mark.db

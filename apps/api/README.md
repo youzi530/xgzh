@@ -65,6 +65,11 @@ Schema（Alembic `0001_init` + `0002_chat` + `0003_chunks`，PG 14 + pgvector 0.
   - 新增 2 partial 索引：`uq_ipo_documents_doc_id_content_hash`（UNIQUE PARTIAL `WHERE content_hash IS NOT NULL`，BE-S2-004 直接 `ON CONFLICT DO NOTHING`）+ `ix_ipo_documents_doc_id_chunk_index`（取相邻上下文）
   - 老 schema 零变动：HNSW 索引、`(ipo_code, doc_type)` 复合索引、Sprint 1 列全保留；测试桩 `content_hash IS NULL` 的老行不被 partial UNIQUE 卡住
   - 全文检索 / `tsvector` 列 punt 给 BE-S2-005 一条独立 0004 migration（中文分词器选型独立决策）
+- Sprint 2 (BE-S2-000，无 schema 改动)：HK IPO ingest 真源接入 — `app/adapters/hkex_client.py` 抓 hkexnews `applicants_c.htm` 列表 + BeautifulSoup 解析（公司名 / 递交日 / 招股书 PDF URL），16 字符占位 code `AP{yymmdd}{slug:5}.HK` 贴 `ipos.code VARCHAR(16)` 上限（不动 schema 避免 user_favorites FK 迁移）
+  - `run_ingest_hk_job` 走 `upsert_ipos` 复用 BE-007 写入逻辑；**关键守护**：`extra` 改为 `func.coalesce(cur.extra, '{}'::jsonb).op('||')(excl.extra)` 浅合并（PG `jsonb || jsonb`），防 BE-S2-004 RAG 写入 `highlights` / `risks` 被 ingest 整体覆盖（4 条 regression 测）
+  - APScheduler 二刀流：`ipo_ingest_hk_initial`（启动延迟 10s，错开 A 股 5s）+ `ipo_ingest_hk_cron`（默认 `9,17` `Asia/Hong_Kong`，开盘前 + 收盘后），独立 timezone
+  - `ipo_service.list_ipos / get_ipo / get_ipo_detail` 切 DB 路径；DB 空表（首次部署 / 无 ingest 测试场景）走 `hkex_client.get_cold_start_seed` 3 条样例兜底，不让首页空白
+  - 配置层 7 个新字段：`HKEX_BASE_URL` / `IPO_INGEST_HK_LIMIT` / `IPO_INGEST_HK_CRON_HOURS` / `IPO_INGEST_HK_INITIAL_DELAY_SECONDS` / `IPO_INGEST_HK_TIMEZONE` / `IPO_INGEST_HK_REQUEST_TIMEOUT_SECONDS` / `IPO_INGEST_HK_REQUEST_CONCURRENCY`
 
 缓存层（`app/cache/`）:
 
@@ -505,7 +510,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 256 passed in ~25s (Sprint 1 + BE-S2-001 + BE-S2-002 + BE-S2-003)
+# → 273 passed in ~33s (Sprint 1 + BE-S2-001/002/003/000)
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e

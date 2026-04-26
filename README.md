@@ -70,20 +70,20 @@
     - 7 条新 cache 单测（前缀边界 / fail-soft / 不误删限流 key 等不变量锁定）
 - **后端测试**：
   - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 120 passed / 136 skipped（含 BE-S2-002 facade 24 条单测）
-  - 有 DB：`make test-all` ⇒ **256 passed in ~25s**（248 → 256，新增 8 条 BE-S2-003 `ipo_documents` 扩展集成测试；累计 11 张表：7 张 Sprint 1 + 4 张 Sprint 2）
+  - 有 DB：`make test-all` ⇒ **273 passed in ~33s**（256 → 273，新增 17 条 BE-S2-000 测试：`tests/test_hkex_client.py` 9 条 + `tests/test_ipo_ingest.py` 6 条 HK 路径 + `tests/test_ipos_list.py` & `test_ipo_detail.py` DB 路径迁移；累计 11 张表：7 张 Sprint 1 + 4 张 Sprint 2）
 
 ### 🚀 Sprint 2 进行中 — AI Agent + RAG（核心壁垒）
 
-16 PR / ~14d 排期（含 BE-S2-000 HK ingest 真源），详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)。已落地：
+16 PR / ~14d 排期，详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)。已落地：
 
 - ✅ **BE-S2-001**（4 张会话表）：`chat_sessions` / `chat_messages` / `chat_tool_calls` / `chat_token_usage` + Alembic 0002 + 6 个二级索引 + 6 条集成测试（迁移幂等、级联策略、append-only 守护齐验证）
 - ✅ **BE-S2-002**（LLM facade）：单文件 `app/adapters/llm_client.py` 重构 + `chat / embed / rerank` 三入口 + 5 个 frozen dataclass（`TokenUsage / ChatResult / ChatStreamChunk / EmbeddingResult / RerankResult`）+ 3 层异常 + 8 条 hardcoded 成本表（CNY/M tokens）+ 24 条单测（路由 / 成本 / tool_calls 跨帧聚合 / 自动分批 / respx rerank 全覆盖）。Sprint 1 老 4 处调用方零修改
 - ✅ **BE-S2-003**（`ipo_documents` 扩展 + 防重）：Alembic 0003 给已有 `ipo_documents` ALTER 6 列（`chunk_index` / `token_count` / `content_hash` / `embedding_model` / `embedding_dim` / `lang`）+ 2 索引（`(doc_id, content_hash)` partial UNIQUE 防重 + `(doc_id, chunk_index)` partial 排序）+ 8 条 PG 真跑集成测试（schema 形状 / partial UNIQUE / NULL 共存 / `<=>` cosine ANN 实查 / downgrade idempotent）。BE-S2-004 招股书入库直接 `ON CONFLICT (doc_id, content_hash) DO NOTHING` 防重灌；多版本向量共存留口
+- ✅ **BE-S2-000**（HK IPO 真源接入）：`hkex_client` 抓 hkexnews `applicants_c.htm` 列表 + BeautifulSoup 解析（公司名 / 递交日 / 招股书 PDF URL）+ `AP{yymmdd}{slug:5}.HK` 16 字符占位 code 贴 `VARCHAR(16)`+ `httpx.AsyncClient` + `Semaphore(2)` 限并发 + 失败兜底返回空。`run_ingest_hk_job` 走 `upsert_ipos` 复用 BE-007 写入路径；**关键守护：`extra` 改 `jsonb || jsonb` 浅合并**（防 BE-S2-004 RAG 写入的 `highlights` / `risks` 被 ingest 整体覆盖）。`scheduler/__init__.py` 注册 `ipo_ingest_hk_initial` + `ipo_ingest_hk_cron`（默认 `9,17` HKT 二刀流）。`ipo_service` 切 DB 路径 + cold-start seed 兜底首次部署。新增 17 条测试
 
 主战场：
 
-- **HK IPO ingest（BE-S2-000）**：hkexnews 真源接入，招股书 URL 入库，给 RAG 流水线供米
-- **RAG 流水线**：pgvector + bge-m3 Embedding + 招股书 PDF 解析 + 切分 + 入库
+- **RAG 流水线（BE-S2-004）**：pgvector + bge-m3 Embedding + 招股书 PDF 解析 + 切分 + 入库（依赖全到位）
 - **混合检索**：向量 + BM25 + RRF 融合 + bge-reranker 重排（top5）
 - **Tool Use**：5 个工具（基本面 / 财务 / 同业 / 情感 / 历史）+ JSON schema + 沙盒
 - **LangGraph 主循环**：ReAct 状态机 max 5 步 + 引用源装配 + 端层兜底 disclaimer
@@ -91,7 +91,7 @@
 - **评测集**：80 条标注 query + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）
 - **前端**：对话页 + 打字机渲染（MP-WEIXIN onChunkReceived 兼容）+ 引用源面板 + 配额引导
 
-下一步推荐 → **BE-S2-000（HK ingest 真源接入，1d）**：BE-S2-004 招股书入库需要真 IPO 列表 + PDF URL，spec/04 §4 已写"HK 是 RAG MVP 主战场"；hkexnews 列表接入 + 招股书 URL 入库，给后续 BE-S2-004 / BE-S2-005 RAG 流水线供米。
+下一步推荐 → **BE-S2-004（招股书 PDF 解析 + 切分 + 入库，1d）**：三依赖全到位（BE-S2-000 提供 `prospectus_url` / BE-S2-002 提供 embedding facade / BE-S2-003 提供 `document_chunks` 防重表）。PR 内闭环：PDF 下载 + 切分 + 1024-d embedding 批量入 `ipo_documents` + `ON CONFLICT (doc_id, content_hash) DO NOTHING` 幂等。
 
 ## 📖 设计文档
 

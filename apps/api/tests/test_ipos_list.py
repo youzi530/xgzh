@@ -1,33 +1,35 @@
-"""BE-008: ``GET /api/v1/ipos`` 切回 DB + 筛选 + 分页 + Redis 缓存 测试.
+"""BE-008 + BE-S2-000: ``GET /api/v1/ipos`` DB 路径 + 筛选 + 分页 + Redis 缓存.
 
 覆盖:
 
-A. HK (走 seed, 不需要 DB; ``redis_client`` fixture 用 InMemoryRedisClient):
-   - 默认: 返回 seed 全部
-   - status=listed: 仅 listed
-   - industry 精确匹配
-   - 分页: total 不变, items 切片正确
+A. HK cold-start fallback (DB 空表):
+   - DB 空时 ``market=HK`` 返回 ``hkex_client.get_cold_start_seed`` 3 条 seed
+   - DB 空 + 带 ``status``/``industry`` 筛选 → 不走 fallback (避免污染筛选结果)
+   - DB 灌 HK 数据后 → 走 DB 路径, 不再 fallback
 
-B. A 股 (DB, ``@pytest.mark.db``):
-   - 灌 5 条 seed → 默认: 全部按 listing_date DESC NULLS LAST 返回
+B. A 股 (DB):
+   - 灌 5 条 → 默认按 ``listing_date DESC NULLS LAST`` 返回
    - status / industry 筛选
-   - 分页: page=2,size=2 拿到第 3-4 条
-   - 排序: NULL listing_date 排到最末
+   - 分页 page=2,size=2 拿到第 3-4 条
 
 C. 缓存命中:
    - 第一次 query → 打 DB
-   - 第二次 同参数 → 不打 DB (monkey-patch DB factory 检测调用次数)
-   - 不同参数 → 重新打 DB (cache key 含参数 hash)
+   - 第二次同参数 → 不打 DB (monkey-patch DB factory 检测调用次数)
+   - 不同参数 → 重新打 DB
 
-D. ``GET /ipos/{code}`` (顺手验证 BE-008 没破坏旧路径):
+D. ``GET /ipos/{code}`` (顺手保护回归):
    - A 股 code 命中 → 200
-   - HK 股 code 命中 seed → 200
+   - HK code DB 命中 → 200
+   - HK code DB 没命中但 cold-start seed 有 → 200
    - 不存在 → 404
 
 E. 入参校验:
    - market=US → 200 + items=[] (Sprint 3+ 占位)
    - size > 100 → 422
    - page < 1 → 422
+
+注: HK 路径自 BE-S2-000 起切 DB, 全部 HK 测试需要 ``@pytest.mark.db``;
+seed 仅作 DB 空表的兜底, 不再是 HK 主路径.
 """
 
 from __future__ import annotations
@@ -40,11 +42,11 @@ from pathlib import Path
 
 import httpx
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from alembic import command
 from app.adapters import akshare_client
 from app.cache import (
     InMemoryRedisClient,
@@ -56,7 +58,6 @@ from app.db.base import get_session_factory as _get_factory_lru
 from app.main import create_app
 from app.schemas.ipo import IPOItem
 from app.services import ipo_ingest_service, ipo_service
-
 
 # ───────────────── 共享 fixture ─────────────────
 
@@ -81,55 +82,7 @@ async def app_client(
         yield c
 
 
-# ───────────────── A. HK seed (no DB) ─────────────────
-
-
-async def test_list_hk_default_returns_all_seed(
-    app_client: httpx.AsyncClient,
-) -> None:
-    r = await app_client.get("/api/v1/ipos?market=HK")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["market"] == "HK"
-    assert body["page"] == 1
-    assert body["size"] == 20
-    # seed 当前 3 条
-    assert body["total"] == 3
-    assert len(body["items"]) == 3
-    codes = {it["code"] for it in body["items"]}
-    assert codes == {"09660.HK", "06677.HK", "02015.HK"}
-
-
-async def test_list_hk_filter_status(app_client: httpx.AsyncClient) -> None:
-    r = await app_client.get("/api/v1/ipos?market=HK&status=listed")
-    assert r.status_code == 200
-    body = r.json()
-    assert all(it["status"] == "listed" for it in body["items"])
-    assert body["total"] == len(body["items"])
-
-
-async def test_list_hk_filter_industry_exact_match(
-    app_client: httpx.AsyncClient,
-) -> None:
-    r = await app_client.get(
-        "/api/v1/ipos", params={"market": "HK", "industry": "新能源车"}
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["total"] == 1
-    assert body["items"][0]["code"] == "02015.HK"
-
-
-async def test_list_hk_pagination(app_client: httpx.AsyncClient) -> None:
-    r = await app_client.get("/api/v1/ipos?market=HK&page=1&size=2")
-    body = r.json()
-    assert body["total"] == 3
-    assert len(body["items"]) == 2
-
-    r = await app_client.get("/api/v1/ipos?market=HK&page=2&size=2")
-    body = r.json()
-    assert body["total"] == 3
-    assert len(body["items"]) == 1
+# ───────────────── A. US 占位 + 入参校验 (no DB) ─────────────────
 
 
 async def test_list_us_returns_empty_placeholder(
@@ -147,16 +100,13 @@ async def test_list_us_returns_empty_placeholder(
     }
 
 
-# ───────────────── E. 入参校验 (no DB) ─────────────────
-
-
 async def test_list_size_too_large_422(app_client: httpx.AsyncClient) -> None:
-    r = await app_client.get("/api/v1/ipos?market=HK&size=101")
+    r = await app_client.get("/api/v1/ipos?market=US&size=101")
     assert r.status_code == 422
 
 
 async def test_list_page_zero_422(app_client: httpx.AsyncClient) -> None:
-    r = await app_client.get("/api/v1/ipos?market=HK&page=0")
+    r = await app_client.get("/api/v1/ipos?market=US&page=0")
     assert r.status_code == 422
 
 
@@ -262,19 +212,42 @@ def _seed_a(
     listing_date: date | None = None,
     status: str = "listed",
     issue_price: str = "10.00",
+    market: str = "A",
+    issue_currency: str = "CNY",
 ) -> IPOItem:
     return IPOItem(
         code=code,
         name=name,
-        market="A",
+        market=market,  # type: ignore[arg-type]
         industry=industry,
         issue_price=Decimal(issue_price),
-        issue_currency="CNY",
+        issue_currency=issue_currency,
         listing_date=listing_date,
         pe_ratio=Decimal("23.45"),
         status=status,  # type: ignore[arg-type]
         data_source="test",
         updated_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+
+
+def _seed_hk(
+    code: str,
+    *,
+    name: str,
+    industry: str = "信息技术",
+    listing_date: date | None = None,
+    status: str = "listed",
+    issue_price: str = "10.00",
+) -> IPOItem:
+    return _seed_a(
+        code,
+        name=name,
+        industry=industry,
+        listing_date=listing_date,
+        status=status,
+        issue_price=issue_price,
+        market="HK",
+        issue_currency="HKD",
     )
 
 
@@ -451,16 +424,41 @@ async def test_get_ipo_a_hit(
     assert body["name"] == "测试"
 
 
-async def test_get_ipo_hk_hit_seed(app_client: httpx.AsyncClient) -> None:
-    r = await app_client.get("/api/v1/ipos/02015.HK")
+@pytest.mark.db
+async def test_get_ipo_hk_hit_cold_start_seed_when_db_empty(
+    db_app_client: httpx.AsyncClient,
+) -> None:
+    """BE-S2-000: HK code 在 DB 没命中时, fallback 到 cold-start seed."""
+    r = await db_app_client.get("/api/v1/ipos/02015.HK")
     assert r.status_code == 200
     body = r.json()
     assert body["code"] == "02015.HK"
     assert body["name"] == "理想汽车-W"
 
 
-async def test_get_ipo_not_found_hk(app_client: httpx.AsyncClient) -> None:
-    r = await app_client.get("/api/v1/ipos/99999.HK")
+@pytest.mark.db
+async def test_get_ipo_hk_db_overrides_seed(
+    db_app_client: httpx.AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """DB 有同 code 行时优先 DB (seed 是兜底, 不是源)."""
+    await _seed(
+        session_factory,
+        [_seed_hk("02015.HK", name="DB 覆盖名", listing_date=date(2024, 12, 31))],
+    )
+    r = await db_app_client.get("/api/v1/ipos/02015.HK")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code"] == "02015.HK"
+    assert body["name"] == "DB 覆盖名"
+
+
+@pytest.mark.db
+async def test_get_ipo_not_found_hk(
+    db_app_client: httpx.AsyncClient,
+) -> None:
+    """DB miss + seed miss → 404."""
+    r = await db_app_client.get("/api/v1/ipos/99999.HK")
     assert r.status_code == 404
 
 
@@ -470,6 +468,95 @@ async def test_get_ipo_not_found_a(
 ) -> None:
     r = await db_app_client.get("/api/v1/ipos/000999.SZ")
     assert r.status_code == 404
+
+
+# ─── F. HK 列表 (DB + cold-start fallback) — BE-S2-000 ───
+
+
+@pytest.mark.db
+async def test_list_hk_db_empty_falls_back_to_cold_start_seed(
+    db_app_client: httpx.AsyncClient,
+) -> None:
+    """DB 空表时 ``market=HK`` 返回 cold-start seed (3 条)."""
+    r = await db_app_client.get("/api/v1/ipos?market=HK")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["market"] == "HK"
+    assert body["total"] == 3
+    codes = {it["code"] for it in body["items"]}
+    assert codes == {"09660.HK", "06677.HK", "02015.HK"}
+
+
+@pytest.mark.db
+async def test_list_hk_db_empty_with_filter_returns_empty_no_fallback(
+    db_app_client: httpx.AsyncClient,
+) -> None:
+    """DB 空 + 带筛选: 不走 fallback, 返回空 (避免污染筛选语义)."""
+    r = await db_app_client.get(
+        "/api/v1/ipos", params={"market": "HK", "industry": "不存在的行业"}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 0
+    assert body["items"] == []
+
+
+@pytest.mark.db
+async def test_list_hk_db_has_data_skips_fallback(
+    db_app_client: httpx.AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """DB 灌了 HK 数据后, 列表走 DB 路径, 不再混入 seed."""
+    await _seed(
+        session_factory,
+        [_seed_hk("00700.HK", name="腾讯控股", listing_date=date(2004, 6, 16))],
+    )
+    r = await db_app_client.get("/api/v1/ipos?market=HK")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1
+    assert body["items"][0]["code"] == "00700.HK"
+    assert body["items"][0]["name"] == "腾讯控股"
+
+
+@pytest.mark.db
+async def test_list_hk_filter_status_db(
+    db_app_client: httpx.AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _seed(
+        session_factory,
+        [
+            _seed_hk("00700.HK", name="腾讯", status="listed"),
+            _seed_hk("01024.HK", name="快手", status="upcoming"),
+        ],
+    )
+    r = await db_app_client.get("/api/v1/ipos?market=HK&status=upcoming")
+    body = r.json()
+    assert body["total"] == 1
+    assert body["items"][0]["code"] == "01024.HK"
+
+
+@pytest.mark.db
+async def test_list_hk_pagination_db(
+    db_app_client: httpx.AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    items = [
+        _seed_hk(f"0{i:04d}.HK", name=f"HK股{i}", listing_date=date(2025, 1, i))
+        for i in range(1, 6)
+    ]
+    await _seed(session_factory, items)
+
+    r = await db_app_client.get("/api/v1/ipos?market=HK&page=1&size=2")
+    body = r.json()
+    assert body["total"] == 5
+    assert len(body["items"]) == 2
+
+    r = await db_app_client.get("/api/v1/ipos?market=HK&page=3&size=2")
+    body = r.json()
+    assert body["total"] == 5
+    assert len(body["items"]) == 1
 
 
 # silence unused

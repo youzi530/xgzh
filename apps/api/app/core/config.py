@@ -121,6 +121,47 @@ class Settings(BaseSettings):
     )
     ipo_ingest_timezone: str = Field(default="Asia/Shanghai")
 
+    # ─── BE-S2-000 HK ingest (hkexnews 公开申请人列表) ──────────────────
+    hkex_base_url: str = Field(
+        default="https://www1.hkexnews.hk",
+        description=(
+            "hkexnews 域名根. 申请人列表走 ``/app/listing/applicants/applicants_c.htm``; "
+            "PDF 直链全部相对于此域. 测试时通过 respx mock 该 host."
+        ),
+    )
+    ipo_ingest_hk_limit: int = Field(
+        default=100,
+        description="每次抓取的最大申请人条数. hkexnews applicants 页一般 < 200 行.",
+    )
+    ipo_ingest_hk_cron_hours: str = Field(
+        default="9,17",
+        description=(
+            "HK IPO 抓取每日 cron 小时数 (Asia/Hong_Kong). 早 9 点 (开盘前) + "
+            "下午 5 点 (收盘后) 二刀流. 多个用逗号分隔."
+        ),
+    )
+    ipo_ingest_hk_initial_delay_seconds: int = Field(
+        default=10,
+        description=(
+            "HK ingest 启动后延迟秒数. 比 A 股 (5s) 多 5s, 避免双任务同一刻打 DB."
+        ),
+    )
+    ipo_ingest_hk_timezone: str = Field(
+        default="Asia/Hong_Kong",
+        description="HK cron 时区. 与 A 股 Asia/Shanghai 分开, 让本地 cron 时刻贴合各市场作息.",
+    )
+    ipo_ingest_hk_request_timeout_seconds: float = Field(
+        default=10.0,
+        description="单次 HTTP 请求 hkexnews 超时. 上游 P99 < 2s, 留 5x buffer.",
+    )
+    ipo_ingest_hk_request_concurrency: int = Field(
+        default=2,
+        description=(
+            "并发抓 hkexnews 的最大请求数. 2 req/s 是 spec/09 写定的友好上限, "
+            "防 IP 被风控. ``asyncio.Semaphore(N)`` 限并发."
+        ),
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",
