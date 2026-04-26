@@ -29,7 +29,7 @@
     },
     "quickapp": {},
     "mp-weixin": {
-        "appid": "",
+        "appid": "wxe525868b30a43b96",
         "setting": {
             "urlCheck": false,
             "es6": true,
@@ -48,7 +48,11 @@
             "port": 5173,
             "https": false,
             "proxy": {
-                "/api": {
+                "/api/v1": {
+                    "target": "http://localhost:8000",
+                    "changeOrigin": true
+                },
+                "/healthz": {
                     "target": "http://localhost:8000",
                     "changeOrigin": true
                 }

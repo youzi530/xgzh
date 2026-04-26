@@ -251,20 +251,38 @@ def _credentials_for_provider(
             raise LLMConfigError(
                 "需要 ZHIPU_API_KEY (model 以 zhipu/ 开头)", provider=provider
             )
-        return settings.zhipu_api_key, None
+        # 智谱在 LiteLLM 1.51 没原生 zhipu/ 路由, 走 OpenAI 兼容协议
+        # endpoint: paas-v4 兼容 OpenAI Chat Completions
+        return settings.zhipu_api_key, "https://open.bigmodel.cn/api/paas/v4"
     raise LLMConfigError(f"unknown provider: {provider}")
 
 
 def _build_completion_kwargs(
     model: str, settings: Settings
-) -> tuple[dict[str, Any], _Provider]:
-    """构造 LiteLLM acompletion / aembedding 通用 kwargs (api_key + api_base)."""
+) -> tuple[dict[str, Any], _Provider, str]:
+    """构造 LiteLLM acompletion / aembedding 通用 kwargs.
+
+    返回 ``(kwargs, provider, effective_model)``. ``effective_model`` 是真正传给
+    LiteLLM 的 model 字符串 — 对外契约 (logs / cost 表 / chat_token_usage 表) 仍用
+    原 model (含 ``zhipu/`` 等前缀); 仅 LiteLLM 调用层做 effective_model 重写.
+
+    重写规则:
+    - ``zhipu/<x>`` → ``openai/<x>``: LiteLLM 1.51 没原生 ``zhipu/`` 路由, 走智谱
+      OpenAI 兼容 endpoint (paas-v4) 调用最稳; provider 仍标 zhipu (用于成本表 +
+      chat_token_usage.provider 列).
+    - 其他 provider 透传 model 不动.
+    """
     provider = _resolve_provider(model)
     api_key, api_base = _credentials_for_provider(provider, settings)
     kwargs: dict[str, Any] = {"api_key": api_key}
     if api_base is not None:
         kwargs["api_base"] = api_base
-    return kwargs, provider
+
+    effective_model = model
+    if provider == "zhipu":
+        effective_model = "openai/" + model.removeprefix("zhipu/")
+
+    return kwargs, provider, effective_model
 
 
 def _configure_litellm_globals() -> None:
@@ -300,10 +318,10 @@ async def chat(
     use_model = model or s.llm_primary_model
     use_temp = temperature if temperature is not None else s.llm_chat_default_temperature
 
-    base_kwargs, provider = _build_completion_kwargs(use_model, s)
+    base_kwargs, provider, effective_model = _build_completion_kwargs(use_model, s)
     call_kwargs: dict[str, Any] = {
         **base_kwargs,
-        "model": use_model,
+        "model": effective_model,
         "messages": messages,
         "stream": False,
         "temperature": use_temp,
@@ -426,10 +444,10 @@ async def stream_chat(
 
     buffer: list[str] = []
     try:
-        base_kwargs, _provider = _build_completion_kwargs(use_model, s)
+        base_kwargs, _provider, effective_model = _build_completion_kwargs(use_model, s)
         call_kwargs: dict[str, Any] = {
             **base_kwargs,
-            "model": use_model,
+            "model": effective_model,
             "messages": messages,
             "stream": True,
             "temperature": temperature,
@@ -485,10 +503,10 @@ async def astream_chat_with_meta(
     use_model = model or s.llm_primary_model
     use_temp = temperature if temperature is not None else s.llm_chat_default_temperature
 
-    base_kwargs, provider = _build_completion_kwargs(use_model, s)
+    base_kwargs, provider, effective_model = _build_completion_kwargs(use_model, s)
     call_kwargs: dict[str, Any] = {
         **base_kwargs,
-        "model": use_model,
+        "model": effective_model,
         "messages": messages,
         "stream": True,
         "stream_options": {"include_usage": True},  # OpenAI / 硅基均支持
@@ -596,7 +614,7 @@ async def embed(
     if use_bsz <= 0:
         raise ValueError(f"batch_size 必须 > 0, got {use_bsz}")
 
-    base_kwargs, provider = _build_completion_kwargs(use_model, s)
+    base_kwargs, provider, effective_model = _build_completion_kwargs(use_model, s)
 
     all_embeddings: list[list[float]] = []
     total_p = total_c = total_t = 0
@@ -607,7 +625,7 @@ async def embed(
         try:
             resp = await aembedding(
                 **base_kwargs,
-                model=use_model,
+                model=effective_model,
                 input=chunk,
                 timeout=s.llm_request_timeout_seconds,
             )
