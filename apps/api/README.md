@@ -2,14 +2,14 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007/008）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007/008/009）
 
 API:
 
 - `GET /healthz` 健康检查
 - `GET /api/v1/ipos?market=A&status=listed&industry=信息技术&page=1&size=20` A 股新股列表（走 `ipos` 表，BE-007 调度入库；`status` / `industry_l1` 精确筛选；分页 size 1-100；`listing_date DESC NULLS LAST` 排序；Redis 缓存 10min，BE-008）
 - `GET /api/v1/ipos?market=HK` 港股新股列表（akshare 暂用 seed，HKEX/Futu 接入排 Sprint 2；同 schema 支持 status/industry/page/size）
-- `GET /api/v1/ipos/{code}` 新股详情（A/US 走 DB；HK 走 seed）
+- `GET /api/v1/ipos/{code}` 新股详情（BE-009：返回 `IPODetail`，含 `sponsors` / `underwriters` / `prospectus_url` / `highlights` / `risks` / `financial_summary`；A/US 走 DB，HK 走 seed；`@cached(ttl=1800s, namespace="ipos:detail")` 30min；`extra` JSONB 自动提取顶层字段；404 标准化错误码 `ipo_not_found`）
 - `POST /api/v1/agent/diagnose` AI 一键诊断（DeepSeek-V3 SSE 流式）
 - `POST /api/v1/auth/otp/send` 手机号 OTP 发送（dev 走 Mock SMS，60s 限流，5min TTL）
 - `POST /api/v1/auth/login/phone` OTP 校验 + 自动注册 + 颁发 access/refresh JWT（5/5min 限流）
@@ -187,6 +187,45 @@ curl -X POST localhost:8000/api/v1/auth/login/wechat-mp \
 ```
 
 ⚠️ 生产前必做: 在 `.env` 配 `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET`（微信公众平台 → 小程序 → 开发设置）。
+
+IPO 详情字段聚合（`app/services/ipo_service.py::get_ipo_detail`，BE-009）:
+
+- 新 schema `IPODetail`（继承 `IPOItem` 加 6 个字段）
+  - `prospectus_url`：招股书 PDF
+  - `sponsors` / `underwriters`：保荐人 / 承销商列表
+  - `highlights` / `risks`：亮点 / 风险点（BE-018 招股书 RAG 落地后填，当前从 `extra` JSONB 读）
+  - `financial_summary`：财务摘要 dict（同上）
+- A/US 走 DB（`SELECT * FROM ipos WHERE code=? AND market=?`），HK 走 `fetch_hk_ipos` seed 扫描
+- `_orm_to_detail(row)`：把 `ipos.extra` JSONB 中已结构化的 `highlights` / `risks` / `financial_summary` 提到顶层；其余 `extra.*` 字段（包括 `internal_*`、`one_lot_winning_rate` 等内部 metadata）**不漏给客户端**
+- 类型不对（如 `extra.highlights` 是 str 不是 list）时优雅降级为空 list，**绝不 5xx**
+- `@cached(ttl=1800s, namespace="ipos:detail")`，`skip_if_none=True` 防 404 穿透；不存在的 code 不进缓存，运营/cron 后续 ingest 入库后立即可见
+- 列表 `ipos:list` 10min vs 详情 `ipos:detail` 30min：详情字段（招股书/保荐人）变化慢，给得更长
+- 404 错误码标准化：`{"detail": {"code": "ipo_not_found", "message": "IPO ... not found"}}`，与登录/邀请码错误体同构
+- 仍保留 `get_ipo(code) -> IPOItem | None` 给 `agent_service.diagnose_stream` 用：Agent prompt 只需基础信息，避免被 30min 详情缓存干扰
+
+```bash
+# 1) HK seed 命中: 占位字段都是 None / []
+curl -s localhost:8000/api/v1/ipos/02015.HK | jq
+
+# 2) A 股 (DB hit): extra 没填时 highlights=[] risks=[] financial_summary=null
+curl -s 'localhost:8000/api/v1/ipos?market=A&size=1' | jq '.items[0].code'
+curl -s localhost:8000/api/v1/ipos/<code> | jq
+
+# 3) 运营手填 sponsors / extra.highlights:
+psql -U xgzh -d xgzh -c "UPDATE ipos SET sponsors='[\"中金\",\"华泰\"]'::jsonb,
+  extra=jsonb_set(coalesce(extra,'{}'::jsonb),'{highlights}','[\"亮点A\"]'::jsonb)
+  WHERE code='<code>';"
+
+# 4) 清详情缓存 (30min TTL 太长, 手测时 bust):
+redis-cli --scan --pattern 'xgzh:cache:ipos:detail:*' | xargs -I{} redis-cli DEL {}
+
+# 5) 再请求 -> 看到新字段
+curl -s localhost:8000/api/v1/ipos/<code> | jq '.sponsors, .highlights'
+
+# 6) 不存在 -> 404
+curl -sw '\nHTTP=%{http_code}\n' localhost:8000/api/v1/ipos/000999.SZ
+# {"detail":{"code":"ipo_not_found","message":"IPO 000999.SZ not found"}}
+```
 
 邀请码（`app/services/invite_service.py`，BE-006）:
 

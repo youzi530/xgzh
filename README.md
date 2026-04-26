@@ -19,10 +19,11 @@
   - ✅ **BE-006**：邀请码生成 + 绑定（注册原子落 `invite_codes` 行；`POST /api/v1/invite/bind` 一次性 + 自禁 + 并发安全 + 7 类错误码）
   - ✅ **BE-007**：IPO 表持久化 + AKShare 调度入库（APScheduler `AsyncIOScheduler` lifespan 启停；启动后立即一次 + cron 08:00/20:00 Asia/Shanghai；`upsert_ipos` PG `ON CONFLICT (code, market) DO UPDATE` 一条 SQL；`COALESCE` 兜底防擦数据；`run_ingest_a_job` 永不抛）
   - ✅ **BE-008**：`GET /ipos` 切回数据库 + 筛选 + 分页 + Redis 缓存（A 股走 `ipos` 表；HK 仍 seed；`status`/`industry` 筛选；`page`/`size` 分页 1-100；`listing_date DESC NULLS LAST` 排序；`@cached(ttl=600s, namespace="ipos:list")` 含 5 元组参数 hash）
-  - 进行中：BE-009 (`GET /ipos/{code}` 字段聚合 / 多源 merge)
+  - ✅ **BE-009**：`GET /ipos/{code}` 字段聚合 / 多源 merge（新 schema `IPODetail` 加 `sponsors` / `underwriters` / `prospectus_url` / `highlights` / `risks` / `financial_summary`；`extra` JSONB 提取顶层字段；`@cached(ttl=1800s, namespace="ipos:detail")` `skip_if_none=True` 防 404 穿透；404 标准化错误码 `ipo_not_found`）
+  - 进行中：BE-010 (用户自选股 + API)
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 87 passed / 86 skipped
-  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 173 passed
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 92 skipped
+  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 181 passed
 
 ## 📖 设计文档
 

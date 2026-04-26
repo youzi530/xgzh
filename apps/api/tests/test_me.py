@@ -215,7 +215,11 @@ async def test_me_with_tampered_token_returns_401_invalid(
 ) -> None:
     body = await _login_and_get_tokens(client)
     access = body["tokens"]["access_token"]
-    bad = access[:-1] + ("0" if access[-1] != "0" else "1")
+    # 改 base64url 末位有时仅改 padding bit, 不会污染 HMAC 输入 (=> 验签仍通过).
+    # 改 8th-to-last 一定落在 sig 主体, 稳定破签. 同 test_jwt.py 里的修法.
+    pivot = -8
+    orig = access[pivot]
+    bad = access[:pivot] + ("A" if orig != "A" else "B") + access[pivot + 1 :]
     r = await client.get("/api/v1/me", headers=_bearer(bad))
     assert r.status_code == 401
     assert r.json()["detail"]["code"] == "token_invalid"

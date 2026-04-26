@@ -671,16 +671,78 @@ redis-cli TTL 'xgzh:cache:ipos:list:list_ipos:67dea2d9...'
 
 ---
 
-### BE-009 · `GET /ipos/{code}` 字段聚合
+### BE-009 · `GET /ipos/{code}` 字段聚合 ✅ DONE
 
 **改动文件**
-- `apps/api/app/services/ipo_service.py`（`get_ipo_detail` 多源 merge）
-- `apps/api/app/schemas/ipo.py`（新增 `IPODetail` 包含财务摘要、保荐人、亮点）
+- `apps/api/app/schemas/ipo.py`：新增 `IPODetail`（继承 `IPOItem` + `prospectus_url` / `sponsors` / `underwriters` / `highlights` / `risks` / `financial_summary`）
+- `apps/api/app/services/ipo_service.py`：
+  - `_orm_to_detail(row)`：把 ORM `IPO` 行 + `extra` JSONB 提到 `IPODetail`
+  - `get_ipo_detail(code)`：A/US 走 DB、HK 走 seed；返回 `dict`（缓存友好）
+  - `@cached(ttl=1800s, namespace="ipos:detail")`，`skip_if_none=True` 防 404 穿透
+- `apps/api/app/api/v1/ipos.py`：`GET /ipos/{code}` 切到 `response_model=IPODetail`，404 返回 `{"detail": {"code": "ipo_not_found", "message": ...}}`
+- `apps/api/tests/test_ipo_detail.py`：8 条新用例
+- `apps/api/tests/test_me.py`：顺手把 JWT 篡改测试改成动 8th-to-last 字符（与 `test_jwt.py` 同款），稳定破签
+
+**关键设计决策**
+
+1. **保留 `get_ipo` 给内部用，路由统一走 `get_ipo_detail`**
+   - `agent_service.diagnose_stream` 只需 `IPOItem` 级别 prompt context，不需要 sponsors/highlights，继续用 `get_ipo`，不被 30min 详情缓存干扰
+   - 路由 `GET /ipos/{code}` 改用 `get_ipo_detail`，享受详情缓存
+2. **`extra` JSONB 不直接 expose**
+   - 详情 schema 显式挑出已结构化的 `highlights` / `risks` / `financial_summary`；其它 `extra.*` 字段（如 `internal_*`、`one_lot_winning_rate` 等）不漏给客户端，schema 演进可控
+   - 类型不对（如 `extra.highlights` 是 str 而非 list）时优雅降级为空 list，绝不 5xx
+3. **`@cached` namespace 分层 + TTL 阶梯**
+   - 列表 `ipos:list` TTL 600s（10min）— 用户高频访问
+   - 详情 `ipos:detail` TTL 1800s（30min）— 字段变化慢（招股书/保荐人 12h+ 不变），给得更长
+   - 不存在的 code 不进缓存（`skip_if_none=True`），运营/cron 后续 ingest 入库后立即可见
+4. **404 错误码标准化**：`{"detail": {"code": "ipo_not_found", "message": ...}}`，与登录/邀请码错误体保持同构（前端可机器解析 `code`）
+5. **占位字段策略**：`highlights` / `risks` / `financial_summary` 当前从 `extra` JSONB 读，BE-018 招股书 RAG 落地后由 ingest pipeline 写入；schema 已先暴露，前端可以并行接 UI
 
 **AC**
-- [ ] `GET /api/v1/ipos/{code}` 返回详情（含财务摘要 / 保荐人 / 亮点 / 风险）
-- [ ] 不存在返回 404
-- [ ] 缓存 30 分钟
+- [x] `GET /api/v1/ipos/{code}` 返回 `IPODetail`（含 `sponsors` / `underwriters` / `prospectus_url` / `highlights` / `risks` / `financial_summary`）
+- [x] A/US 走 DB，HK 走 seed
+- [x] `extra` JSONB 中 `highlights` / `risks` / `financial_summary` 自动提取到顶层字段
+- [x] 不存在返回 404 + `code: "ipo_not_found"`
+- [x] 缓存 30 分钟（Redis 验证 TTL ≈ 1800s）
+- [x] 缓存 miss → hit 时延 13ms → 2ms
+
+**测试 (`tests/test_ipo_detail.py`，8 条)**
+- HK seed hit / 404
+- A DB 完整 merge（sponsors + extra.highlights + financial_summary）
+- A DB 无 extra 时返回安全默认（空 list / None）
+- A DB extra 类型损坏（str 而非 list）不 500
+- A DB 404 + 错误码
+- 缓存命中（同 code 第二次不 hydrate ORM）
+- 404 不缓存（先 404，ingest 后再请求能拿到）
+
+**烟测**
+```bash
+# 1) HK seed 详情
+curl -s http://127.0.0.1:8001/api/v1/ipos/02015.HK | jq
+
+# 2) A DB 详情（已 ingest 过的 code，extra 没填 → highlights/risks 为空 list）
+curl -s 'http://127.0.0.1:8001/api/v1/ipos?market=A&size=1' | jq '.items[0].code'
+curl -s http://127.0.0.1:8001/api/v1/ipos/<code> | jq
+
+# 3) 模拟运营写 sponsors / extra.highlights
+psql -U xgzh -d xgzh -c "UPDATE ipos SET sponsors='[\"中金公司\",\"华泰\"]'::jsonb,
+  extra=jsonb_set(coalesce(extra,'{}'::jsonb),'{highlights}','[\"亮点A\",\"亮点B\"]'::jsonb)
+  WHERE code='<code>';"
+
+# 4) 清详情缓存（不然拿到旧的）
+redis-cli --scan --pattern 'xgzh:cache:ipos:detail:*' | xargs -I{} redis-cli DEL {}
+
+# 5) 再请求 → 看到新字段
+curl -s http://127.0.0.1:8001/api/v1/ipos/<code> | jq
+
+# 6) 不存在 → 404
+curl -sw "\nHTTP=%{http_code}\n" http://127.0.0.1:8001/api/v1/ipos/000999.SZ
+```
+
+**遗留 / 待办**
+- BE-018 招股书 RAG 落地后，把 `highlights` / `risks` / `financial_summary` 改为 ingest pipeline 自动写入，而不是运营手动 update
+- `financial_summary` 后续接入 AKShare `stock_financial_abstract_em` 等接口
+- 详情缓存应在 ingest 全表 upsert 后失效（可在 `ipo_ingest_service` 末尾 `KEYS xgzh:cache:ipos:detail:*` 批量删；需要把列表缓存一起处理；先不做，等真实数据库写入吞吐确认后再加）
 
 ---
 

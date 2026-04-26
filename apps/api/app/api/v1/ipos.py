@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas.ipo import IPOItem, IPOListResponse, IPOStatus, Market
+from app.schemas.ipo import IPODetail, IPOListResponse, IPOStatus, Market
 from app.services import ipo_service
 
 router = APIRouter(prefix="/ipos", tags=["ipos"])
@@ -42,9 +42,20 @@ async def list_ipos(
     return IPOListResponse.model_validate(payload)
 
 
-@router.get("/{code}", response_model=IPOItem, summary="新股详情 (按 code 精确查)")
-async def get_ipo(code: str) -> IPOItem:
-    item = await ipo_service.get_ipo(code)
-    if item is None:
-        raise HTTPException(status_code=404, detail=f"IPO {code} not found")
-    return item
+@router.get(
+    "/{code}",
+    response_model=IPODetail,
+    summary="新股详情 (BE-009: 多源字段聚合 + 30min 缓存)",
+    responses={404: {"description": "code 不存在或还未抓到"}},
+)
+async def get_ipo_detail(code: str) -> IPODetail:
+    payload = await ipo_service.get_ipo_detail(code)
+    if payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "ipo_not_found",
+                "message": f"IPO {code} not found",
+            },
+        )
+    return IPODetail.model_validate(payload)
