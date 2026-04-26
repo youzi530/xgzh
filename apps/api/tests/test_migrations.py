@@ -48,6 +48,9 @@ EXPECTED_INDEXES_SUBSET = {
     "uq_ipos_code_market",
     "ix_ipo_documents_embedding_hnsw",
     "ix_ipo_documents_ipo_code_doc_type",
+    # 0003 BE-S2-003: 切分顺序 + 防重
+    "ix_ipo_documents_doc_id_chunk_index",
+    "uq_ipo_documents_doc_id_content_hash",
     "ix_user_favorites_ipo_code_market",
     "uq_push_tokens_user_platform_device",
     "ix_invite_codes_owner_user_id",

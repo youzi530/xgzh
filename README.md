@@ -69,8 +69,8 @@
     - `Makefile`：`help` / `test-db-init`（幂等 createdb + pgcrypto）/ `test-unit` / `test-e2e` / `test-all` / `lint` / `typecheck`，关闭 QA-001 测试库初始化遗留
     - 7 条新 cache 单测（前缀边界 / fail-soft / 不误删限流 key 等不变量锁定）
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 120 passed / 128 skipped（含 BE-S2-002 facade 24 条单测）
-  - 有 DB：`make test-all` ⇒ **248 passed in ~32s**（224 → 248，新增 24 条 BE-S2-002 LLM facade 单测；累计 11 张表：7 张 Sprint 1 + 4 张 Sprint 2）
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 120 passed / 136 skipped（含 BE-S2-002 facade 24 条单测）
+  - 有 DB：`make test-all` ⇒ **256 passed in ~25s**（248 → 256，新增 8 条 BE-S2-003 `ipo_documents` 扩展集成测试；累计 11 张表：7 张 Sprint 1 + 4 张 Sprint 2）
 
 ### 🚀 Sprint 2 进行中 — AI Agent + RAG（核心壁垒）
 
@@ -78,6 +78,7 @@
 
 - ✅ **BE-S2-001**（4 张会话表）：`chat_sessions` / `chat_messages` / `chat_tool_calls` / `chat_token_usage` + Alembic 0002 + 6 个二级索引 + 6 条集成测试（迁移幂等、级联策略、append-only 守护齐验证）
 - ✅ **BE-S2-002**（LLM facade）：单文件 `app/adapters/llm_client.py` 重构 + `chat / embed / rerank` 三入口 + 5 个 frozen dataclass（`TokenUsage / ChatResult / ChatStreamChunk / EmbeddingResult / RerankResult`）+ 3 层异常 + 8 条 hardcoded 成本表（CNY/M tokens）+ 24 条单测（路由 / 成本 / tool_calls 跨帧聚合 / 自动分批 / respx rerank 全覆盖）。Sprint 1 老 4 处调用方零修改
+- ✅ **BE-S2-003**（`ipo_documents` 扩展 + 防重）：Alembic 0003 给已有 `ipo_documents` ALTER 6 列（`chunk_index` / `token_count` / `content_hash` / `embedding_model` / `embedding_dim` / `lang`）+ 2 索引（`(doc_id, content_hash)` partial UNIQUE 防重 + `(doc_id, chunk_index)` partial 排序）+ 8 条 PG 真跑集成测试（schema 形状 / partial UNIQUE / NULL 共存 / `<=>` cosine ANN 实查 / downgrade idempotent）。BE-S2-004 招股书入库直接 `ON CONFLICT (doc_id, content_hash) DO NOTHING` 防重灌；多版本向量共存留口
 
 主战场：
 
@@ -90,7 +91,7 @@
 - **评测集**：80 条标注 query + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）
 - **前端**：对话页 + 打字机渲染（MP-WEIXIN onChunkReceived 兼容）+ 引用源面板 + 配额引导
 
-下一步推荐 → **BE-S2-003（pgvector + Alembic 0003，0.5d）**：短 PR + 解锁后续 BE-S2-004 招股书入库 + BE-S2-005 混合检索两条 RAG 线。
+下一步推荐 → **BE-S2-000（HK ingest 真源接入，1d）**：BE-S2-004 招股书入库需要真 IPO 列表 + PDF URL，spec/04 §4 已写"HK 是 RAG MVP 主战场"；hkexnews 列表接入 + 招股书 URL 入库，给后续 BE-S2-004 / BE-S2-005 RAG 流水线供米。
 
 ## 📖 设计文档
 

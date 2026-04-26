@@ -129,8 +129,10 @@ async def test_alembic_downgrade_then_upgrade_idempotent(
         )
         assert {r[0] for r in rows} == _CHAT_TABLES
 
-    # 1. downgrade -1 (回到 0001)
-    await asyncio.to_thread(command.downgrade, cfg, "-1")
+    # 1. downgrade 到 0001_init (跳过未来 Sprint 的中间 revision)
+    # —— 显式指定目标 revision 比 ``-1`` 更稳: BE-S2-003 落 0003 后, ``-1`` 只回
+    # 0002 (chat 表还在); 这里要的是把 chat 4 张表整体下掉, 所以锁死 0001_init.
+    await asyncio.to_thread(command.downgrade, cfg, "0001_init")
     async with db_engine.connect() as conn:
         rows = await conn.execute(
             text(

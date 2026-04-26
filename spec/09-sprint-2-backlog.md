@@ -57,7 +57,7 @@
 | BE-S2-000 | data | HK IPO ingest 真源接入（hkexnews 列表 / Futu OpenAPI 二选一）| 1d | — | P0 | ⬜ |
 | BE-S2-001 | db | 会话/消息/工具调用/Token 4 张表 + ORM + Alembic 0002 | 1d | — | P0 | ✅ |
 | BE-S2-002 | adapter | LLM facade 重构（chat/embedding/rerank 三入口 + multi-provider）| 0.5d | — | P0 | ✅ |
-| BE-S2-003 | db | pgvector `document_chunks` 表 + HNSW + Alembic 0003 | 0.5d | BE-S2-001 | P0 | ⬜ |
+| BE-S2-003 | db | pgvector `ipo_documents` 扩展 + 防重 + Alembic 0003 | 0.5d | BE-S2-001 | P0 | ✅ |
 | BE-S2-004 | rag | 招股书 PDF 解析 + 语义切分 + 批量 Embedding 入库 | 1d | BE-S2-000, BE-S2-002, BE-S2-003 | P0 | ⬜ |
 | BE-S2-005 | rag | 混合检索 + RRF 融合 + bge-reranker 重排 | 1d | BE-S2-003 | P0 | ⬜ |
 | BE-S2-006a | agent | Tool 注册中心 + 2 个最简工具（basic_info / financial）| 1d | BE-S2-001 | P0 | ⬜ |
@@ -215,15 +215,77 @@ apps/api/tests/test_llm_facade.py              # 新建（24 条单测，全 moc
 4. **成本表 hardcode**：`_PRICE_CNY_PER_M_TOKENS` 内置 8 条价格条目（DeepSeek-V3 / V2.5 / glm-4-flash / bge-m3 / bge-reranker 等），未匹配 fallback 到 `Decimal('0')` + warn（不抛），防 `chat_token_usage.cost_cny` NOT NULL 触发；Sprint 3+ 真做成本看板再做配置化
 5. **embed 数量校验**：响应向量数 ≠ 输入文本数时抛 `LLMProviderError`，防 BE-S2-004 招股书 chunk 与 embedding 错位入库（沉默故障会污染整个 RAG 索引）
 
+## BE-S2-003 实施成果（2026-04-26 落地）
+
+### 关键决策（vs spec 原稿）
+
+1. **不新建 `document_chunks` 表，而是 ALTER 已有 `ipo_documents`**
+   - `ipo_documents` 在 0001_init 已建（`vector(1024)` + HNSW cosine + `ipo_code/doc_type/doc_id` 索引），但 Sprint 1 零写入流量
+   - 改名为 `document_chunks` 要级联改 ORM / 索引名 / `test_migrations.py` / spec/05 / spec/04 多处，diff 大且收益不明（"ipo_documents" 也是 RAG chunks，命名一致 Sprint 1 风格）
+   - 0003 走 `ALTER TABLE ipo_documents ADD COLUMN ...`，老 schema 零变动
+2. **全文检索 / `tsvector` 列 punt 给 BE-S2-005（一条独立 0004 migration）**
+   - 中文分词器选型本身是独立决策（zhparser 装难、pg_trgm 简单只能模糊匹配、应用层 rank-bm25 便宜可控），BE-S2-005 真做混合检索代码时再敲定
+   - 本 PR 不替 BE-S2-005 做选型；只做"BE-S2-004 入库流水线必需"的最小集
+
+### 改动文件
+
+```
+apps/api/alembic/versions/0003_extend_ipo_documents.py     # 新建（ALTER 6 列 + 2 索引）
+apps/api/app/db/models/ipo.py                              # IPODocument 同步加 6 字段 + 2 Index 声明
+apps/api/tests/test_migrations.py                          # EXPECTED_INDEXES_SUBSET 加 2 个新名
+apps/api/tests/integration/conftest.py                     # truncate_all 加 ipo_documents
+apps/api/tests/integration/test_document_chunks_schema.py  # 新建 8 条集成用例
+apps/api/tests/integration/test_chat_tables.py             # downgrade -1 → downgrade 0001_init（破除单 sprint 假设）
+```
+
+### Schema 增量
+
+| 列 | 类型 | 默认 / Nullable | 用途 |
+|------|------|---------|------|
+| `chunk_index` | INTEGER | NULL | 同 doc 内顺序号（取上下文 ±1 / 排序） |
+| `token_count` | INTEGER | NULL | bge-m3 tokenizer token 数（cost 调试） |
+| `content_hash` | CHAR(64) | NULL | sha256(text) 16 进制；防同一 chunk 反复入库 |
+| `embedding_model` | VARCHAR(64) | NOT NULL DEFAULT `'BAAI/bge-m3'` | 多版本向量共存 |
+| `embedding_dim` | INTEGER | NOT NULL DEFAULT `1024` | 拒识维度不匹配的索引污染 |
+| `lang` | VARCHAR(8) | NOT NULL DEFAULT `'zh'` | HK 招股书 `'en'` / A 股 `'zh'` |
+
+| 索引 | 类型 | 用途 |
+|------|------|------|
+| `uq_ipo_documents_doc_id_content_hash` | UNIQUE PARTIAL `WHERE content_hash IS NOT NULL` | BE-S2-004 直接 `ON CONFLICT (doc_id, content_hash) DO NOTHING` 防重 |
+| `ix_ipo_documents_doc_id_chunk_index` | PARTIAL `WHERE chunk_index IS NOT NULL` | 取相邻 chunk 上下文 / 拼回原文 |
+
+### 测试矩阵（8 条集成用例 / 全 PG 真跑）
+
+1. **schema 形状**：`information_schema.columns` 验 6 个新列 type / nullable / server_default
+2. **partial UNIQUE 防重**：同 (doc_id, h1) 第二次插入抛 `IntegrityError`；不同 hash 或不同 doc 共存 OK
+3. **NULL content_hash 共存**：3 条 `content_hash IS NULL` 的兼容老 Sprint 1 行可入库
+4. **chunk_index 顺序还原**：乱序写入 5 个 chunk，`ORDER BY chunk_index ASC` 取回 [0,1,2,3,4]
+5. **vector(1024) 实写实查**：5 个单位向量 + `embedding <=> CAST(:q AS vector)` cosine ANN，self 距离 < 1e-5（测 BE-S2-005 检索原语可用）
+6. **NOT NULL DEFAULT 列填充**：`embedding_model/dim/lang` 不传也能写
+7. **lang 显式覆盖**：`lang='en'` 给 HK 英文招股书
+8. **0003 downgrade idempotent**：downgrade -1 后 6 列 + 2 索引消失、Sprint 1 老列 + HNSW 索引零损；upgrade head 后又全部回来
+
+### 关键回归修复
+
+`test_alembic_downgrade_then_upgrade_idempotent` 原硬编码 `command.downgrade(cfg, "-1")` 假设 head=0002；0003 落地后 `-1` 只回 0002（chat 表还在）。改为显式 `downgrade(cfg, "0001_init")`，破除单 sprint 假设，未来 0004/0005 加进来也不需再改。
+
+### 测试基线
+
+| 项目 | 旧 baseline (BE-S2-002 后) | 新 baseline (BE-S2-003 后) |
+|------|------|------|
+| pytest | 248 passed | **256 passed** (+8) |
+| ruff | 51 errors | 51 errors（持平）|
+| mypy | 23 errors | 23 errors（持平）|
+
 ### 下一步推荐
 
 | 候选 | 理由 |
 |------|------|
-| **BE-S2-003** (pgvector + Alembic 0003, 0.5d) | 短 PR + 解锁 BE-S2-004 + BE-S2-005；和 BE-S2-001/002 同属"基建一刀切" |
-| BE-S2-006a (Tool 注册中心, 1d) | 已可起：BE-S2-001 chat 表 + BE-S2-002 facade 都齐；但要 7 维 IPO 数据 schema 对齐, 写起来略慢 |
-| BE-S2-000 (HK ingest, 1d) | 也无依赖，但 BE-S2-004 招股书入库才会真用上, 可挪后 |
+| **BE-S2-000** (HK ingest, 1d) | BE-S2-004 招股书入库需要真 IPO 列表 + PDF URL，此前没源数据；spec/04 §4 已写"HK 是 RAG MVP 主战场"。短 PR，外部 API 接入风险可控 |
+| BE-S2-006a (Tool 注册中心 + 2 工具, 1d) | 已可起；但 7 维 IPO 数据 schema 对齐略慢，且 BE-S2-007 才真用 |
+| BE-S2-004 (招股书入库, 1d) | 必须先有 BE-S2-000 提供 PDF URL，否则无米下锅；不能现在起 |
 
-→ **建议下一步走 BE-S2-003**（先把向量检索基建落，BE-S2-004/005 后续两条 RAG 路全打开）
+→ **建议下一步走 BE-S2-000**（HK ingest 真源接入；下一步 BE-S2-004 招股书 PDF 解析 + 切分 + 入库自然推进；spec 里 RAG 主线 BE-S2-000 → BE-S2-004 → BE-S2-005 三连）
 
 ---
 

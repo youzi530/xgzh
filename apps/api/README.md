@@ -52,7 +52,7 @@ print(asyncio.run(ipo_ingest_service.run_ingest_a_job()))
 # 二次跑 → received=200 inserted=0 updated=200 (upsert 语义)
 ```
 
-Schema（Alembic `0001_init` + `0002_chat`，PG 14 + pgvector 0.8.2）:
+Schema（Alembic `0001_init` + `0002_chat` + `0003_chunks`，PG 14 + pgvector 0.8.2）:
 
 - Sprint 1 (`0001_init`)：`users` / `auth_sessions` / `invite_codes` / `ipos` / `ipo_documents`（embedding `vector(1024)` + HNSW 索引）/ `user_favorites` / `push_tokens`
 - Sprint 2 (`0002_chat`, BE-S2-001)：`chat_sessions` / `chat_messages` / `chat_tool_calls` / `chat_token_usage`
@@ -60,6 +60,11 @@ Schema（Alembic `0001_init` + `0002_chat`，PG 14 + pgvector 0.8.2）:
   - 6 个二级索引：`(user_id, created_at)` / `(ipo_code, created_at)` / `(session_id, created_at)` / `(tool_name, created_at)` / `(model, created_at)` / `(created_at)`
   - 级联：会话→消息→工具调用/Token 用量 ON DELETE CASCADE；用户删除则会话 user_id SET NULL（与 invite_codes 同策略）
   - append-only：`chat_messages` / `chat_tool_calls` / `chat_token_usage` 不带 `updated_at`（写入即历史，防 LLM 输出篡改）
+- Sprint 2 (`0003_chunks`, BE-S2-003)：扩展 `ipo_documents` 让 RAG 入库流水线（BE-S2-004）和混合检索（BE-S2-005）有米下锅
+  - 新增 6 列：`chunk_index`（同 doc 内顺序）/ `token_count`（cost 调试）/ `content_hash CHAR(64)`（sha256 防重）/ `embedding_model`（默认 `BAAI/bge-m3`，多版本共存）/ `embedding_dim`（默认 1024）/ `lang`（`zh`/`en`）
+  - 新增 2 partial 索引：`uq_ipo_documents_doc_id_content_hash`（UNIQUE PARTIAL `WHERE content_hash IS NOT NULL`，BE-S2-004 直接 `ON CONFLICT DO NOTHING`）+ `ix_ipo_documents_doc_id_chunk_index`（取相邻上下文）
+  - 老 schema 零变动：HNSW 索引、`(ipo_code, doc_type)` 复合索引、Sprint 1 列全保留；测试桩 `content_hash IS NULL` 的老行不被 partial UNIQUE 卡住
+  - 全文检索 / `tsvector` 列 punt 给 BE-S2-005 一条独立 0004 migration（中文分词器选型独立决策）
 
 缓存层（`app/cache/`）:
 
@@ -500,7 +505,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 248 passed in ~32s (Sprint 1 + BE-S2-001 + BE-S2-002)
+# → 256 passed in ~25s (Sprint 1 + BE-S2-001 + BE-S2-002 + BE-S2-003)
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e

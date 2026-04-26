@@ -109,16 +109,18 @@ async def session_factory(db_engine: AsyncEngine) -> async_sessionmaker[AsyncSes
 
 @pytest.fixture
 async def truncate_all(db_engine: AsyncEngine) -> AsyncIterator[None]:
-    """每条用例前清 7 张业务表 + 重置序列, 用例间数据完全隔离.
+    """每条用例前清业务表 + 重置序列, 用例间数据完全隔离.
 
     与 alembic_version 解耦; 不 truncate alembic_version 防止把 schema 元数据
-    清掉。
+    清掉。``ipos`` 走 CASCADE 会顺带清 ``ipo_documents`` (FK CASCADE),
+    但 ``ipo_documents`` 也支持 ``ipo_id IS NULL`` 的孤儿 chunk (BE-S2-003 后
+    向 RAG 灌任意文档), 显式列出更稳。
     """
     async with db_engine.begin() as conn:
         await conn.execute(
             text(
                 "TRUNCATE users, auth_sessions, user_favorites, ipos, "
-                "invite_codes, push_tokens, chat_sessions "
+                "ipo_documents, invite_codes, push_tokens, chat_sessions "
                 "RESTART IDENTITY CASCADE"
             )
         )
