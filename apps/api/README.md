@@ -446,7 +446,7 @@ uv run alembic revision --autogenerate -m "add foo table"
 # 单测（无 DB 集成测试自动跳过）
 uv run pytest
 
-# 含 DB 集成测试（迁移 up/down/idempotent）
+# 含 DB 集成测试（迁移 up/down/idempotent + e2e 主路径）
 # 先建测试库 xgzh_test:
 psql -U postgres -c "CREATE DATABASE xgzh_test OWNER xgzh;"
 psql -U postgres -d xgzh_test -c "CREATE EXTENSION pgcrypto; CREATE EXTENSION vector;"
@@ -454,6 +454,32 @@ psql -U postgres -d xgzh_test -c "CREATE EXTENSION pgcrypto; CREATE EXTENSION ve
 XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh_test' \
   uv run pytest -q
 ```
+
+### QA-001 · e2e 集成测试
+
+`tests/integration/` 是 QA-001 落地的"金线"e2e: 一条用例打通 注册 → token → /me → /ipos → /agent/diagnose SSE → 收藏 6 个模块。CI 友好特性：
+
+- **不依赖真 LLM Key**: `fake_llm` fixture monkey-patch `llm_client.stream_chat`，返回 5 段固定 token + 真 `DISCLAIMER` 字符串；本地 `.env` 即使配了 SILICONFLOW_API_KEY 也不会被偷打。
+- **不依赖真短信网关**: `mock_sms` fixture 注入 `MockSMSAdapter`；测试用例直接 `otp_service.store_otp()` 埋码，跳过短信投递。
+- **不依赖真 Redis**: `redis_client` fixture 用 `InMemoryRedisClient`，覆盖 INCR/EXPIRE/Lua 路径，与 `RealRedisClient` 行为一致（BE-005）。
+- **没设 `XGZH_TEST_DATABASE_URL` 时整个 session skip**: 顶层 `tests/conftest.py` 的 `db` marker hook 兜底，CI 不会因没起 PG 红。
+
+本地一键跑 e2e:
+
+```bash
+# 1. 起基础设施 (PG + Redis, Meili 不需要)
+cd ../../infra && docker compose up -d postgres redis
+
+# 2. 准备测试库 (与 dev 库同实例不同库, 防误清)
+psql -U xgzh -h localhost -d postgres -c 'CREATE DATABASE xgzh_test'
+
+# 3. 跑 e2e (3 条用例 ~1.2s)
+cd ../apps/api
+XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh_test' \
+  uv run pytest tests/integration/ -v
+```
+
+预期 `3 passed`，详见 `spec/08-sprint-1-backlog.md` §QA-001。
 
 ## 项目结构
 

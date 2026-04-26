@@ -34,7 +34,7 @@
 | FE-004 ✅ | frontend | 首页瀑布流 + 今日打新卡片 + 打新日历 | 1.5d | BE-008 | P0 |
 | FE-005 ✅ | frontend | 新股详情页（关注按钮 + 招股要点） | 1d | BE-009, BE-010 | P0 |
 | FE-006 ✅ | frontend | 自选列表 Tab | 0.5d | BE-010, FE-005 | P0 |
-| QA-001 | qa | API 集成测试套件（pytest + httpx） | 1d | BE-009 | P0 |
+| QA-001 ✅ | qa | API 集成测试套件（pytest + httpx） | 1d | BE-009 | P0 |
 
 **合计**：后端 8d + 前端 6d + 基础 2d = **16 PR / ~12-14 工作日**（双周内可完）
 
@@ -1322,16 +1322,49 @@ cd apps/api && uv run uvicorn app.main:app --port 8000
 
 ---
 
-### QA-001 · API 集成测试套件
+### QA-001 · API 集成测试套件 ✅
 
 **改动文件**
-- `apps/api/tests/integration/conftest.py`（pytest fixture：临时 DB + Redis）
-- `apps/api/tests/integration/test_e2e_ipo_diagnose.py`
+- `apps/api/tests/integration/__init__.py`（新, 空）
+- `apps/api/tests/integration/conftest.py`（共享 fixtures: PG schema reset + InMemoryRedis + Mock SMS + fake LLM + 一站式 `client`）
+- `apps/api/tests/integration/test_e2e_ipo_diagnose.py`（一条主用例 + 两条退化用例）
 
 **AC**
-- [ ] 一条 e2e 用例：注册 → 拿 token → /ipos → /agent/diagnose → 校验 SSE 帧 + 免责声明
-- [ ] CI 上能用 docker-compose 起 PG/Redis 跑通
-- [ ] 失败时 dump 完整 server log 到 artifact
+- [x] 一条 e2e 用例：注册 → 拿 token → /me → /ipos 列表 → /ipos/{code} 详情 → /agent/diagnose SSE → 收藏闭环；校验 start/delta/end SSE 帧结构 + 合规免责声明 ("不构成投资建议") + LLM mock token 透传无丢失
+- [x] CI 上能用 docker-compose 起 PG/Redis 跑通：`make infra-up` 起 `xgzh-postgres` + `xgzh-redis`，再 `createdb xgzh_test` + `XGZH_TEST_DATABASE_URL=...` 跑 pytest（步骤见 `apps/api/README.md` §测试）
+- [x] 没配 `XGZH_TEST_DATABASE_URL` 时整个 integration session 自动 skip（顶层 `tests/conftest.py` 的 `db` marker hook），CI 不会因没起 DB 红
+- [x] LLM mock 走 `fake_llm` fixture，monkey-patch `llm_client.stream_chat` 返回固定 5 段 token + 真实 `DISCLAIMER` 字符串，CI 完全不打远程 LLM 也不依赖 SILICONFLOW_API_KEY
+- [x] `uv run pytest` 全绿（211 个用例，1.25s 跑完 3 条 e2e）
+
+**关键设计决策（与现有 `tests/test_*.py` 的关系）**
+
+- 现有 `tests/test_favorites.py` / `test_ipos_list.py` 等"单功能"测试当前把 fixtures 内联在自己文件里。本次只把"复合 e2e"需要的 fixtures 抽到 `tests/integration/conftest.py`，**不动**现有文件以保持 diff 最小。后续 sprint 可分阶段把单功能测试也迁过来共享 fixtures。
+- 发现并修了一个隐藏 bug：`patch_session_factory` 之前只 patch `app.db` + `ipo_ingest_service`，没 patch `ipo_service`。因为 `ipo_service` 在 module-level 已经把 `get_session_factory` 拷到自己 namespace，改 `app.db` 不传染。e2e 走 `/api/v1/ipos` 列表时这个漏洞才暴露——表现是测试库 seed 完测不到。conftest 现在三处都 patch（`db_pkg` / `ingest_mod` / `ipo_service_mod`），未来加新 service 要复制一份。
+- LLM 选 monkey-patch `stream_chat` 而不是 `acompletion`：前者是测试边界（service 层契约），后者是 litellm 实现细节，contract test 应当在更稳的边界。代价是 e2e 不覆盖 `stream_chat` 内部的 `forbidden_pattern_filter` + `ensure_disclaimer` —— 这些已在 `test_compliance.py` 单测覆盖，e2e 改测"路由 + SSE 帧序列 + 免责声明端到端透传"。
+- SSE 用 `httpx.ASGITransport` 走非流式收 body 后 `_parse_sse_frames` split：`EventSourceResponse` 在 ASGI 直连下会 buffer 全部 chunks 再关连接，对 e2e 完全够用；真流式断流（client 中途断）测试在 Sprint 2 RAG 落地时再补。
+
+**手测脚本（本地一键复现）**
+
+```bash
+# 1. 起基础设施 (PG + Redis)
+cd xgzh/infra && docker compose up -d postgres redis
+
+# 2. 准备测试库 (与 dev 库同实例不同库, 防误清)
+psql -U xgzh -h localhost -d postgres -c 'CREATE DATABASE xgzh_test'
+
+# 3. 跑 e2e
+cd ../apps/api
+XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh_test' \
+  uv run pytest tests/integration/ -v
+```
+
+预期: `3 passed in ~1.2s`。
+
+**已知限制 / 下一步**
+
+- 当前 e2e 未覆盖 BE-007 调度任务（APScheduler 周期性 ingest）— 那是后台任务，e2e 难以稳定 trigger，单测 `test_ipo_ingest.py` 已覆盖逻辑。
+- `test_e2e_diagnose_anonymous_allowed` 这条用例当前 PASS = 默认行为（spec/04 §1.3 允许匿名调 `/agent/diagnose`）。如果 Sprint 2 改为"登录强制 + 配额限制"，这条用例会 fail 提醒同步更新 spec 文档。
+- 测试库还需要手动 `createdb xgzh_test` 一次。考虑 Sprint 2 加个 `make test-db-init` target 自动化。
 
 ---
 

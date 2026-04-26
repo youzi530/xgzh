@@ -46,6 +46,11 @@
     - `apps/mp/pages.json`：注册 `/pages/me/favorites` + `enablePullDownRefresh: true`
     - `apps/mp/pages/me/index.vue`：插入"我的自选"入口卡片（VIP 卡下方），右侧显示自选数量徽标，进个人中心时预热 `favStore.loadOnce()`
     - 跨页响应式验证：详情页 ★ 关注 → 自选列表立即同步（store 单源真相）；详情页 ☆ 取消 → 自选列表立即少一项
+  - ✅ **QA-001**：API 集成测试套件（Sprint 1 收尾）
+    - `apps/api/tests/integration/conftest.py`（新建）：复合 fixtures — Alembic schema reset（module 范围）+ `truncate_all`（function 范围）+ `InMemoryRedisClient` + `MockSMSAdapter` + `fake_llm`（monkey-patch `llm_client.stream_chat` 返回固定 token + 真 `DISCLAIMER`）+ 一站式 `client`（`httpx.ASGITransport`）
+    - `apps/api/tests/integration/test_e2e_ipo_diagnose.py`（新建）：3 条 e2e — 主路径 注册→token→/me→/ipos→/ipos/{code}→/agent/diagnose SSE→收藏闭环；退化路径 unknown code 兜底；护栏路径 `/agent/diagnose` 匿名调用允许（spec/04 §1.3）
+    - 修一处隐藏 bug：`patch_session_factory` 之前漏 patch `ipo_service` module-level `get_session_factory` 引用，导致 e2e 走 `/ipos` 列表时拿不到 seed 数据。conftest 现在三处都 patch（`db_pkg` / `ipo_ingest_service` / `ipo_service`）
+    - SSE 帧解析: `_parse_sse_frames(body)` 按 `\n\n` split + `event:` / `data:` 行解析为 `[(event_type, parsed_dict)]`，比照 `event: start` / `delta` * N / `end` 三类帧 + body 里"不构成投资建议"做合规验收
   - ✅ **FE-003**：个人中心 + 设置 + VIP 入口（无支付）
     - 资料卡（昵称首字头像 / 区域本地化 / 邀请码点击复制）+ VIP 占位卡 + 邀请绑定卡 + 设置区 + 退出登录
     - 邀请绑定接 BE-006，前端做长度校验 + 自禁 + 大写归一，7 类错误码（`invite_code_not_found` / `invite_self_binding` / `invite_already_bound` / `invite_code_inactive` / `invite_code_expired` / `invite_code_exhausted` / `invite_code_not_personal`）逐个映射文案
@@ -60,8 +65,8 @@
     - `apps/mp/api/auth.ts` 补 `refreshToken` (BE-004) + `logout` (BE-004)；`sendOtp` / `loginPhone` / `loginWechatMp` / `refreshToken` 全部 `skipAuth: true`
     - 首页改用 `storeToRefs(authStore)` 响应式订阅，删 `onShow` 手动 refresh；登录页改用 `auth.setSession(resp)`
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 119 skipped
-  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 208 passed
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 122 skipped
+  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ **211 passed in ~25s**（含 3 条 QA-001 e2e 主路径）
 
 ## 📖 设计文档
 
