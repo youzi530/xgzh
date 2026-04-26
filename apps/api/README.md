@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001~011 + Sprint 2 BE-S2-000~009）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001~011 + Sprint 2 BE-S2-000~009 + QA-S2-001）
 
 API:
 
@@ -570,9 +570,9 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
   uv run pytest -q
 ```
 
-### QA-001 · e2e 集成测试
+### QA-001 · e2e 集成测试 (Sprint 1)
 
-`tests/integration/` 是 QA-001 落地的"金线"e2e: 一条用例打通 注册 → token → /me → /ipos → /agent/diagnose SSE → 收藏 6 个模块。CI 友好特性：
+`tests/integration/test_e2e_ipo_diagnose.py` 是 QA-001 落地的"金线"e2e: 一条用例打通 注册 → token → /me → /ipos → /agent/diagnose SSE → 收藏 6 个模块（Sprint 1 老路径 `/agent/diagnose`）。CI 友好特性：
 
 - **不依赖真 LLM Key**: `fake_llm` fixture monkey-patch `llm_client.stream_chat`，返回 5 段固定 token + 真 `DISCLAIMER` 字符串；本地 `.env` 即使配了 SILICONFLOW_API_KEY 也不会被偷打。
 - **不依赖真短信网关**: `mock_sms` fixture 注入 `MockSMSAdapter`；测试用例直接 `otp_service.store_otp()` 埋码，跳过短信投递。
@@ -580,6 +580,22 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 - **没设 `XGZH_TEST_DATABASE_URL` 时整个 session skip**: 顶层 `tests/conftest.py` 的 `db` marker hook 兜底，CI 不会因没起 PG 红。
 
 预期 `3 passed`，详见 `spec/08-sprint-1-backlog.md` §QA-001 / §Sprint 1.5。
+
+### QA-S2-001 · Agent E2E 集成测试 (Sprint 2)
+
+`tests/integration/test_e2e_chat_diagnose.py` 是 QA-S2-001 落地的 Sprint 2 主链路 e2e: 5 条用例覆盖 `POST /api/v1/chat/diagnose` 从 HTTP 入口到 DB 落盘的完整契约（与 BE-S2-007 单点测 + BE-S2-008 配额测互补，专攻"多点协同 / 跨 PR 边界"场景）：
+
+| 用例 | 验证点 |
+|------|--------|
+| `test_e2e_register_diagnose_multitool_then_followup` | 金线：注册 → seed IPO → ReAct 多 tool 串联（hybrid_search + basic_info）→ 引用源装配 → 续聊 history 注入 → DB 落 6 messages / 2 tool_calls / 3 token_usages |
+| `test_e2e_diagnose_tool_failure_isolated_to_sse_tool_call_error` | 沙盒兜底：tool 抛 RuntimeError → SSE `tool_call status=error`，**不**冒成 SSE `error` 整流中断；LLM 第二步给 fallback 回答 |
+| `test_e2e_diagnose_forbidden_pattern_replaced_in_db_final` | 合规护栏：违规词 `[已合规过滤]` 替换 + `不构成投资建议` disclaimer 兜底落 chat_messages.content |
+| `test_e2e_anonymous_diagnose_then_ip_quota_429` | 匿名 e2e：不带 token → user_id IS NULL；同 IP 第 2 次 429 + ChatQuotaExceededResponse |
+| `test_e2e_diagnose_max_steps_circuit_breaker_forces_final` | 熔断兜底：LLM 持续 tool_calls + max_steps=2 → 最后一步主循环不传 tools，强制 LLM 给 final |
+
+复用 `client` fixture（schema/Redis/SMS 已配好），inline `fake_streaming_llm` mock LLM streaming（FIFO 队列脚本化多轮响应），真打 PG（`ipo_service` / `persistence.*`）+ mock `hybrid_search` 上层（避免依赖真 BGE embedding）。
+
+预期 `5 passed in ~1s`（不含 schema 启动），详见 `spec/09-sprint-2-backlog.md` §QA-S2-001 PR 总结。
 
 ## 离线评测 (BE-S2-009)
 

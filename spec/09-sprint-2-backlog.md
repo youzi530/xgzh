@@ -79,7 +79,7 @@
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
-| QA-S2-001 | e2e | Agent E2E 集成测试（LangGraph + tool 调用 + 引用源 + 限流 + 兜底）| 1d | BE-S2-007, BE-S2-008 | P0 | ⬜ |
+| QA-S2-001 | e2e | Agent E2E 集成测试（LangGraph + tool 调用 + 引用源 + 限流 + 兜底）| 1d | BE-S2-007, BE-S2-008 | P0 | ✅ |
 | QA-S2-002 | eval | RAG 评测集 CI 化（`make eval-sprint2` 跑分 + 阈值告警）| 0.5d | BE-S2-009 | P0 | ⬜ |
 
 ### 总计
@@ -1118,6 +1118,83 @@ uv run mypy evals app/core/config.py
 ```
 
 → **建议下一步走 FE-S2-001**（AI 对话页 UI + Pinia store + SSE consume）—— 后端 P0 主链路 BE-S2-001/002/003/004/005/006a/006b/007/008/009 全部 ✅, 前端依赖已就绪; 或并行启动 QA-S2-001 (Agent E2E 集成测试) 把后端兜底跑一轮。
+
+---
+
+### QA-S2-001 PR 总结（Agent E2E 集成测试）✅
+
+**目标**：以"金线 e2e"形式把 Sprint 2 后端 P0 主链路（BE-S2-001 ~ 009）从 HTTP 入口到 DB 落盘全程串一遍，覆盖单点测覆盖不到的"多点协同"场景，给前端 FE-S2-001/002/003/004 起步前打一道兜底闸门。
+
+**实现要点**
+
+- **新增文件** `tests/integration/test_e2e_chat_diagnose.py`（~750 行 / 5 条 e2e 用例）
+  - 与 BE-S2-007 单点测（`test_chat_diagnose.py`）+ BE-S2-008 配额测（`test_chat_diagnose_quota.py`）形成互补：
+    - 单点测验"协议契约 + 单一行为"，数据集小，mock 重
+    - e2e 测"主链路串联 + 多点协同"，跨 PR 边界的兜底
+- **5 条 e2e 用例**（按金线 → 退化 → 兜底逐档）:
+
+| 用例 | 重点验证 | 跨 PR 边界 |
+|------|---------|-----------|
+| `test_e2e_register_diagnose_multitool_then_followup` | **金线**：注册 → seed IPO → ReAct 多 tool 串联（hybrid_search + basic_info + final）→ 引用源装配 → 续聊 history 注入 | BE-S2-001/006a/006b/007 多点串 |
+| `test_e2e_diagnose_tool_failure_isolated_to_sse_tool_call_error` | **沙盒兜底**：tool 内部抛 RuntimeError → `ToolResult.failure` 透传到 SSE `tool_call status=error`，**不**冒成 SSE `error` 整流中断；LLM 第二步看到 tool error 仍能给 final | BE-S2-006a (sandbox) + BE-S2-007 (主循环) |
+| `test_e2e_diagnose_forbidden_pattern_replaced_in_db_final` | **合规护栏**：LLM 输出"强烈推荐买入 / 必涨"→ `forbidden_pattern_filter` 替换为 `[已合规过滤]` 落 chat_messages.content + `ensure_disclaimer` 兜底追加免责声明 | BE-S2-002 (filter / disclaimer) + BE-S2-007 (final 装配) |
+| `test_e2e_anonymous_diagnose_then_ip_quota_429` | **匿名 + IP 限流**：不带 token → 1 轮 SSE 走完 + chat_sessions.user_id IS NULL；第 2 次同 IP 触发 429 + ChatQuotaExceededResponse | BE-S2-007 (匿名分支) + BE-S2-008 (IP key 限流) |
+| `test_e2e_diagnose_max_steps_circuit_breaker_forces_final` | **熔断兜底**：LLM 持续 tool_calls 不 finish + `max_steps=2` → 主循环最后一步不传 tools，强制 LLM 给文本收尾，chat_tool_calls 落 ≤2 条 | BE-S2-007 (`is_last_step` 分支) |
+
+- **DB 落表全验证**（一条用例≥3 个 ORM 表断言）：
+  - `chat_sessions`: user_id 关联（登录） / NULL（匿名）/ ipo_code / 续聊不新增
+  - `chat_messages`: ReAct 多 tool 6 条 message 序列（user → assistant-anchor1 → tool → assistant-anchor2 → tool → assistant-final），final.citations + content cleaned
+  - `chat_tool_calls`: status 流转（ok / error）+ error_message 4KB 截断 + latency_ms
+  - `chat_token_usage`: 多步 LLM 调用聚合（≥3 行，total_input == 50 × 3）
+- **mock 策略**:
+  - `fake_streaming_llm`: FIFO 队列脚本化 LLM 多轮响应（与 BE-S2-007/008 同款 inline，文件自洽）
+  - `_mock_hybrid_search_two_chunks`: patch `app.services.agent.tools.hybrid_search.hybrid_search` 函数，给 2 条固定 SearchResult（避免依赖真 BGE embedding）
+  - `_boom_get_ipo`: monkeypatch `app.services.ipo_service.get_ipo` 抛 RuntimeError，验沙盒兜底
+  - `override_quota_settings`: monkeypatch `app.services.agent.quota.get_settings` 让配额上限可控
+
+**测试 / 质量门禁**
+
+| 维度 | sprint baseline | QA-S2-001 后 |
+|------|---------------:|-------------:|
+| 测试用例总数 | 562 | **567** (+5 e2e) |
+| 测试通过率 | 100% | **100%** (567 passed, 215 skipped DB 依赖类) |
+| ruff 增量错误 (新增文件) | 0 | **0** (`tests/integration/test_e2e_chat_diagnose.py` 全绿) |
+| mypy 增量错误 (新增文件) | 0 | **0** (`Success: no issues found in 1 source file`) |
+
+**关键 bug & 修复（PR 内自查发现）**
+
+1. **`ChatToolCall.started_at` 字段名错猜** — ORM 实际是 `created_at` (line 271)，初版写 `select(...).order_by(ChatToolCall.started_at.asc())` `AttributeError: 'ChatToolCall' object has no attribute 'started_at'`；改 `created_at`
+2. **`ChatToolCall.error_summary` 字段名错猜** — ORM 实际是 `error_message` (line 261)，初版断言 `tcs[0].error_summary` 报 `AttributeError`；改 `error_message`
+3. **mypy `attr-defined` on `basic_info_tool_mod.ipo_service`** — `from app.services import ipo_service` 是 implicit reexport，mypy strict 模式报 `Module ... does not explicitly export attribute "ipo_service"`；改用 dotted-string `monkeypatch.setattr("app.services.ipo_service.get_ipo", _boom)` 直接 patch 原模块属性（`basic_info.ipo_service is app.services.ipo_service`，patch 等价）
+
+**关键设计 / 决策记录**
+
+1. **`evals/` vs `tests/integration/`**：BE-S2-009 是离线评测脚本，QA-S2-001 是端到端集成测；evals 不打入运行时镜像，e2e 是 CI 必跑
+2. **fixture 内联 vs conftest 共享**：与 BE-S2-007/008 集成测惯例一致内联 `_StreamScript` / `_parse_sse` / `fake_streaming_llm`，文件自洽改测不需要爬 conftest；后续 Sprint 3 新增 e2e 文件多了再考虑抽到 `tests/integration/_chat_helpers.py`
+3. **真打 PG vs mock 上层**：`ipo_service` / `persistence.*` 走真 PG（与 BE-S2-008 quota 集成测一致），`hybrid_search` mock 上层（避免依赖真 BGE embedding 的 1024 维向量；hybrid_search 单测在 BE-S2-005 已覆盖完）
+4. **forbidden_pattern_filter 端到端语义**：SSE delta 流是 LLM 原始 token（含违规词），DB final assistant.content 是 cleaned 后版本（用户最终复盘看到的权威版本，FE 在 SSE end 帧后会拉 message_id 拿 DB 版本）；这条 e2e 用例显式 assert 了"DB 落库 final 含 `[已合规过滤]`，不含 `强烈推荐买入` / `必涨`"
+5. **匿名 IP 限流 ASGITransport 行为**：`httpx.ASGITransport` 下 `request.client.host = "testclient"`，多用例间 IP 相同；`override_quota_settings(anon_per_window=1)` + `truncate_all` fixture 把 chat_sessions / chat_messages 清空但 InMemoryRedis 在 fixture 期间持续，第二次同 IP 必定 429（确定性）
+
+**验证**
+
+```bash
+# 1. e2e 5 条单跑
+make test-db-init
+XGZH_TEST_DATABASE_URL=postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh_test \
+  uv run pytest tests/integration/test_e2e_chat_diagnose.py -v --no-cov
+# → 5 passed in 1.15s
+
+# 2. 全量后端测试
+make test-all
+# → 567 passed in 26.97s
+
+# 3. lint + type
+uv run ruff check tests/integration/test_e2e_chat_diagnose.py
+uv run mypy tests/integration/test_e2e_chat_diagnose.py
+# → All checks passed / Success: no issues found in 1 source file
+```
+
+→ **建议下一步走 QA-S2-002**（RAG 评测集 CI 化, 0.5d）—— 把 BE-S2-009 `make eval-sprint2-smoke` + 阈值告警挂到 GitHub Actions / pre-commit, 让评测从"手动跑"变成"PR check 自动跑"；或并行 **FE-S2-001**（前端对话页, 1d）, 后端 P0 全数 ✅ + e2e 兜底 ✅, 前端可放心起步。
 
 ## ✅ Sprint 2 完成后的产出物
 
