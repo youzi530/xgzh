@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * AI 对话页 (FE-S2-001 + FE-S2-002).
+ * AI 对话页 (FE-S2-001 + FE-S2-002 + FE-S2-003).
  *
  * 对接后端 ``POST /api/v1/chat/diagnose`` (BE-S2-007 + BE-S2-008 配额).
  *
@@ -13,6 +13,11 @@
  *   16ms 帧节流 ``Typewriter``; ``[N]`` 引用 wrap 成可点击 chip
  * - **停止生成** (FE-S2-002): 流式中按钮切"停止生成", 调 ``chat.cancelStream()``
  *   走 H5 AbortController / MP task.abort 跨端
+ * - **引用源底部抽屉** (FE-S2-003): 点 ``[N]`` chip / 内联 ``[N]`` → 弹 ``CitationDrawer``
+ *   完整 snippet + 多引用左右切换 + "查看原文 PDF" + "复制片段" CTA;
+ *   ``prospectus_url`` 由 ``IPODetail`` lazy-fetch + 模块内 ``Map`` 缓存防重复请求;
+ *   跨端打开 PDF 走 ``utils/prospectus.openProspectusUrl`` (H5 ``window.open`` /
+ *   MP ``downloadFile + openDocument`` / App ``plus.runtime.openURL``)
  * - 错误兜底基础版:
  *   - 进流前 429 quota → 红色 modal-style banner 显 retry_after + "升级 VIP" CTA 占位
  *   - 进流前 401/403 auth → 引导跳登录页
@@ -20,11 +25,10 @@
  *   - 网络断 → 同上
  *   - 用户主动 cancel → 不弹错, 显示"已停止生成"chip + 可重试
  * - tool_call 折叠步骤卡 (默认折叠, 点开看 args/result_preview); 工具状态色区分
- * - citations 数量 chip (本 PR 仅展示数量 + 序号; 抽屉留 FE-S2-003)
+ * - citations chip 列表可点 (FE-S2-003 起): 点击直接进抽屉, 不再走 modal 占位
  *
  * 不在本 PR 范围
  * ==============
- * - 引用源 ActionSheet 抽屉 + 原文片段 (FE-S2-003): citation 点击当前给 toast 占位
  * - VIP 升级支付通道 (FE-S2-004): 当前 quota 错仅引导文案, 没有实际支付路径
  *
  * 路由兼容
@@ -38,10 +42,13 @@ import { onLoad, onUnload } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, ref } from 'vue'
 
-import type { ChatToolCallPayload } from '@/api/chat'
+import type { ChatCitation, ChatToolCallPayload } from '@/api/chat'
+import { fetchIPODetail } from '@/api/ipo'
+import CitationDrawer from '@/components/CitationDrawer.vue'
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { openProspectusUrl } from '@/utils/prospectus'
 
 const chat = useChatStore()
 const auth = useAuthStore()
@@ -59,6 +66,25 @@ const {
 const draft = ref('')
 const expandedToolCalls = ref<Set<string>>(new Set())
 const scrollIntoId = ref('')
+
+// ─── FE-S2-003 引用源抽屉相关 ─────────────────────────────────────
+//
+// drawerVisible: 抽屉可见性, 双向绑定到 CitationDrawer
+// drawerCitations: 抽屉当前展示哪条消息的所有引用 (传引用而非拷贝, 避免大数组)
+// drawerActiveIdx: 抽屉当前 active 的引用 idx (按 ChatCitation.idx 字段, 不是数组下标)
+// drawerIpoName: IPO 锚定名 (展示用, 没有就空串, 抽屉 fallback ipo_code)
+//
+// _prospectusCache: 内存级 IPODetail.prospectus_url 缓存; 入口:
+//   - undefined / 缓存未命中 → 抽屉显 "加载中…", 异步 fetchIPODetail 后填
+//   - null              → 该 IPO 后端确实没 prospectus_url, 抽屉按钮禁用
+//   - string            → URL 有, 按钮可点
+const drawerVisible = ref(false)
+const drawerCitations = ref<ChatCitation[]>([])
+const drawerActiveIdx = ref<number>(0)
+const drawerIpoName = ref<string>('')
+const _prospectusCache = ref<Map<string, string | null>>(new Map())
+/** 防止同一 ipo_code 被并发触发多次 fetchIPODetail (抽屉 watch + 切换 active 都会触发 ensure) */
+const _prospectusInflight = new Set<string>()
 
 const placeholderText = computed(() =>
   isStreaming.value ? '生成中, 请稍候…' : '输入你的问题, 例如"基本面如何"',
@@ -117,30 +143,77 @@ async function retry() {
 }
 
 /**
- * citation [N] 被用户点击 (FE-S2-002 占位; FE-S2-003 实装抽屉).
+ * citation [N] 被用户点击 (FE-S2-003 实装).
  *
- * 当前行为: 找该消息的 ``citations`` 列表内 ``idx === n`` 的项, 弹 toast 显 snippet
- * 预览 — 让用户感知"这个引用是可交互的"; FE-S2-003 把这里换成 ActionSheet → 抽屉 →
- * 原文片段全文 + 跳后端原文 PDF 链接.
+ * 行为: 找该消息的 ``citations`` 列表 (没有就静默 toast 容错), 把整列传给 ``CitationDrawer``,
+ * 抽屉内可左右切换. ``activeIdx`` 走 ``ChatCitation.idx`` 而非数组下标, 让"切换"语义稳定 ——
+ * citation 数组是按 LLM 引用顺序列的, ``idx`` 才是后端原始 1-based 序号 (与 ``[N]`` 一致).
  */
 function onCitationTap(messageId: string, idx: number) {
   const m = chat.messages.find((x) => x.id === messageId)
-  if (!m || !m.citations) {
+  if (!m || !m.citations || !m.citations.length) {
+    // 容错: 引用还没下发就被点 (网络慢 + 边界), 给个轻提示但不阻塞
     uni.showToast({ title: `引用 [${idx}]`, icon: 'none' })
     return
   }
-  const c = m.citations.find((x) => x.idx === idx)
-  if (!c) {
-    uni.showToast({ title: `引用 [${idx}] 不存在`, icon: 'none' })
+  const hit = m.citations.find((x) => x.idx === idx)
+  if (!hit) {
+    // 这条引用 idx 不在 citations 里 (BE 端 invalid_citation_indices 已 strip,
+    // 理论不该走到这, 但 LLM 偶有越界, 给兜底而不是哑掉)
+    uni.showToast({ title: `引用 [${idx}] 暂无来源`, icon: 'none' })
     return
   }
-  // 占位 modal: FE-S2-003 改为抽屉 + 跳原文
-  uni.showModal({
-    title: `引用 [${idx}] · ${c.ipo_code ?? '通用'} · p.${c.page ?? '?'}`,
-    content: c.snippet,
-    showCancel: false,
-    confirmText: '知道了',
-  })
+  drawerCitations.value = m.citations
+  drawerActiveIdx.value = idx
+  // currentIpoName 跟整页锚定的 IPO 一致 (citation 多半就是这只 IPO 招股书);
+  // 后续若引入跨 IPO 检索可改为按 hit.ipo_code 反查
+  drawerIpoName.value = currentIpoName.value || ''
+  drawerVisible.value = true
+}
+
+/**
+ * 抽屉打开 / 切换 active citation 时, 让父页"准备好" prospectus_url.
+ *
+ * - 已缓存 (含 null = 该 IPO 没原文) → 直接 noop, 抽屉按钮按缓存值显
+ * - inflight → 抽屉按钮维持"加载中"
+ * - 都没 → 触发 fetchIPODetail, 完成后写缓存, 抽屉的 ``computed prospectusUrl`` 自动响应
+ *
+ * 不在 store 里做 IPODetail 缓存的原因: 该缓存仅 chat 抽屉用, 跨页不复用 (详情页有
+ * 自己的 detail 拉取逻辑); 短期内放页内 ref<Map> 是最薄方案. 真要复用再抽公共 store.
+ */
+async function onEnsureProspectus(ipoCode: string) {
+  if (!ipoCode) return
+  if (_prospectusCache.value.has(ipoCode)) return
+  if (_prospectusInflight.has(ipoCode)) return
+  _prospectusInflight.add(ipoCode)
+  try {
+    const detail = await fetchIPODetail(ipoCode)
+    // 后端 ``prospectus_url`` undefined 也归一成 null, 让抽屉按钮明确 disabled
+    const url = (detail.prospectus_url ?? null) as string | null
+    // 用 new Map 替换以触发响应; ref<Map> 的 set 不会自动响应
+    const next = new Map(_prospectusCache.value)
+    next.set(ipoCode, url)
+    _prospectusCache.value = next
+  } catch {
+    // 接口错也写 null, 防止抽屉按钮一直 loading; 用户可重开抽屉再试
+    const next = new Map(_prospectusCache.value)
+    next.set(ipoCode, null)
+    _prospectusCache.value = next
+  } finally {
+    _prospectusInflight.delete(ipoCode)
+  }
+}
+
+/** 当前抽屉激活的 citation 对应的 prospectus_url 状态 (string | null | undefined) */
+const drawerProspectusUrl = computed<string | null | undefined>(() => {
+  const c = drawerCitations.value.find((x) => x.idx === drawerActiveIdx.value)
+  if (!c?.ipo_code) return null // 通用对话 / 没绑 IPO 的引用 → 永远没原文
+  return _prospectusCache.value.get(c.ipo_code) // undefined = 还没拉, null = 没原文, string = 有
+})
+
+/** 抽屉点"查看原文 PDF": 调跨端打开工具 */
+function onOpenProspectus(payload: { url: string; ipoName: string }) {
+  openProspectusUrl(payload.url, payload.ipoName)
 }
 
 /** markdown 内的 ``[text](url)`` 被点击; MP 不支持直接外跳, 复制 + 提示 */
@@ -353,11 +426,18 @@ const isLoggedIn = computed(() => auth.loggedIn)
             <text class="dot">·</text>
           </view>
 
-          <!-- citations chip 列表 (本 PR 仅展示数量 + 序号; 抽屉留 FE-S2-003) -->
+          <!-- citations chip 列表 (FE-S2-003: 可点 → 弹抽屉看完整 snippet + 跳原文) -->
           <view v-if="m.citations && m.citations.length" class="citations">
             <text class="citations-title">参考来源 ({{ m.citations.length }})</text>
             <view class="citation-list">
-              <view v-for="c in m.citations" :key="c.idx" class="citation-chip">
+              <view
+                v-for="c in m.citations"
+                :key="c.idx"
+                class="citation-chip"
+                hover-class="citation-chip-hover"
+                :hover-stay-time="80"
+                @tap="onCitationTap(m.id, c.idx)"
+              >
                 <text>[{{ c.idx }}] {{ previewSnippet(c.snippet, 30) }}</text>
               </view>
             </view>
@@ -429,6 +509,17 @@ const isLoggedIn = computed(() => auth.loggedIn)
       <text class="anon-hint-link" @tap="gotoLogin">登录</text>
       <text class="anon-hint-text"> 后可获更高调用额度</text>
     </view>
+
+    <!-- FE-S2-003: 引用源底部抽屉 (page 末尾, fixed 定位; 不可见时 v-if 卸载) -->
+    <CitationDrawer
+      v-model:visible="drawerVisible"
+      v-model:active-idx="drawerActiveIdx"
+      :citations="drawerCitations"
+      :ipo-name="drawerIpoName"
+      :prospectus-url="drawerProspectusUrl"
+      @ensure-prospectus="onEnsureProspectus"
+      @open-prospectus="onOpenProspectus"
+    />
   </view>
 </template>
 
@@ -781,6 +872,13 @@ const isLoggedIn = computed(() => auth.loggedIn)
   font-size: 22rpx;
   color: var(--color-primary, #4f8bff);
   line-height: 1.4;
+  /* FE-S2-003: chip 可点; 视觉提示用 hover + 不带 cursor (MP 不支持 cursor) */
+  transition: background 0.15s ease;
+}
+/* hover-class 在小程序里用 SCSS 嵌套不生效; 平铺类名 + scoped 即可 */
+.citation-chip-hover {
+  background: rgba(79, 139, 255, 0.18);
+  border-color: rgba(79, 139, 255, 0.4);
 }
 
 /* assistant 内嵌错误 */

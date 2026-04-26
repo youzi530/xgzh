@@ -25,13 +25,14 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - 空态：☆ 图标 + 引导文案 + "去发现新股"CTA 跳首页
   - 下拉刷新：`loadOnce(force=true)` + `uni.stopPullDownRefresh`
   - 跨页响应式：详情页 ★ / ☆ 切换 → 自选列表立即同步（Pinia store 单源真相，无需 reload）
-- **AI 对话页（FE-S2-001 + FE-S2-002 升级）**：多轮 ReAct + 6 类 SSE 事件 + Markdown 渲染 + 打字机节流 + 停止生成 + 引用源 + 配额闸门
+- **AI 对话页（FE-S2-001 + FE-S2-002 + FE-S2-003 升级）**：多轮 ReAct + 6 类 SSE 事件 + Markdown 渲染 + 打字机节流 + 停止生成 + 引用源底部抽屉 + 配额闸门
   - 顶部三段固定区：免责 banner（黄）/ IPO 锚定 chip + "续聊中"标签 / 全局 banner（auth 红 + quota 金渐变）
-  - 主体消息列表：user 蓝色右气泡 / assistant 深色左气泡，气泡内分四段：tool_call 折叠卡 → **MarkdownRenderer 渲染 content + ▋ 流式光标** → citations chip → 内嵌 error / cancelled 条（按 kind 红/金/紫/灰）
+  - 主体消息列表：user 蓝色右气泡 / assistant 深色左气泡，气泡内分四段：tool_call 折叠卡 → **MarkdownRenderer 渲染 content + ▋ 流式光标** → citations chip（可点 → 抽屉）→ 内嵌 error / cancelled 条（按 kind 红/金/紫/灰）
   - **Markdown 增量渲染**（FE-S2-002）：自实现轻量 parser（`utils/markdown.ts` ~245 行）支持 heading / 列表 / 加粗 / 行内代码 / 链接 / **`[N]` 引用 chip**；MarkdownRenderer 用纯 `<view>`+`<text>` 跨三端（不走 v-html / rich-text，事件冒泡可控）
   - **打字机节流**（FE-S2-002）：`utils/typewriter.ts` 16ms 帧合并 SSE delta（H5 rAF / MP setTimeout），避免 token 100/s 触发 100 次 markdown 重 parse；流结束 / cancel / error 时 `drain()` 兜底落 buffer
   - **停止生成按钮**（FE-S2-002）：流式中底部按钮切红色"■ 停止"，点击调 `chat.cancelStream()` → SSE handle abort（H5 AbortController / MP `task.abort()`）；停止后 partial content 保留 + 显示灰色"已停止生成"chip + "重新生成"按钮
-  - **`[N]` 引用可点击**（FE-S2-002）：parser 区分 citation `[1]` vs 链接 `[text](url)` vs 普通文本 `[xxx]`；点击 `[N]` chip 当前弹 `uni.showModal` 显示 snippet 预览（FE-S2-003 实装 ActionSheet→抽屉→原文 PDF）
+  - **`[N]` 引用可点击 + 引用源底部抽屉**（FE-S2-002 + FE-S2-003）：parser 区分 citation `[1]` vs 链接 `[text](url)` vs 普通文本 `[xxx]`；点 `[N]` chip 弹 **`CitationDrawer`** 底部抽屉显完整 snippet + meta（页码 / 相关度 / chunk_id 短哈希），多引用时抽屉内 `‹ 1/3 ›` 切换；底部 CTA "复制片段"（剪贴板）+ "查看原文 PDF"（lazy-fetch `IPODetail.prospectus_url` 后跨端打开：H5 `window.open` / MP `wx.downloadFile + wx.openDocument` / App `plus.runtime.openURL`，全失败兜底"复制 URL + toast"）
+  - **prospectus_url 三态缓存**（FE-S2-003）：抽屉打开 / 切 active citation 时父页 lazy-fetch IPODetail，结果按 `ipo_code` 存入 `ref<Map>`：`undefined`（还在拉）显"加载中"loading / `null`（明确无原文）显"原文暂未入库"disabled / `string`（URL 有）显主按钮可点；并发触发由 `_prospectusInflight: Set` 防重
   - tool_call 折叠步骤卡：默认折叠仅显示 `name + status badge + latency`（ok/error/timeout 三色），点开看 `args` / `result_preview` / `error` 的 JSON pretty-print
   - 锚定 IPO 时给 4 条 quick prompts（"基本面如何 / 主要风险 / 招股价合理吗 / 行业可比"），未锚定给"通用对话"3 条引导（"本周新股 / 港股规则 / 破发风险"）
   - 多轮自动衔接：`session_id` 由后端 SSE `start` 事件回填，后续提问自动携带，进同一只 IPO 起新一轮（切 IPO `setIpoContext` 自动 reset）
@@ -42,7 +43,7 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
     - **网络断 / parse 失败** → 同上但 kind=network
     - **用户 cancel** → 灰色"已停止生成"chip + "重新生成"按钮（不弹错 banner；保留 partial content）
   - 离页 `onUnload` 强 `reset()` 防"返回页发现上次会话还在 → 用户困惑"; reset 时自动 abort 进行中的流，防 SSE 泄露
-  - 不在本 PR 范围：引用源 ActionSheet 抽屉（FE-S2-003）/ VIP 升级支付通道（FE-S2-004）
+  - 不在本 PR 范围：VIP 升级支付通道（FE-S2-004）
 - **登录页（FE-001）**：手机 OTP + 微信小程序一键登录
   - 双 Tab：手机号 + 验证码（全平台）/ 微信一键（仅 `MP-WEIXIN` 条件编译）
   - 60s 倒计时（前端镜像 + 后端 429 兜底）
@@ -102,14 +103,15 @@ apps/mp/
 │   │   └── favorites.vue     # 我的自选（stats + IPOCard 列表 + 长按移除 + 空态，FE-006）
 │   └── ipo/
 │       ├── detail.vue        # 详情页（FE-005：风险 banner + 关注按钮 + 4-tab 招股要点 + AI CTA）
-│       └── agent.vue         # AI 对话页（FE-S2-001 + FE-S2-002：多轮 chat + 6 SSE event + Markdown 渲染 + 打字机节流 + 停止生成 + 配额 banner）
+│       └── agent.vue         # AI 对话页（FE-S2-001/002/003：多轮 chat + 6 SSE event + Markdown 渲染 + 打字机节流 + 停止生成 + 引用源抽屉 + 配额 banner）
 ├── components/
 │   ├── IPOCard.vue           # FE-004: 复用卡片, default / hero 双密度, 状态色块
 │   ├── IPOCalendar.vue       # FE-004: 打新日历, 按日期 group + 横滚日期轴
 │   ├── FavoriteButton.vue    # FE-005: 关注按钮, 未登录跳登录 / 乐观更新 / 错误码分类 toast
-│   └── MarkdownRenderer.vue  # FE-S2-002: 跨端 markdown 渲染 (block 列表 + citation/link emit, 纯 view+text)
+│   ├── MarkdownRenderer.vue  # FE-S2-002: 跨端 markdown 渲染 (block 列表 + citation/link emit, 纯 view+text)
+│   └── CitationDrawer.vue    # FE-S2-003: 引用源底部抽屉 (snippet + meta + 多引用左右切换 + 跳原文 PDF / 复制片段 CTA)
 ├── api/
-│   ├── ipo.ts                # IPO 接口 (列表 + IPODetail 详情) + statusLabel / statusPalette helpers
+│   ├── ipo.ts                # IPO 接口 (列表 + IPODetail 详情, prospectus_url 给 FE-S2-003 抽屉 lazy-fetch) + statusLabel / statusPalette helpers
 │   ├── agent.ts              # Sprint 1 单轮 Agent 流式接口（/v1/agent/diagnose；保留向后兼容，Sprint 3 砍）
 │   ├── chat.ts               # FE-S2-001 + FE-S2-002: 多轮 chat SSE 客户端（/v1/chat/diagnose）+ 6 类事件类型 + ChatStreamHandle (abort 支持) + ChatQuotaError / ChatAuthError
 │   ├── auth.ts               # OTP / 手机登录 / 微信登录 / refresh / logout + parseAuthError
@@ -124,6 +126,7 @@ apps/mp/
 │   ├── sse.ts                # FE-S2-002: 跨端 SSE 流式接收 (H5 fetch + AbortController / MP enableChunked + task.abort) + Authorization 注入 + 429/401 statusCode 暴露 + StreamHandle abort
 │   ├── markdown.ts           # FE-S2-002: 轻量增量 markdown parser (block + inline segment, [N] citation 单独识别)
 │   ├── typewriter.ts         # FE-S2-002: 跨端打字机节流 (H5 rAF / MP setTimeout 16ms; drain 兜底)
+│   ├── prospectus.ts         # FE-S2-003: 跨端打开招股书 PDF (H5 window.open / MP downloadFile+openDocument / App plus.openURL; 失败兜底复制 URL)
 │   └── auth-storage.ts       # access/refresh/user storage helper（store 调用它做持久化）
 ├── App.vue / main.ts / pages.json / manifest.json
 └── tsconfig.json / vite.config.ts

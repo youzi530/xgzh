@@ -72,7 +72,7 @@
 |----|------|------|:----:|:----:|:------:|:----:|
 | FE-S2-001 | page | AI 对话页 UI + Pinia store + SSE consume | 1d | BE-S2-007 | P0 | ✅ |
 | FE-S2-002 | render | 打字机渲染 + Markdown 增量解析 + MP-WEIXIN onChunkReceived 兼容 | 0.5d | FE-S2-001 | P0 | ✅ |
-| FE-S2-003 | render | 引用源面板（[1] 点击 → ActionSheet → 原文片段抽屉）| 0.5d | FE-S2-001 | P0 | ⬜ |
+| FE-S2-003 | render | 引用源面板（[1] 点击 → ActionSheet → 原文片段抽屉）| 0.5d | FE-S2-001 | P0 | ✅ |
 | FE-S2-004 | quota | 配额限制 UI + VIP 升级引导 modal（接 429）| 0.5d | BE-S2-008, FE-S2-001 | P0 | ⬜ |
 
 ### 测试 · QA-S2
@@ -1576,6 +1576,202 @@ README.md                            # 同步 Sprint 2 进度
   - `streamSSE.abort`: H5 mock fetch + AbortController, MP mock uni.request + task.abort 各跑一次
 
 → **建议下一步走 FE-S2-003**（引用源 ActionSheet 抽屉, 0.5d）—— citation chip 已挂 `@tap` 占位，只剩接抽屉组件 + 跳后端原文 PDF；或并行 **FE-S2-004**（VIP 升级 modal, 0.5d），两者无依赖。
+
+---
+
+## 🎬 FE-S2-003 ✅ 已完成（2026-04-26）
+
+**目标**：把 FE-S2-002 留下的"`[N]` chip 已挂 `@tap` 但只弹 modal 占位"升级为 **底部抽屉 (Bottom Sheet) + 跨端跳原文 PDF**：用户点 `[N]` → 抽屉滑起 → 完整 snippet + 元信息 + "查看原文 PDF"+"复制片段"+多引用左右切换；prospectus_url 走 `IPODetail` lazy-fetch + 模块内 `Map` 缓存防重复请求；跨端 PDF 打开 H5 `window.open` / MP-WEIXIN `wx.downloadFile + wx.openDocument` / App `plus.runtime.openURL` 三支齐活，全失败兜底"复制 URL + toast"。
+
+### 实际改动文件
+
+```
+apps/mp/components/CitationDrawer.vue       # 新建（+390）抽屉 UI + props/emits 契约 + 多引用导航
+apps/mp/utils/prospectus.ts                  # 新建（+135）跨端打开 PDF URL + 静默 fallback
+apps/mp/pages/ipo/agent.vue                  # 升级（+90 -25）接 CitationDrawer + lazy-fetch + chip 可点
+spec/09-sprint-2-backlog.md                  # FE-S2-003 标 ✅ + PR 总结
+README.md / apps/mp/README.md                # 同步进度
+```
+
+### 关键模块
+
+#### `apps/mp/components/CitationDrawer.vue`（新建, ~390 行）
+
+**Props / Emits 契约**：
+
+```typescript
+interface Props {
+  visible: boolean              // v-model 双向
+  citations: ChatCitation[]     // 整列传, 抽屉内可左右切换
+  activeIdx: number             // 当前 active citation idx (按 ChatCitation.idx, 不是数组下标)
+  ipoName?: string              // 仅展示用; 没传走 fallback ipo_code
+  prospectusUrl?: string | null // string=有 / null=明确没原文 / undefined=父页还在 fetch
+}
+
+const emit = defineEmits<{
+  (e: 'update:visible', v: boolean): void
+  (e: 'update:activeIdx', idx: number): void
+  (e: 'open-prospectus', payload: { url: string; ipoName: string }): void
+  (e: 'ensure-prospectus', ipoCode: string): void
+}>()
+```
+
+**布局**（自上而下）：
+
+1. **mask** `position: fixed` 全屏 + `rgba(0,0,0,0.6)` 半透 + 点击关闭
+2. **panel** 底部 75vh max-height + `border-top-radius: 24rpx` + `cd-slide-up` keyframe 动画 0.22s ease-out
+3. **handle** 80×8rpx 居中圆角条（视觉提示"可下拉"）
+4. **header** `[N]` 大蓝标 + IPO label + 关闭 ×
+5. **meta chips** `p.N` / `相关度 83%`（蓝） / `片段 8c4a3f...`（mono 字体）
+6. **body** `<scroll-view>` 滚动区, snippet 全文 + word-break:break-all
+7. **actions**（底部）
+   - 多引用时：`‹ 1/3 ›` 切换条（首/尾自动 disabled）
+   - `复制片段`（次按钮）+ `查看原文 PDF`（主按钮, 三态 disabled / loading / ready）
+8. **safe-area** `env(safe-area-inset-bottom)` iPhone 兜底
+
+**watch 触发 ensure-prospectus**：
+
+```typescript
+watch(
+  [() => props.visible, () => activeCitation.value?.ipo_code],
+  ([vis, code]) => {
+    if (vis && code) emit('ensure-prospectus', code)
+  },
+  { immediate: true },
+)
+```
+
+抽屉刚打开 / 切到不同 IPO 时让父页 lazy-fetch；节流由父页负责（防重在 `_prospectusInflight` Set + `_prospectusCache` Map 双层兜底）。
+
+**关键 UX 决策**：
+
+1. **不走中间 ActionSheet 步骤** — spec 早期写"chip → ActionSheet → 抽屉"是两步弹两次, 体验割裂. 当 `citations.length > 1` 时**直接进抽屉, 内部用 ‹/› 按钮切换**, 关一次抽屉即可换 IPO / 离页, UX 更连贯
+2. **底部抽屉而非全屏 modal** — 占 ~75vh max 留出 chat 上下文, 用户能感知"我点的是这条消息的第 N 条引用"
+3. **prospectus 按钮三态** — `disabled`（明确无原文）/ `loading`（fetch 进行中）/ `ready`（URL 有, 主按钮可点）, 文案分别"原文暂未入库"/"加载中…"/"查看原文 PDF"
+4. **chunk_id 取前 8 字** — sha256 hex 32 字符 UI 太丑, 8 字给运营 / debug 看片段唯一性即可
+5. **score 转百分比** — 0.83 → "83%", 比浮点直观；rerank 后通常 >0.5, <0.3 才算低相关
+6. **mask 点击关闭 + 面板 stop propagation** — 标准抽屉手感
+7. **cd-slide-up keyframe 而非 `<transition>`** — UniApp `<transition>` 在 MP-WEIXIN 有兼容坑, keyframe + v-if 直接挂 / 卸更稳定（关闭无 leave 动画, 可接受）
+8. **不监听返回键关闭** — MP / App 系统返回键统一退页, 用户预期一致；H5 浏览器返回也直接退页, 不在抽屉内截断
+
+#### `apps/mp/utils/prospectus.ts`（新建, ~135 行）
+
+**跨端打开 PDF 三支**：
+
+| 平台 | 实现 | fallback |
+|---|---|---|
+| H5 | `window.open(url, '_blank', 'noopener,noreferrer')` 直接外跳 | catch → 复制 URL + toast |
+| MP-WEIXIN | `uni.downloadFile` 拉到本地临时路径 → `uni.openDocument` 系统组件预览 | downloadFile fail（含"业务域名未加白"`/domain list/i`）/ openDocument fail / statusCode≠200 → 复制 URL + toast 区分文案 |
+| APP-PLUS | `plus.runtime.openURL(url)` 调系统浏览器 | 拿不到 plus / catch → 复制 URL |
+| 其他 (MP-ALIPAY / MP-TOUTIAO) | — | 直接走 fallback |
+
+**关键决策**：
+
+1. **不下载到永久存储** — 法务侧"招股书属第三方版权材料, 不应缓存到客户端持久化"(spec/06), MP `downloadFile` 拿临时路径 + `openDocument` 预览正合规
+2. **静默 fallback** — 任何一步失败都回退到"复制 URL + toast"而非红色弹窗, 避免阻塞用户感知
+3. **不弹自定义 loading** — `downloadFile` 走 `uni.showLoading` 系统弹窗即可, 加自定义 loading 反而割裂；下载完即 `hideLoading`
+4. **`mime/file_type` 仅靠 URL 后缀推断** — 招股书 99% 是 PDF, fail 走 `try { fileType: 'pdf' }` 兜底
+5. **不留 `Promise<void>` 返回值** — 所有平台都是 fire-and-forget, 返回 Promise 反而让父页担心 `await`；toast / hideLoading 都是平台事件队列内自处理
+
+```typescript
+export function openProspectusUrl(url: string, ipoName: string = ''): void {
+  if (!url) {
+    uni.showToast({ title: '原文链接无效', icon: 'none' })
+    return
+  }
+  // #ifdef H5
+  openOnH5(url)
+  // #endif
+  // #ifdef MP-WEIXIN
+  openOnMpWeixin(url)
+  // #endif
+  // #ifdef APP-PLUS
+  openOnApp(url)
+  // #endif
+  // #ifndef H5 || MP-WEIXIN || APP-PLUS
+  void ipoName
+  fallbackCopyUrl(url)
+  // #endif
+}
+```
+
+#### `apps/mp/pages/ipo/agent.vue`（升级 +90 -25）
+
+**新 state**（drawer 4 个 ref + prospectus 缓存）：
+
+```typescript
+const drawerVisible = ref(false)
+const drawerCitations = ref<ChatCitation[]>([])
+const drawerActiveIdx = ref<number>(0)
+const drawerIpoName = ref<string>('')
+
+// ipo_code → prospectus_url 三态缓存:
+//   - 没 key             → 还没拉
+//   - value = string     → URL 有, 按钮可点
+//   - value = null       → 该 IPO 后端确实没原文, 按钮禁用
+const _prospectusCache = ref<Map<string, string | null>>(new Map())
+// 防同一 ipo_code 并发触发多次 fetchIPODetail
+const _prospectusInflight = new Set<string>()
+```
+
+**`onCitationTap` 重写**：从 `uni.showModal` 占位改为打开抽屉，传递 `m.citations` 整列（让抽屉内部能左右切换），`activeIdx` 走 `ChatCitation.idx`（与 `[N]` 一致, 不是数组下标）。
+
+**`onEnsureProspectus(ipoCode)`**：抽屉 watch 触发；先查缓存 / inflight 防重，否则 `fetchIPODetail(ipoCode)` 拉 BE-009 接口；任意失败也写 `null` 防按钮永久 loading；用 `new Map(...)` 替换触发 ref 响应而非 `.set` in-place。
+
+**`drawerProspectusUrl: computed`**：从 `drawerActiveIdx` → `drawerCitations` 找到当前 citation 的 `ipo_code` → 缓存查 → string | null | undefined 三态送给抽屉。
+
+**citation chip 列表可点**：`@tap="onCitationTap(m.id, c.idx)"` + `hover-class="citation-chip-hover"` 给点击反馈（80ms hover-stay-time），CSS 加 `transition: background 0.15s ease`。
+
+**模板尾追加**：
+
+```vue
+<CitationDrawer
+  v-model:visible="drawerVisible"
+  v-model:active-idx="drawerActiveIdx"
+  :citations="drawerCitations"
+  :ipo-name="drawerIpoName"
+  :prospectus-url="drawerProspectusUrl"
+  @ensure-prospectus="onEnsureProspectus"
+  @open-prospectus="onOpenProspectus"
+/>
+```
+
+### 关键设计 / 取舍（PR 级别）
+
+1. **不在 store 里做 IPODetail 缓存** — 该缓存仅 chat 抽屉用, 跨页不复用（详情页有自己的 detail 拉取逻辑），短期内放页内 `ref<Map>` 是最薄方案。真要复用再抽公共 store（Sprint 3 历史会话页若复用再迁）
+2. **`_prospectusInflight` 用普通 Set 而非 ref** — 不需要响应式（仅函数内部读写做防重判断），用 Set 不触发 reactive 警告
+3. **缓存写入用 `new Map(...)` 替换** — Vue 3 的 `ref<Map>` 不会自动追踪 `.set` / `.delete`，必须替换引用
+4. **抽屉 `prospectusUrl` props 区分 `undefined` vs `null`** — 语义不同：`undefined` 是"父页还在 fetch"显 loading；`null` 是"该 IPO 明确没原文"显 disabled。两者不混用
+5. **citation chip 的 truncate 不变** — 30 字截断保留（chip 本身就是预览）；点开抽屉看完整 snippet
+6. **抽屉关闭后不 reset state** — `drawerCitations` / `drawerActiveIdx` / `drawerIpoName` 留着, 下次打开同消息 chip 直接复用；切到不同消息时被 `onCitationTap` 覆盖即可
+7. **`fetchIPODetail` 接口复用 BE-009** — 不为抽屉新加后端 chunk-source endpoint，prospectus_url 已在 `IPODetail`，零后端改动
+8. **抽屉里"前/后切换"基于数组顺序而非 idx 数值** — 后端 `invalid_citation_indices` strip 后 `idx` 可能不连续（如 `[1,3,5]`），用数组 prev/next 跳转更稳定
+9. **`openProspectusUrl` 无返回值 fire-and-forget** — 调用方不需 await；任何错都内部 toast 兜底，不冒到父页
+10. **抽屉 z-index=999** — 高于 banner / composer 但不与系统 modal 冲突；MP `uni.showToast` z-index 默认 ~10000 仍能压住
+
+### 测试 / 质量
+
+- **vue-tsc 0 错** + **ESLint 0 错**（IDE LSP 全验证；项目 npm install 因上游 `@dcloudio/uni-h5@3.0.0-4060920241225001` 被 yank 跑不动是已知历史问题, 与本 PR 无关）
+- 端兼容：H5 + MP-WEIXIN + App 全覆盖
+- 单测留 QA-S2-003（vitest + happy-dom），重点：
+  - `CitationDrawer`: prev/next 边界 + prospectusUrl 三态显示 + 切换 active 触发 update + ensure-prospectus 节流（仅 visible+code 都在时触发）
+  - `openProspectusUrl`: H5 mock window.open 异常 → fallback；MP mock downloadFile fail → fallback；MP mock openDocument fail → fallback
+  - `onEnsureProspectus`: 缓存命中跳过 / inflight 跳过 / fetch 失败也写 null
+
+### 实施偏差（vs spec/09 原稿）
+
+1. **不走"ActionSheet → 抽屉"两步弹** — 单 chip → 单抽屉 + 抽屉内左右切换，UX 更连贯（原 spec 写的两步是 2024 早期想法，FE-S2-002 落地 markdown 后已确认抽屉是正解）。**spec 字面已 outdated, 实施落地版优先**
+2. **"原文片段"语义升级为"完整 snippet + 元信息 + 跳原文 PDF"** — 原 spec 仅说"原文片段抽屉", 本 PR 把跳 PDF 一并接上, FE-S2-003 + 推迟到 Sprint 3 的"原文 PDF 跳转"两件事合并。理由：跳 PDF 后端已就绪 (`prospectus_url` 在 BE-009)，前端再不做就只剩占位价值；做完即"引用价值闭环"
+3. **`prospectusUrl` 三态语义** vs 原 spec 想法（仅 string | null）— 用 undefined 区分 loading 是 React 经典模式, 本 PR 沿用让 UI 反应符合"还在拉 vs 拉完了没有"两种用户预期
+
+### 下一步推荐
+
+| 候选 | 理由 |
+|------|------|
+| **FE-S2-004** (VIP 升级 modal + 配额引导精修, 0.5d) | 唯一剩余的前端 P0；BE-S2-008 配额闸门 + Retry-After 已就绪, FE 仅做"升级 modal + 文案 + 跳支付占位"；Sprint 2 前端最后一块 |
+| Sprint 3 启动（文章聚合 / 券商对比 / VIP 订阅）| FE-S2-004 完了 Sprint 2 即可收尾, 直接开 Sprint 3 backlog 文档 |
+
+→ **建议下一步走 FE-S2-004**（VIP 升级 modal + 配额引导精修, 0.5d）—— Sprint 2 前端最后一刀, 完成即可关 Sprint 2 进入 Sprint 3。
 
 ## ✅ Sprint 2 完成后的产出物
 
