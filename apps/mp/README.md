@@ -11,7 +11,12 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - "今日打新"hero 卡片（最多 3 只 subscribing，金蓝渐变 + 强调 CTA）
   - 触底加载更多（`onReachBottom`，`hasMore` 守卫，仅列表模式生效）+ 下拉刷新
   - 数据来源 footer：aggregate items 的 `data_source` 字段（spec/06 §3 数据来源硬要求）
-- 详情页：基础信息 + 「AI 一键诊断」入口（FE-005 升级中）
+- **详情页（FE-005）**：风险 banner + 关注按钮 + 4-tab 招股要点
+  - 顶部红色 IPO 风险提示 banner（spec/06 §法律隔离硬要求）
+  - Header 区：名称 + status badge（与列表卡片同一调色板）+ 关注按钮（`FavoriteButton` 组件）
+  - 6 格基本信息卡 + 4 tab：基本面（财务摘要 KV）/ 保荐承销（chip + 招股书链接）/ 投资亮点 / 主要风险（任一为空给"暂未补齐"占位）
+  - AI 诊断 CTA（"VIP 限免"角标占位，匿名仍可点击进入）+ 数据来源行 + 免责行
+  - `useFavoritesStore()` 集中持自选数据：登录后首次进详情触发 `loadOnce`，乐观更新 + 失败回滚；FE-006 自选列表 Tab 直接复用
 - AI 诊断页：DeepSeek-V3 流式输出（SSE）
 - **登录页（FE-001）**：手机 OTP + 微信小程序一键登录
   - 双 Tab：手机号 + 验证码（全平台）/ 微信一键（仅 `MP-WEIXIN` 条件编译）
@@ -69,18 +74,21 @@ apps/mp/
 │   ├── auth/login.vue        # 登录页（手机 OTP + 微信一键，FE-001）
 │   ├── me/index.vue          # 个人中心（资料 + 邀请 + VIP 占位 + 设置 + 退出，FE-003）
 │   └── ipo/
-│       ├── detail.vue        # 详情页 (FE-005 升级中)
+│       ├── detail.vue        # 详情页（FE-005：风险 banner + 关注按钮 + 4-tab 招股要点 + AI CTA）
 │       └── agent.vue         # AI 诊断页
 ├── components/
 │   ├── IPOCard.vue           # FE-004: 复用卡片, default / hero 双密度, 状态色块
-│   └── IPOCalendar.vue       # FE-004: 打新日历, 按日期 group + 横滚日期轴
+│   ├── IPOCalendar.vue       # FE-004: 打新日历, 按日期 group + 横滚日期轴
+│   └── FavoriteButton.vue    # FE-005: 关注按钮, 未登录跳登录 / 乐观更新 / 错误码分类 toast
 ├── api/
-│   ├── ipo.ts                # IPO 接口 + statusLabel / statusPalette helpers
+│   ├── ipo.ts                # IPO 接口 (列表 + IPODetail 详情) + statusLabel / statusPalette helpers
 │   ├── agent.ts              # Agent 流式接口
 │   ├── auth.ts               # OTP / 手机登录 / 微信登录 / refresh / logout + parseAuthError
+│   ├── favorites.ts          # FE-005: addFavorite / removeFavorite / listFavorites + parseFavoriteError
 │   └── invite.ts             # 邀请码绑定 (BE-006) + parseInviteError
 ├── stores/
-│   └── auth.ts               # FE-002 Pinia 鉴权 store（hydrate from storage + silent refresh 并发去重）
+│   ├── auth.ts               # FE-002 Pinia 鉴权 store（hydrate from storage + silent refresh 并发去重）
+│   └── favorites.ts          # FE-005 Pinia 自选 store（isFavored / 乐观更新 / watch loggedIn 自动 reset）
 ├── utils/
 │   ├── request.ts            # uni.request 封装 + Authorization 注入 + 401 silent refresh + 跳登录
 │   ├── sse.ts                # 跨端 SSE 流式接收

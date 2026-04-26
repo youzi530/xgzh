@@ -35,6 +35,12 @@
     - `apps/mp/components/IPOCard.vue` 双密度（default / hero）：右上角状态色块（`subscribing` 金 / `upcoming` 蓝 / `listed` 灰 / `withdrawn` 红）+ 智能副标题（申购截止 / 上市日 / 申购窗口）
     - `apps/mp/components/IPOCalendar.vue` 按申购开始日 / 上市日 group：顶部横滚日期 chip（含数量徽标）+ 分组卡片列表，"待定"沉底
     - `apps/mp/pages/index/index.vue` 重构：market tab + 视图切换（列表 / 日历）+ status chip 多筛选 + 列表头插入"今日打新"hero 卡（最多 3 只 subscribing）+ 触底分页 + 数据来源 footer aggregate
+  - ✅ **FE-005**：新股详情页 — 关注按钮 + 招股要点
+    - `apps/mp/api/ipo.ts` 的 `fetchIPODetail` 升级到 `IPODetail`（叠加 `prospectus_url` / `sponsors` / `underwriters` / `highlights` / `risks` / `financial_summary` 6 个 BE-009 深度字段）
+    - `apps/mp/api/favorites.ts`（新建）+ `apps/mp/stores/favorites.ts`（Pinia store, 集中持自选 + `isFavored(code)` O(1) 查询 + 乐观更新失败回滚 + watch `auth.loggedIn` 自动 reset）
+    - `apps/mp/components/FavoriteButton.vue`（未登录跳登录 modal / 已登录乐观切换 / 错误码分类 toast / `default | compact` 双密度）
+    - `apps/mp/pages/ipo/detail.vue` 重构：顶部红色风险 banner + Header（status badge + 关注按钮）+ 6 格基本信息卡 + 4 tab（基本面 / 保荐承销 / 亮点 / 风险，财务摘要 dict 容错渲染）+ AI 诊断 CTA（"VIP 限免"角标占位）+ 数据来源行
+    - 跨 store 联动用 watch 而非反向 import，箭头单向 favorites → auth，避免循环依赖
   - ✅ **FE-003**：个人中心 + 设置 + VIP 入口（无支付）
     - 资料卡（昵称首字头像 / 区域本地化 / 邀请码点击复制）+ VIP 占位卡 + 邀请绑定卡 + 设置区 + 退出登录
     - 邀请绑定接 BE-006，前端做长度校验 + 自禁 + 大写归一，7 类错误码（`invite_code_not_found` / `invite_self_binding` / `invite_already_bound` / `invite_code_inactive` / `invite_code_expired` / `invite_code_exhausted` / `invite_code_not_personal`）逐个映射文案

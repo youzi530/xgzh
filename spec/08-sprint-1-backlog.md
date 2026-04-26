@@ -32,7 +32,7 @@
 | FE-002 ✅ | frontend | Auth Pinia store + uni.request 拦截器 | 0.5d | FE-001 | P0 |
 | FE-003 ✅ | frontend | 个人中心 + 设置 + VIP 入口（无支付） | 1d | FE-002 | P0 |
 | FE-004 ✅ | frontend | 首页瀑布流 + 今日打新卡片 + 打新日历 | 1.5d | BE-008 | P0 |
-| FE-005 | frontend | 新股详情页（关注按钮 + 招股要点） | 1d | BE-009, BE-010 | P0 |
+| FE-005 ✅ | frontend | 新股详情页（关注按钮 + 招股要点） | 1d | BE-009, BE-010 | P0 |
 | FE-006 | frontend | 自选列表 Tab | 0.5d | BE-010, FE-005 | P0 |
 | QA-001 | qa | API 集成测试套件（pytest + httpx） | 1d | BE-009 | P0 |
 
@@ -1195,17 +1195,69 @@ cd apps/api && uv run uvicorn app.main:app --port 8000
 
 ---
 
-### FE-005 · 新股详情页增强
+### FE-005 · 新股详情页增强 ✅ DONE
 
-**改动文件**
-- `apps/mp/pages/ipo/detail.vue`（在现有基础上扩展）
-- `apps/mp/components/FavoriteButton.vue`
+**目标**：把详情页从"基本信息卡 + AI 诊断"扩展到"风险 banner + 基本信息 + 关注按钮 + 4-tab 深度信息 + AI 诊断（VIP 角标） + 数据来源"，并把"自选状态"集中到 Pinia store 给 FE-006 自选列表复用。
+
+**改动文件**（已实装）
+- `apps/mp/api/ipo.ts`：`fetchIPODetail` 返回从 `IPOItem` 升级到 `IPODetail`（叠加 `prospectus_url` / `sponsors` / `underwriters` / `highlights` / `risks` / `financial_summary` 6 个 BE-009 深度字段）
+- `apps/mp/api/favorites.ts`（新建）：`addFavorite` / `removeFavorite` / `listFavorites` + `parseFavoriteError`，1:1 BE-010 schema；`code` 永远带市场后缀，前端只持一份标识
+- `apps/mp/stores/favorites.ts`（新建）：Pinia store，集中持自选列表 + `isFavored(code)` O(1) 查询；乐观更新 + 失败回滚；watch `auth.loggedIn` 翻假后自动 `reset()`，防止跨用户串数据
+- `apps/mp/components/FavoriteButton.vue`（新建）：未登录点击弹 modal 引导跳登录；已登录调 store action 乐观切换；`favorite_code_invalid` / 网络错误分类 toast；`size: default | compact` 给详情页 / 列表卡片复用
+- `apps/mp/pages/ipo/detail.vue`：完整重构 — 顶部红色风险 banner + Header（名称 / status badge / 关注按钮）+ 6 格基本信息卡 + 4 tab（基本面 / 保荐承销 / 亮点 / 风险）+ AI 诊断 CTA（"VIP 限免"角标占位）+ 数据来源行 + 免责行
 
 **AC**
-- [ ] 顶部基本信息卡 + 关注按钮（接 BE-010）
-- [ ] 财务摘要 / 保荐人 / 亮点 / 风险 4 个 tab
-- [ ] AI 诊断按钮（已有）保留并加 VIP 配额提示
-- [ ] 必含 IPO 风险提示 banner
+- [x] 顶部基本信息卡 + 关注按钮（接 BE-010）
+- [x] 财务摘要 / 保荐人 / 亮点 / 风险 4 个 tab
+- [x] AI 诊断按钮（已有）保留并加 VIP 配额提示（CTA 角标 `VIP 限免`，真配额逻辑后续 BE 落地）
+- [x] 必含 IPO 风险提示 banner（顶部固定红色 banner）
+- [x] 关注按钮乐观更新 + 失败回滚 + 错误码分类 toast
+- [x] 未登录访问详情仍可看 + AI 诊断仍可点（匿名允许调用 agent）
+- [x] 详情 404 兜底文案"该新股暂未在数据源命中, 仍可使用 AI 诊断"
+- [x] 招股书链接：MP-WEIXIN 平台引导复制链接到浏览器（小程序内 PDF 受限）
+
+**关键设计决策**
+1. **`IPODetail` extends `IPOItem`**：列表用浅版本，详情多 6 个深度字段；客户端可以用同一份 store 缓存 list, 详情接口只补 delta，避免重复传字段。`highlights` / `risks` 第一刀允许为空（BE-018 RAG 后续填）
+2. **关注状态走 Pinia store, 不在 `IPODetail` 里**：BE-009 的 `IPODetail` 不带 `favored` 标志位（不耦合 user 信息），前端登录态首次进详情触发 `useFavoritesStore().loadOnce()`，后续 add/remove 只内存更新 + API 同步；FE-006 自选 Tab 直接读同一份 store，不重复拉
+3. **乐观更新 + 失败回滚**：`add` 立即把 placeholder item 塞 `items[]` 头部（用前端推导的 market），UI 立刻变"已关注"；API 失败则从 `items[]` 删除，UI 翻回"未关注"；`remove` 先删除再调 API 失败再插回原位置。这样用户感知操作是即时的，不卡 200~500ms 网络
+4. **未登录点击关注 → modal 引导**：不直接静默失败也不强制阻断浏览。modal 文案"登录后才能收藏"，确认跳登录页。这与 spec/04 §1.3 的"匿名也能用 80% 功能, 涉及个性化才登录"对齐
+5. **错误码分类 toast**：`favorite_code_invalid` 提示"股票代码格式不支持"（HK seed 中带港股 5 位 code 后缀的特殊用例）；`token_*` 由 `utils/request.ts` 拦截器处理（silent refresh / 跳登录），按钮内不再 toast；其他网络错误降级到通用文案
+6. **跨 store 联动用 watch, 不用反向 import**：让 `favorites` store 内部 `watch(authStore.loggedIn)`，登出自动 reset。如果让 auth store 主动 import favorites store，会形成 `auth → favorites → api/favorites → utils/request → auth` 的隐式循环，watch 方案让箭头单向 favorites → auth，符合"业务 store 依赖底层鉴权 store"的层级
+7. **4 tab 而非长卡片堆叠**：基本面 / 保荐承销 / 亮点 / 风险信息密度差异大（基本面是结构化 KV, 亮点 / 风险是 bullet list, 保荐承销是 chip + 链接），统一卡片堆叠会让用户被动滚很多空白；横向 tab 让用户主动选切，每 tab 自己空态文案"暂未补齐"
+8. **财务摘要 dict 渲染容错**：`financial_summary: dict[str, Any]` 后端可加新字段不需要前端改；`labelMap` 给已知 9 个字段做 i18n，其他降级原 key；数值字段按 key 自动选格式化（比率 → `%`, 大数字 → `亿 / 万`）
+9. **VIP 角标占位而非真配额**：spec/08 AC 写"加 VIP 配额提示"。当前没有 VIP 状态字段，直接做配额限制需要 BE 加 `GET /me/quota` 接口；先 CTA 上贴 "VIP 限免" 角标占位，AI 诊断照常匿名能调，后续 BE 落地配额时只在按钮的 onTap 加 `if (quota.exhausted)` 拦截
+10. **status palette 复用 `api/ipo.ts`**：详情页 header 的 status badge 配色直接调 `statusPalette()`，与 FE-004 列表卡 / FE-006 自选页同源，不再散落
+
+**验收方法**
+
+```bash
+# 0. 起后端
+cd apps/api && uv run uvicorn app.main:app --port 8000
+
+# 1. 未登录态进详情页
+#    - 顶部红色风险 banner 看得到
+#    - 6 格基本信息卡渲染
+#    - 关注按钮空心 ☆ + "关注"
+#    - 点关注 → 弹 modal "登录后才能收藏" / "去登录"
+#    - 4 tab 切换正常, 数据未补齐时显示"暂未补齐"
+#    - AI 诊断 CTA 上有 "VIP 限免" 角标, 点击进 agent 页
+
+# 2. 登录态再进详情页
+#    - 关注按钮立即显示当前是否已关注 (loadOnce 拉取后)
+#    - 点关注 → 立即变 ★ "已关注" + toast; 再点 → 变回 ☆ + toast
+#    - 切到自选 Tab (FE-006 落地后) 看到刚关注的 IPO
+
+# 3. 后端注入 highlights / risks (示例)
+psql xgzh -c "UPDATE ipos SET extra = jsonb_set(coalesce(extra, '{}'::jsonb), '{highlights}', '[\"营收 3 年 CAGR 35%\", \"行业领先\"]'::jsonb) WHERE code = '0700.HK';"
+#    - 投资亮点 tab 显示 2 条 bullet
+#    - bullet 左侧绿色 +
+```
+
+**遗留 / 后续**
+- BE 加 `GET /me/quota` 后, AI 诊断 CTA 显示当日剩余次数 + 用尽时 modal 引导升级 VIP
+- 财务摘要 BE-009 当前从 `extra` JSONB 读, BE-018 招股书 RAG 落地后可以自动补齐 `highlights` / `risks`
+- 招股书 PDF 渲染 (MP-WEIXIN): 当前是引导用户复制链接, 后续做"招股书要点 RAG 摘要"页面替代直接渲染 PDF (小程序原生不支持 PDF, webview 也有限制)
+- `FavoriteButton compact` 视觉密度: 已预留 size prop, FE-006 自选列表卡片角标 / 长按移除时复用; 当前还没场景调用
 
 ---
 

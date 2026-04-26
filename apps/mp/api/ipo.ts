@@ -39,6 +39,21 @@ export interface IPOListResponse {
   size: number
 }
 
+/**
+ * BE-009 ``GET /ipos/{code}`` 详情. ``IPODetail = IPOItem ∪ 6 个深度字段``.
+ *
+ * 任一深度字段为空都属于"该 IPO 当前还未跑 BE-018 RAG / 运营手补", UI 应该
+ * 兜底渲染"暂无数据"而不是报错; 只有整个 detail 接口 404 才视为"该 code 不存在"。
+ */
+export interface IPODetail extends IPOItem {
+  prospectus_url?: string | null
+  sponsors?: string[] | null
+  underwriters?: string[] | null
+  highlights: string[]
+  risks: string[]
+  financial_summary?: Record<string, unknown> | null
+}
+
 export interface IPOListParams {
   status?: IPOStatus
   industry?: string
@@ -65,8 +80,15 @@ export function fetchIPOList(market: Market = 'HK', params: IPOListParams = {}) 
   })
 }
 
+/**
+ * BE-009 ``GET /ipos/{code}`` 详情, 多源字段聚合 + 30min 缓存.
+ *
+ * 错误码:
+ * - 404 ``ipo_not_found``: 该 code 在 ``ipos`` 表 + HK seed 都没命中
+ *   (前端兜底文案"暂无数据, 仍可用 AI 诊断通用分析")
+ */
 export function fetchIPODetail(code: string) {
-  return request<IPOItem>({
+  return request<IPODetail>({
     url: `/api/v1/ipos/${encodeURIComponent(code)}`,
   })
 }
