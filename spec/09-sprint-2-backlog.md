@@ -60,7 +60,7 @@
 | BE-S2-003 | db | pgvector `ipo_documents` 扩展 + 防重 + Alembic 0003 | 0.5d | BE-S2-001 | P0 | ✅ |
 | BE-S2-004 | rag | 招股书 PDF 解析 + 语义切分 + 批量 Embedding 入库 | 1d | BE-S2-000, BE-S2-002, BE-S2-003 | P0 | ✅ |
 | BE-S2-005 | rag | 混合检索 + RRF 融合 + bge-reranker 重排 | 1d | BE-S2-003 | P0 | ✅ |
-| BE-S2-006a | agent | Tool 注册中心 + 2 个最简工具（basic_info / financial）| 1d | BE-S2-001 | P0 | ⬜ |
+| BE-S2-006a | agent | Tool 注册中心 + 2 个最简工具（basic_info / financial）| 1d | BE-S2-001 | P0 | ✅ |
 | BE-S2-006b | agent | 余下 3 个 Tool（peers / sentiment_placeholder / historical）+ 沙盒 | 1d | BE-S2-006a | P0 | ⬜ |
 | BE-S2-007 | agent | LangGraph 主循环 + 引用源装配 + 合规端层 disclaimer | 1.5d | BE-S2-002, BE-S2-005, BE-S2-006b | P0 | ⬜ |
 | BE-S2-008 | quota | Agent 配额管理（免费 5/天 + VIP 无限 + 滑动窗口）| 0.5d | BE-S2-007 | P0 | ⬜ |
@@ -281,11 +281,11 @@ apps/api/tests/integration/test_chat_tables.py             # downgrade -1 → do
 
 | 候选 | 理由 |
 |------|------|
-| **BE-S2-006a** (Tool 注册中心 + 2 个最简工具 basic_info / financial, 1d) | RAG 主线 BE-S2-000 ✅ → BE-S2-004 ✅ → BE-S2-005 ✅ 全部落地；现在切到 Tool Use 主线。BE-S2-006a 只依赖 BE-S2-001（chat_tool_calls 表），可立即起；BE-S2-007 LangGraph 主循环要先有 Tool 注册中心 + hybrid_search Tool 才能跑 ReAct 循环 |
-| BE-S2-006b (余下 3 Tool: peers / sentiment / historical, 1d) | 依赖 BE-S2-006a 的 Tool 注册基础设施 |
-| BE-S2-007 (LangGraph 主循环 + 引用源装配, 1.5d) | 三依赖齐: BE-S2-002 facade ✅ + BE-S2-005 hybrid_search ✅ + BE-S2-006b 5 Tool。BE-S2-005 已让 hybrid_search 直接可作为 Tool 注入 |
+| **BE-S2-006b** (余下 3 Tool: peers / sentiment_placeholder / historical, + 把 hybrid_search 也包成 Tool, 1d) | RAG 主线 BE-S2-000 ✅ → BE-S2-004 ✅ → BE-S2-005 ✅ + Tool Use 第 1 层 BE-S2-006a ✅ 全部落地；BE-S2-006a 已搭好 Tool / Sandbox / Registry 三件套基础设施，BE-S2-006b 只是按相同 pattern 追加 3 个 Tool + 把 BE-S2-005 hybrid_search 注册成 Tool，单 PR 增量小 |
+| BE-S2-007 (LangGraph 主循环 + 引用源装配, 1.5d) | 三依赖齐: BE-S2-002 facade ✅ + BE-S2-005 hybrid_search ✅ + BE-S2-006a Tool 注册中心 ✅；只差 BE-S2-006b 的 5 Tool 全数注册到位即可起 ReAct 循环 |
+| BE-S2-008 (Agent 配额管理, 0.5d) | 还要等 BE-S2-007，主循环写入 chat_messages 之后才有"成功调用 1 次"的口径 |
 
-→ **建议下一步走 BE-S2-006a**（Tool 注册中心 + 2 工具：spec RAG 主线 BE-S2-000 ✅ → BE-S2-004 ✅ → BE-S2-005 ✅ → **BE-S2-006a** → BE-S2-006b → BE-S2-007。BE-S2-006a PR 内会落地：`app/services/agent/tool_registry.py` 注册中心（OpenAI tool schema 协议）+ `basic_info` / `financial` 两个对接 BE-007 现有 IPO 表的最简工具 + 沙盒（超时 / 异常归一）+ 单测）
+→ **建议下一步走 BE-S2-006b**（余下 3 Tool + hybrid_search Tool 化：spec Tool Use 主线 BE-S2-006a ✅ → **BE-S2-006b** → BE-S2-007。BE-S2-006b PR 内会落地：`tools/peers.py`（同业对标 placeholder, 实现走 ipos 表 industry filter + 简单排序）+ `tools/sentiment.py`（情感分布 placeholder, 当前数据源未接入直接返回固定中性 + warning）+ `tools/historical.py`（历史中签率, 走 ipos.one_lot_winning_rate 聚合）+ `tools/hybrid_search.py`（包装 BE-S2-005 现成 hybrid_search 函数为 Tool, 给 LLM ReAct 注入 RAG 检索能力）+ 各自单测）
 
 ---
 
@@ -650,6 +650,107 @@ hybrid_search(session, query, *, ipo_code, doc_type, lang,
 - 删除 Sprint 1 的 `agent_service.diagnose_stream` 单 shot 路径（保留作为 Tool Use 失败兜底，至少留到 Sprint 3 才砍）
 - 在 `agent.py` 路由层加 `get_current_user` 强制鉴权（spec/04 §1.3 允许匿名；要改先改 spec）
 - 任何 `pg_dump` / 真实生产数据进 `evals/` 目录（评测集必须是合成 / 公开 / 已脱敏数据）
+
+### BE-S2-006a 实施成果（2026-04-26 落地）
+
+**改动文件**
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `apps/api/app/services/agent/__init__.py` | 新建 26 行 | agent 包入口 + 显式 import 触发子包 side effect |
+| `apps/api/app/services/agent/tool_registry.py` | 新建 175 行 | `Tool` / `ToolResult` dataclass + 模块级 `_REGISTRY` + register / get / list_all / list_openai_schemas / unregister / clear_registry_for_test |
+| `apps/api/app/services/agent/sandbox.py` | 新建 130 行 | `@sandboxed(input_model, timeout_seconds)` 装饰器（pydantic 入参校验 + asyncio.wait_for 超时 + 异常归一 + elapsed_ms 注入 + deps 透传） |
+| `apps/api/app/services/agent/tools/__init__.py` | 新建 30 行 | side effect import basic_info / financial 子模块 |
+| `apps/api/app/services/agent/tools/basic_info.py` | 新建 110 行 | `get_ipo_basic_info` Tool（对接 `ipo_service.get_ipo`, Decimal/date 序列化） |
+| `apps/api/app/services/agent/tools/financial.py` | 新建 105 行 | `get_financial_statements` Tool（对接 `ipo_service.get_ipo_detail.extra.financial_summary`, 缺数据走 warning 不算失败） |
+| `apps/api/tests/test_tool_registry.py` | 新建 15 测 | ToolResult / Tool.to_openai_schema / register-get-list-unregister / 重名替换 + warning / name 不合法 / runner 非 callable / input_model 非 BaseModel / 默认 Tool 自注册 |
+| `apps/api/tests/test_agent_sandbox.py` | 新建 12 测 | sandboxed happy / pydantic ValidationError 归一 / TimeoutError / 通用 Exception 归一 / 契约违反 / deps 透传 / elapsed_ms 复写 |
+| `apps/api/tests/test_basic_info_tool.py` | 新建 8 测 | basic_info happy / minimal item / not_found / 入参校验 / 上游异常归一 / OpenAI schema 形状 |
+| `apps/api/tests/test_financial_tool.py` | 新建 11 测 | financial happy / financial_summary 缺失 → warning / wrong type → 兜底 / highlights 类型异常 / not_found / years 越界 / years 默认值 / 上游异常 / OpenAI schema |
+| `spec/09-sprint-2-backlog.md` | 状态 + 实施成果 + 下一步推荐 | 记录 BE-S2-006a 落地, 下一步指向 BE-S2-006b |
+| `README.md / apps/api/README.md` | 同步 | README 更新（373 passed） |
+
+**架构（Tool Use 第 1 层）**
+
+```
+LLM tool_call (OpenAI tools schema)
+     │
+     ▼
+list_openai_schemas() ←── 注册中心 _REGISTRY
+     │                        ▲
+     ▼                        │ register(Tool(...))
+Tool.runner(raw_args)  ◄──┐   │
+     │                    │   │
+     ▼                    │   │
+  @sandboxed              │  basic_info / financial
+    ├─ pydantic 入参校验   │   tools/__init__.py 模块 import
+    ├─ asyncio.wait_for   │   时 side effect 自动注册
+    ├─ 异常归一            │
+    └─ elapsed_ms 注入     │
+     │                    │
+     ▼                    │
+   原 runner ──────────────┘
+     │
+     ▼
+ToolResult(ok / data / error / elapsed_ms)
+     │
+     ▼
+LLM tool message  (BE-S2-007 主循环 json.dumps 入 chat_tool_calls)
+```
+
+**关键设计决策（提前定）**
+
+1. **Tool 协议走 OpenAI tools schema**（`type: function` + `name` + `description` + `parameters` JSON schema）—— DeepSeek-V3 / Qwen / 智谱 GLM-4 全兼容；spec/04 §3.1 原文就是这套，BE-S2-007 LangGraph 不需要再做协议适配
+2. **不上 LangChain `BaseTool` / `StructuredTool`**：包体大 + 抽象 4 层，60 行自己写更可控；spec/06 走"精简包路线"
+3. **入参 schema = pydantic BaseModel + `model_json_schema()`**：一处定义 = 入参文档 + 入参校验 + LLM schema 三合一；新加 Tool 只需要 1 个 BaseModel + 1 个 async runner
+4. **沙盒走装饰器（不是注册中心硬包）**：让每个 Tool 文件**自包含**，看 Tool 实现就能知道它的 input model + 超时；注册中心 `Tool.runner` 类型签名仍只是 `ToolRunner`，BE-S2-007 主循环不感知是否被装饰过
+5. **side effect 注册（不是显式 register list）**：BE-S2-006b / BE-S2-007 后会有 5+ Tool，写显式 list 容易漏；side effect import 让"加 Tool" = "加文件 + 加 import 一行"
+6. **重名替换 + warning（不抛）**：热重载 / 单测重导包友好；测试用 `clear_registry_for_test()` + `importlib.reload(tools_pkg.basic_info)` 重置
+7. **异常**绝不**冒上 LangGraph**：runner 内任何 exception 在沙盒兜底为 `ToolResult.failure`；只露 `Exception.__class__.__name__` 给 LLM（堆栈 + message 进 logger.exception，避免 LLM 学习反向越权）
+8. **Decimal / date / datetime 序列化在 Tool 内做**：LLM 不识别 Decimal，提前 cast 成 float / ISO string 避免 OpenAI client 再次序列化时的 `decimal.Decimal is not JSON serializable` 报错
+9. **Tool 内不写 `chat_tool_calls` 表**：归 BE-S2-007 LangGraph 主循环（在那里有 chat_session_id / step_index / 真实 LLM tool_call_id），Tool 只管"算结果"
+10. **`get_financial_statements` 缺数据 ≠ 调用失败**：返回 `ok=True` + `financial_summary=None` + warning 提示走 `hybrid_search`；让 LLM 决定是改 Tool 还是回答"暂无数据"，符合 spec/04 §3.3 防幻觉中"数据缺失必须明确说"的要求
+11. **`years` 当前仅 metadata 透传**：未接 AKShare 时不切片 financial_summary，只把入参回写给 LLM；BE-S3 接 AKShare 后再实际裁剪 `revenue_3y[:years]`
+12. **OpenAI tool name 约束**（`^[a-zA-Z0-9_-]{1,64}$`）注册时强校验：防止后续 Tool 起名带空格 / 中文导致 LLM provider 拒收
+
+**Tool 清单（spec/04 §3.1 对齐）**
+
+| Tool name | 状态 | 说明 |
+|-----------|------|------|
+| `get_ipo_basic_info` | ✅ 本 PR | IPO 基础信息（发行价 / PE / 募资额 / 上市日期 / 行业 / 状态） |
+| `get_financial_statements` | ✅ 本 PR | 财务摘要（financial_summary / highlights / risks）+ 缺数据 warning |
+| `get_peer_comparison` | ⬜ BE-S2-006b | 同业对标 |
+| `get_sentiment_summary` | ⬜ BE-S2-006b | 情感分布 placeholder |
+| `get_historical_winning_rate` | ⬜ BE-S2-006b | 历史中签率 |
+| `hybrid_search` | ⬜ BE-S2-006b | 包装 BE-S2-005 现成 hybrid_search 函数为 Tool |
+
+**测试矩阵（46 条新增）**
+
+| 测试文件 | 用例数 | 覆盖 |
+|---------|-------|------|
+| `tests/test_tool_registry.py` | 15 | ToolResult success/failure/frozen + Tool.to_openai_schema 形状（含 strip title）+ register/get/list_all/unregister + 重名替换 warning + name/runner/input_model 校验 + clear_registry_for_test + 默认 Tool 自注册（含 importlib.reload fixture 隔离） |
+| `tests/test_agent_sandbox.py` | 12 | happy / pydantic 缺字段 / 类型不匹配 / 约束违反 / None args / TimeoutError / ValueError 归一 / RuntimeError 归一 / 契约违反（runner 不返回 ToolResult） / deps 透传（multiplier kwarg） / elapsed_ms 沙盒覆写 |
+| `tests/test_basic_info_tool.py` | 8 | happy（含 Decimal→float / date→ISO 序列化校验）/ minimal item（多字段 None）/ not_found / 空 code / 短 code / 长 code / 上游 RuntimeError 归一 / OpenAI schema 形状 |
+| `tests/test_financial_tool.py` | 11 | happy（含 financial_summary 透传）/ summary 缺失 warning / summary wrong type 兜底 / highlights 类型异常兜底为 [] / not_found / years 越界（0 / 10）/ years 缺失 default 3 / 上游异常 / OpenAI schema |
+
+**实施成果（2026-04-26 落地）**
+
+| 维度 | Before BE-S2-006a | After BE-S2-006a |
+|------|------|------|
+| pytest | 327 passed | **373 passed** (+46) |
+| ruff | 46 errors | 46 errors（持平，BE-S2-006a 触动文件 0 增量） |
+| mypy | 23 errors | 23 errors（持平，BE-S2-006a 触动文件 0 增量） |
+| 新建文件 | — | `services/agent/__init__.py` + `tool_registry.py` + `sandbox.py` + `tools/__init__.py` + `tools/basic_info.py` + `tools/financial.py` 6 src 文件 + 4 测试文件 |
+| 已注册 Tool 数 | 0 | **2** (`get_ipo_basic_info` / `get_financial_statements`) |
+| Alembic head | 0004_fts | 0004_fts（BE-S2-006a 不动 schema） |
+
+**关键 bug & 修复（PR 内自查发现）**
+
+1. **`caplog` 抓不到 loguru warning** — loguru 不通过 stdlib logging，pytest `caplog` / `capfd` 都拿不到（loguru sink 在 module import 时已经持有了原始 stderr 引用）。改用 `monkeypatch.setattr(registry_mod.logger, "warning", _capture)` 直接 patch logger 方法，单测可控
+2. **`importlib.reload(tools_pkg)` 不会触发子模块 side effect** — Python module 缓存命中后 reload 父包不重跑子包 import；改 `importlib.reload(tools_pkg.basic_info)` + `importlib.reload(tools_pkg.financial)` 显式重跑两个子模块，让 `clear_registry_for_test` 后能恢复初始 2 Tool 状态
+3. **OpenAI 自托管 LLM (Qwen-2.5) 解析 `title` 字段挑剔** — pydantic `model_json_schema()` 默认带 `title` 字段，OpenAI 接收但部分自托管 LLM 报错；`Tool.to_openai_schema()` 主动 `params.pop("title", None)` 防御
+4. **`raw_args=None` 与 `raw_args={}` 必须等价** — LLM tool_call 没参数时可能传 None，沙盒入参解码层必须接住，否则 pydantic 直接抛 AttributeError；改成 `raw_args = raw_args or {}` 归一为 dict 后再 validate
+5. **runner 内部声明的 `elapsed_ms` 必须被沙盒覆写** — runner 实现可能拷错或忘改 elapsed，让真实计时统一在沙盒侧（dataclass `replace` 风格重建 ToolResult）
 
 ## ✅ Sprint 2 完成后的产出物
 

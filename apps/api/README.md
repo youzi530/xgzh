@@ -87,6 +87,15 @@ Schema（Alembic `0001_init` + `0002_chat` + `0003_chunks`，PG 14 + pgvector 0.
   - **不在本 PR 做 query rewrite / HyDE / 语义缓存**：那些是 BE-S2-007 LangGraph 主循环里干（有 LLM context 才能改写）；本层只做单 query 检索原语
   - **ORM 不反映 tsv 列**：generated column read-only，BM25 走 raw SQL；ORM INSERT 时字段不在映射 = 不会被写入 = PG 自动按生成表达式填值 = BE-S2-004 业务代码 0 改动
   - 配置层 6 个新字段：`RAG_VECTOR_TOP_K=50` / `RAG_BM25_TOP_K=50` / `RAG_RRF_K=60` / `RAG_RERANK_POOL_SIZE=20` / `RAG_FINAL_TOP_K=5` / `RAG_USE_RERANK=true`
+- Sprint 2 (BE-S2-006a)：Tool 注册中心 + 2 个最简 Tool — 新建 `app/services/agent/` 包
+  - **三件套基础设施**：`tool_registry.py`（`Tool` / `ToolResult` frozen dataclass + 模块级 `_REGISTRY` + `register` / `get` / `list_all` / `list_openai_schemas` / `unregister` / `clear_registry_for_test`）+ `sandbox.py`（`@sandboxed(input_model, timeout_seconds)` 装饰器：pydantic 入参校验 + asyncio.wait_for 超时 + 异常归一 + elapsed_ms 注入 + deps 透传）+ `tools/` 子包（side effect import 自动注册）
+  - **Tool 协议走 OpenAI tools schema**（`type: function` + `name` + `description` + `parameters` JSON schema）— DeepSeek-V3 / Qwen / 智谱 GLM-4 全兼容；BE-S2-007 LangGraph 主循环不需要再做协议适配
+  - **入参 schema = pydantic BaseModel + `model_json_schema()`**：一处定义 = 入参文档 + 入参校验 + LLM schema 三合一；`Tool.to_openai_schema()` 主动 `pop("title", None)` 防御自托管 LLM (Qwen-2.5) 解析挑剔
+  - **side effect 注册（不是显式 register list）**：BE-S2-006b / BE-S2-007 后会有 5+ Tool，加 Tool = 加文件 + 加 import 一行；测试隔离用 `clear_registry_for_test()` + `importlib.reload(tools_pkg.basic_info / .financial)` 重置
+  - **沙盒走装饰器（不是注册中心硬包）**：让每个 Tool 文件自包含；任何 exception 在沙盒兜底为 `ToolResult.failure`，仅露 `Exception.__class__.__name__` 给 LLM（堆栈进 `logger.exception`，避免 LLM 学习反向越权）
+  - **2 个最简 Tool（对接现有 IPO 表 / 不接 AKShare）**：`get_ipo_basic_info`（基本面 — 委托 `ipo_service.get_ipo`, Decimal/date 序列化为 JSON 友好类型）+ `get_financial_statements`（财务摘要 — 委托 `ipo_service.get_ipo_detail`, 缺数据走 `warning` 而非 failure，让 LLM 决定是改 Tool 还是回答"暂无数据"）
+  - **OpenAI tool name 约束**（`^[a-zA-Z0-9_-]{1,64}$`）注册时强校验：防止后续 Tool 起名带空格 / 中文导致 LLM provider 拒收
+  - **不在本 PR 做**：① LangGraph 主循环 / ReAct 步进（BE-S2-007）② Tool 调用回写 `chat_tool_calls`（BE-S2-007 在主循环内做，这里只管"算结果"）③ 限频 / 单用户日预算 / 单 session step cap（BE-S2-007 + BE-S2-008 配额）④ `hybrid_search` Tool 包装（BE-S2-006b 与 peers / sentiment / historical 一并落地）
 
 缓存层（`app/cache/`）:
 
@@ -527,7 +536,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 327 passed in ~30s (Sprint 1 + BE-S2-001/002/003/000/004/005)
+# → 373 passed in ~36s (Sprint 1 + BE-S2-001/002/003/000/004/005/006a)
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e

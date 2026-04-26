@@ -70,7 +70,7 @@
     - 7 条新 cache 单测（前缀边界 / fail-soft / 不误删限流 key 等不变量锁定）
 - **后端测试**：
   - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 120 passed / 136 skipped（含 BE-S2-002 facade 24 条单测）
-  - 有 DB：`make test-all` ⇒ **327 passed in ~30s**（306 → 327，新增 21 条 BE-S2-005 测试：`tests/test_hybrid_search.py` 19（CJK 预切 / RRF 单元 / vector-only / bm25-only / RRF 融合 / 过滤 / rerank reorder / rerank fail fallback / dim mismatch / 全标点 / 截断）+ `tests/integration/test_document_chunks_schema.py` +2（0004 tsv generated col + GIN + 中英 BM25 召回真跑）；累计 11 张表 + 0004 tsvector 全文索引 + 混合检索 vector+BM25+RRF+reranker 全链路）
+  - 有 DB：`make test-all` ⇒ **373 passed in ~36s**（327 → 373，新增 46 条 BE-S2-006a 测试：`tests/test_tool_registry.py` 15（ToolResult / Tool.to_openai_schema / register-get-list / 重名替换 + warning / 默认 Tool 自注册）+ `tests/test_agent_sandbox.py` 12（happy / pydantic 校验 / 超时 / 异常归一 / 契约违反 / deps 透传 / elapsed_ms 复写）+ `tests/test_basic_info_tool.py` 8（Decimal/date 序列化 / 多字段 None / not_found / OpenAI schema）+ `tests/test_financial_tool.py` 11（financial_summary 缺失 warning / wrong type 兜底 / years 越界 / years 默认值 / OpenAI schema）；累计 11 张表 + 0004 tsvector 全文索引 + 混合检索 vector+BM25+RRF+reranker + Tool 注册中心 + 沙盒 + 2 个最简 Tool 全链路）
 
 ### 🚀 Sprint 2 进行中 — AI Agent + RAG（核心壁垒）
 
@@ -82,16 +82,18 @@
 - ✅ **BE-S2-000**（HK IPO 真源接入）：`hkex_client` 抓 hkexnews `applicants_c.htm` 列表 + BeautifulSoup 解析（公司名 / 递交日 / 招股书 PDF URL）+ `AP{yymmdd}{slug:5}.HK` 16 字符占位 code 贴 `VARCHAR(16)`+ `httpx.AsyncClient` + `Semaphore(2)` 限并发 + 失败兜底返回空。`run_ingest_hk_job` 走 `upsert_ipos` 复用 BE-007 写入路径；**关键守护：`extra` 改 `jsonb || jsonb` 浅合并**（防 BE-S2-004 RAG 写入的 `highlights` / `risks` 被 ingest 整体覆盖）。`scheduler/__init__.py` 注册 `ipo_ingest_hk_initial` + `ipo_ingest_hk_cron`（默认 `9,17` HKT 二刀流）。`ipo_service` 切 DB 路径 + cold-start seed 兜底首次部署。新增 17 条测试
 - ✅ **BE-S2-004**（招股书 PDF 入库流水线）：3 层架构 — `app/adapters/pdf_loader.py` httpx 流式下载（Content-Length 提前拒 + 累计字节兜底防对端不诚实）+ pypdf 6.x 抽页文（单页失败 logger.warning + skip，全空抛 `PDFFetchError`）；`app/services/rag/chunker.py` 段落→句子→字符 3 层 fallback 切分 + CJK/英文启发式 token 估算（不引 tiktoken / transformers）；`app/services/rag/prospectus_ingest_service.py` 编排 fetch→extract→chunk→embed→upsert，5 阶段 stats + 失败 stage 定位 + `ON CONFLICT (doc_id, content_hash) WHERE content_hash IS NOT NULL DO NOTHING` 幂等（**关键 bug 自查：partial UNIQUE 必须给 `index_where` 谓词**, 否则 `InvalidColumnReferenceError`）。`doc_id = sha256(url)[:32]`，URL 改版自动新版本共存；embed dim 校验防 vector(1024) 索引污染。本 PR 不挂 scheduler（招股书几十 MB × N 撑爆带宽），手动入口给 Sprint 3 运营触发面板留口。新增 33 条测试
 - ✅ **BE-S2-005**（混合检索 + RRF + reranker）：Alembic 0004 给 `ipo_documents` 加 `tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', regexp_replace(text, E'([\u4e00-\u9fff])', E'\\1 ', 'g'))) STORED` + GIN 索引；新建 `app/services/rag/hybrid_search.py`。**不上 zhparser**（装难 + CI 跑不了 + 字典维护重）→ 用 PG `simple` config + 中文字符级预切替代，**单一真相**：写入端 0004 与查询端 `_cjk_presplit` 用同样正则 `[\u4e00-\u9fff]`。三阶段架构：vector 召回（HNSW cosine `embedding <=> CAST(:q AS vector)`）+ BM25 召回（`tsv @@ plainto_tsquery + ts_rank_cd`）+ Reciprocal Rank Fusion（Cormack 2009, k=60）+ bge-reranker-v2-m3 cross-encoder 二阶段精排（pool=20, final=5）。**过滤推 SQL**：`ipo_code` / `doc_type` / `lang` / `embedding_dim` 全在 WHERE，多版本 embedding 隔离。**失败链路**：vector 失败 → 仅 BM25；BM25 失败 → 仅 vector；rerank 失败 → fallback RRF 顺序；空 query / 全标点 / dim mismatch 全有兜底。**ORM 不反映 tsv**（generated read-only），BE-S2-004 业务代码 0 改动。新增 21 条测试（19 hybrid_search + 2 schema 0004）。**关键 bug 自查**：head=0004 后 0003 downgrade 测试 `command.downgrade(cfg, "-1")` 不再退到 0002，改用显式 revision
+- ✅ **BE-S2-006a**（Tool 注册中心 + 2 个最简工具）：新建 `app/services/agent/` 包 — `tool_registry.py`（`Tool` / `ToolResult` frozen dataclass + 模块级 `_REGISTRY` + register/get/list_all/list_openai_schemas/unregister/clear_registry_for_test）+ `sandbox.py`（`@sandboxed(input_model, timeout_seconds)` 装饰器：pydantic 入参校验 + asyncio.wait_for 超时 + 异常归一 + elapsed_ms 注入 + deps 透传）+ `tools/basic_info.py`（`get_ipo_basic_info` 对接 `ipo_service.get_ipo`, Decimal/date 序列化为 JSON 友好类型）+ `tools/financial.py`（`get_financial_statements` 对接 `ipo_service.get_ipo_detail.extra.financial_summary`，缺数据走 `warning` 而非 failure，让 LLM 决定是改 Tool 还是回答"暂无数据"）。**Tool 协议走 OpenAI tools schema**（DeepSeek-V3 / Qwen / GLM-4 全兼容）；**入参 schema = pydantic BaseModel + `model_json_schema()`**（一处定义 = 入参文档 + 入参校验 + LLM schema 三合一）；**side effect 注册**（加 Tool = 加文件 + 加 import 一行）；异常**绝不**冒上主循环（runner 内任何 exception 在沙盒兜底为 `ToolResult.failure`，仅露 `Exception.__class__.__name__` 给 LLM）。新增 46 条测试（tool_registry 15 + sandbox 12 + basic_info 8 + financial 11）。**关键 bug 自查**：① loguru 不通过 stdlib logging，pytest `caplog` 抓不到 → 改 `monkeypatch.setattr(logger, "warning", _capture)` 直接 patch；② `importlib.reload(tools_pkg)` 父包不重跑子模块 import → 改显式 reload `tools_pkg.basic_info` / `tools_pkg.financial` 子模块；③ pydantic `model_json_schema()` 默认带 `title` 字段，部分自托管 LLM (Qwen-2.5) 解析挑剔 → `Tool.to_openai_schema()` 主动 `params.pop("title", None)` 防御
 
 主战场：
 
-- **Tool Use（BE-S2-006a/b）**：5 个工具（基本面 / 财务 / 同业 / 情感 / 历史）+ JSON schema + 沙盒
+- ✅ **BE-S2-006a**：Tool 注册中心 + 2 个最简工具 ✅（本 PR）
+- **Tool Use（BE-S2-006b）**：余下 3 工具（同业 / 情感 / 历史）+ 把 BE-S2-005 hybrid_search 包成 Tool
 - **LangGraph 主循环（BE-S2-007）**：ReAct 状态机 max 5 步 + 引用源装配 + 端层兜底 disclaimer
 - **配额管理（BE-S2-008）**：免费 5 次/天 / VIP 无限 / 滑动窗口 + 友好提示
 - **评测集（BE-S2-009）**：80 条标注 query + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）
 - **前端**：对话页 + 打字机渲染（MP-WEIXIN onChunkReceived 兼容）+ 引用源面板 + 配额引导
 
-下一步推荐 → **BE-S2-006a（Tool 注册中心 + 2 工具 basic_info / financial，1d）**：RAG 主线全部落地（BE-S2-000 ✅ + BE-S2-004 ✅ + BE-S2-005 ✅），切 Tool Use 主线。PR 内闭环：`app/services/agent/tool_registry.py` OpenAI tool schema 协议 + `basic_info` / `financial` 对接 BE-007 现有 IPO 表的最简两工具 + 沙盒（超时 / 异常归一）+ 单测。
+下一步推荐 → **BE-S2-006b（余下 3 Tool + hybrid_search Tool 化，1d）**：BE-S2-006a 已搭好 Tool / Sandbox / Registry 三件套基础设施，BE-S2-006b 按相同 pattern 追加 `peers` / `sentiment_placeholder` / `historical` 三个 Tool + 把 BE-S2-005 现成的 `hybrid_search` 函数包装成 Tool 给 LLM ReAct 注入 RAG 检索能力 + 各自单测。
 
 ## 📖 设计文档
 
