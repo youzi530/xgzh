@@ -44,6 +44,21 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=5)
     db_max_overflow: int = Field(default=10)
 
+    sms_adapter: str = Field(
+        default="mock",
+        description="SMS 通道: mock (dev) | aliyun (prod, Sprint 2)",
+    )
+    aliyun_sms_access_key_id: str = Field(default="")
+    aliyun_sms_access_key_secret: str = Field(default="")
+    aliyun_sms_sign_name: str = Field(default="")
+    aliyun_sms_template_id: str = Field(default="")
+    aliyun_sms_intl_template_id: str = Field(default="")
+
+    otp_ttl_seconds: int = Field(default=300, description="OTP 有效期, 默认 5 分钟")
+    otp_resend_interval_seconds: int = Field(
+        default=60, description="同手机号重发间隔 (rate_limit 用)"
+    )
+
     free_agent_daily_limit: int = Field(default=5)
 
     @property

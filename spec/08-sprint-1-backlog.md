@@ -17,7 +17,7 @@
 |----|------|------|:----:|------|:------:|
 | INFRA-001 ✅ | infra | PostgreSQL 初始 schema（Alembic + pgvector） | 0.5d | - | P0 |
 | INFRA-002 ✅ | infra | Redis cache 封装 + 限流装饰器 | 0.5d | - | P0 |
-| BE-001 | backend | User 模型 + phone OTP 发送（dev 走 mock 短信） | 0.5d | INFRA-001, INFRA-002 | P0 |
+| BE-001 ✅ | backend | User 模型 + phone OTP 发送（dev 走 mock 短信） | 0.5d | INFRA-001, INFRA-002 | P0 |
 | BE-002 | backend | OTP 校验 + 注册/登录 + JWT 颁发 | 0.5d | BE-001 | P0 |
 | BE-003 | backend | JWT 中间件 + `current_user` 依赖 | 0.5d | BE-002 | P0 |
 | BE-004 | backend | Refresh token + 黑名单 | 0.5d | BE-003 | P0 |
@@ -136,34 +136,57 @@ BE-003 ──────── BE-011
 
 ---
 
-### BE-001 · User 模型 + phone OTP 发送
+### BE-001 · User 模型 + phone OTP 发送 ✅ DONE
 
-**改动文件**
-- `apps/api/app/services/user_service.py`
-- `apps/api/app/services/otp_service.py`
-- `apps/api/app/api/v1/auth.py`（`POST /auth/otp/send`）
-- `apps/api/app/adapters/sms/__init__.py`
-- `apps/api/app/adapters/sms/mock.py`（dev 环境直接打日志）
-- `apps/api/app/adapters/sms/aliyun.py`（占位，标 TODO，下一 Sprint 接）
-- `apps/api/tests/test_otp_send.py`
+**目标**：实现 `POST /api/v1/auth/otp/send`，60 秒限流 + 5 分钟 OTP，dev 走 mock SMS 把验证码打到日志。
+
+**改动文件**（已实装）
+- `apps/api/app/utils/phone.py`（新）：E.164 归一化 + 5 国家码白名单（+86/+852/+853/+65/+886）+ `mask_phone` 脱敏
+- `apps/api/app/adapters/sms/`（新目录）
+  - `base.py`：`SMSAdapter` Protocol、`SMSDeliveryError`、`SMSSendResult` dataclass
+  - `mock.py`：`MockSMSAdapter`（dev 用，把 `phone+code` 打到 loguru）
+  - `aliyun.py`：`AliyunSMSAdapter` 占位（构造参数齐全，`send_otp` 抛 `NotImplementedError`，Sprint 2 接）
+  - `factory.py`：`get_sms_adapter()` / `set_sms_adapter()` / `reset_sms_adapter()` singleton
+- `apps/api/app/services/otp_service.py`（新）：`generate_otp_code` (`secrets.randbelow`)、`store_otp` / `fetch_stored_otp` / `consume_otp`、`send_otp` 编排（失败回滚 Redis）
+- `apps/api/app/services/user_service.py`（新骨架）：`find_user_by_phone` / `find_user_by_id`（BE-002 用）
+- `apps/api/app/schemas/auth.py`（新）：`OTPSendRequest` / `OTPSendResponse`
+- `apps/api/app/api/v1/auth.py`（新）：`POST /auth/otp/send`，`@rate_limit(times=1, per_seconds=60, namespace="otp_send", key_func=已归一化phone)`
+- `apps/api/app/api/v1/__init__.py`：注册 `auth.router`
+- `apps/api/app/main.py`：全局 `RateLimitExceeded → 429` handler（带 `Retry-After` header）
+- `apps/api/app/core/config.py`、`.env(.example)`：加 `SMS_ADAPTER`、`ALIYUN_SMS_*`、`OTP_TTL_SECONDS`、`OTP_RESEND_INTERVAL_SECONDS`
+- `apps/api/tests/test_otp_send.py`（新，32 用例）
 
 **AC**
-- [ ] `POST /auth/otp/send`：body `{"phone": "+8613xxx"}`，60 秒内同一手机号最多 1 次
-- [ ] OTP 6 位数字，存 Redis key `xgzh:otp:{phone}` TTL 5 分钟
-- [ ] dev 环境 mock SMS：日志里能看到验证码（方便手动测试）
-- [ ] 错误码：`429 too_many_requests`、`400 invalid_phone`
+- [x] `POST /auth/otp/send`：body `{"phone": "+8613xxx"}`，60 秒内同一手机号最多 1 次
+- [x] OTP 6 位数字（`secrets.randbelow`），存 Redis key `xgzh:otp:{phone}` TTL 5 分钟
+- [x] dev 环境 mock SMS：日志里能看到验证码（`[MOCK SMS] to=+86xxx code=123456`）
+- [x] 错误码：`429 too_many_requests`（带 `Retry-After: 60`）、`400 invalid_phone`、`502 sms_delivery_failed`（通道挂掉）
+- [x] 限流 key 用 **归一化后** 的 phone：`13800138000` 与 `+8613800138000` 共享同一限流桶
+- [x] SMS 通道失败时，自动清掉刚存的 OTP（避免脏数据）
+- [x] 32 用例全过；全套 58/58 通过；smoke test 1+86/1+852 / 429 / 400 / 502 全部命中预期
 
-**Cursor Prompt**
+**Smoke 命令**
 
-```
-在 apps/api/app 实现 OTP 发送：
-- POST /api/v1/auth/otp/send {phone}
-- 同手机号 60s 限流（用 INFRA-002 的 @rate_limit）
-- OTP 写入 Redis key "xgzh:otp:{phone}"，TTL 5 分钟
-- 实现 SMSAdapter 接口（aliyun 占位 + mock 实现）
-- mock 实现里 logger.info(f"[MOCK SMS] {phone} -> {code}")
-- 单测覆盖：成功发送、限流命中、手机号格式错误
-- 不要碰前端
+```bash
+# 启动 (PYTHONUNBUFFERED=1 让 loguru 不被块缓冲)
+PYTHONUNBUFFERED=1 uv run uvicorn app.main:app --port 8000
+
+# 200
+curl -i -X POST localhost:8000/api/v1/auth/otp/send \
+  -H 'content-type: application/json' -d '{"phone":"13800138000"}'
+
+# 429 (60s 内重复)
+curl -i -X POST localhost:8000/api/v1/auth/otp/send \
+  -H 'content-type: application/json' -d '{"phone":"+8613800138000"}'
+
+# 400
+curl -i -X POST localhost:8000/api/v1/auth/otp/send \
+  -H 'content-type: application/json' -d '{"phone":"+1234567890"}'
+
+# 验证 Redis
+redis-cli get  'xgzh:otp:+8613800138000'        # 6 位 OTP
+redis-cli ttl  'xgzh:otp:+8613800138000'        # ≤ 300
+redis-cli get  'xgzh:rate:otp_send:phone:+8613800138000'  # 1
 ```
 
 ---

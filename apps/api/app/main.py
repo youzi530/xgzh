@@ -8,8 +8,10 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.v1 import router as v1_router
+from app.cache import RateLimitExceeded
 from app.core.config import get_settings
 from app.core.logging import logger, setup_logging
 
@@ -51,6 +53,21 @@ def create_app() -> FastAPI:
             response = await call_next(request)
         response.headers["x-request-id"] = rid
         return response
+
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limit_handler(_: Request, exc: RateLimitExceeded) -> JSONResponse:
+        retry_after = exc.retry_after or exc.per_seconds
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": {
+                    "code": "too_many_requests",
+                    "message": "请求过于频繁,请稍后再试",
+                    "retry_after": retry_after,
+                }
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, Any]:
