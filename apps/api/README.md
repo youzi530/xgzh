@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007/008/009/010）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007/008/009/010/011）
 
 API:
 
@@ -21,6 +21,8 @@ API:
 - `POST /api/v1/favorites` 添加自选（BE-010：幂等，需登录；body `{code, notify_on_subscribe?}`）
 - `DELETE /api/v1/favorites/{code}` 移除自选（幂等：不存在也 200 + `removed=False`）
 - `GET /api/v1/favorites` 当前用户全部自选（LEFT JOIN `ipos` 带最新行情字段；按 `favorited_at DESC` 排）
+- `POST /api/v1/push/tokens` 注册推送 token（BE-011：幂等覆盖，需登录；body `{platform, token, device_id}`；响应**不回显 token**）
+- `DELETE /api/v1/push/tokens?platform=&device_id=` 注销推送 token（幂等：不存在也 200 + `removed=False`）
 
 后台调度（`app/scheduler/__init__.py` + `app/services/ipo_ingest_service.py`，BE-007）:
 
@@ -282,6 +284,48 @@ curl -X POST localhost:8000/api/v1/favorites \
 # {"detail":{"code":"favorite_code_invalid","message":"code 必须带市场后缀..."}}
 ```
 
+推送 token 注册（`app/services/push_service.py`，BE-011）:
+
+- **平台白名单 `ios|android|wxmp|h5`**：Pydantic Literal 校验，非法值直接 422
+- **`device_id` 强制必填非空**：PG `UNIQUE (user_id, platform, device_id)` 在 `device_id IS NULL` 时**不去重**（NULL 互不相等的 SQL 老坑）；强制非空让 `ON CONFLICT` 行为可预期，前端只需传一个稳定的设备标识（小程序用 openid hash、H5 用 cookie hash）
+- **响应不 echo `token`**：APNs / FCM token 是敏感凭据，泄露后第三方可代发垃圾消息；客户端本身就持有，无需后端回传
+- **`POST` 单 SQL 幂等**：`INSERT ... ON CONFLICT (user_id, platform, device_id) DO UPDATE SET token = EXCLUDED.token, is_active = true`，加 `RETURNING (xmax = 0)` 一次拿到 `created` 标志（沿用 BE-010 思路）；同 device 复发 = 仅刷新 token + 重新激活，不新增行
+- **`DELETE` 复合条件 `(user_id, platform, device_id)`**：杜绝越权删别人的 token；不存在也返 200 + `removed=false` 保持幂等
+- **覆盖时强制 `is_active = true`**：将来加"运营禁用 token"功能后，用户重新注册同 device 会自动重新激活，避免"明明 APP 在前台却收不到推送"
+- Sprint 4 推送实施：`push_service.list_user_tokens(user_id)` 取活跃 token 群发；本 Sprint 只养名单不发推
+
+```bash
+# 1) 注册 (created=true, 响应没 token 字段)
+TOK=$(printf "a%.0s" {1..64})
+curl -X POST localhost:8000/api/v1/push/tokens \
+  -H "Authorization: Bearer <access>" -H 'content-type: application/json' \
+  -d "{\"platform\":\"ios\",\"token\":\"$TOK\",\"device_id\":\"iphone-15\"}"
+# {"ok":true,"id":1,"platform":"ios","device_id":"iphone-15","is_active":true,"created":true,"registered_at":"..."}
+
+# 2) 同 device 复发新 token (created=false, id 不变, DB 里 token 被覆盖)
+curl -X POST localhost:8000/api/v1/push/tokens \
+  -H "Authorization: Bearer <access>" -H 'content-type: application/json' \
+  -d '{"platform":"ios","token":"b...b","device_id":"iphone-15"}'
+# {"ok":true,"id":1,"created":false,...}
+
+# 3) 注销 (removed=true)
+curl -X DELETE \
+  -H "Authorization: Bearer <access>" \
+  'localhost:8000/api/v1/push/tokens?platform=ios&device_id=iphone-15'
+# {"ok":true,"platform":"ios","device_id":"iphone-15","removed":true}
+
+# 4) 重复注销 (removed=false, 仍 200, 幂等)
+curl -X DELETE \
+  -H "Authorization: Bearer <access>" \
+  'localhost:8000/api/v1/push/tokens?platform=ios&device_id=iphone-15'
+# {"ok":true,"removed":false}
+
+# 5) platform 非白名单 → 422
+curl -X POST localhost:8000/api/v1/push/tokens \
+  -H "Authorization: Bearer <access>" -H 'content-type: application/json' \
+  -d '{"platform":"symbian","token":"...","device_id":"x"}'
+```
+
 邀请码（`app/services/invite_service.py`，BE-006）:
 
 - 注册时 BE-002/BE-005 在同一事务里把 `users.invite_code`（8 字符大写+数字）镜像到 `invite_codes` 表（owner_user_id=新用户、`max_usage=NULL` 无限、`is_active=true`、`note='personal'`）
@@ -415,9 +459,9 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 
 ```
 app/
-├── api/v1/         # 路由 (ipos / agent / auth / me / invite)
+├── api/v1/         # 路由 (ipos / agent / auth / me / invite / favorites / push)
 ├── core/           # 配置、日志
-├── services/       # 业务逻辑 (ipo / agent / otp / user / auth / invite)
+├── services/       # 业务逻辑 (ipo / agent / otp / user / auth / invite / favorite / push)
 ├── adapters/       # 外部数据源 / 通道
 │   ├── akshare_client.py
 │   ├── llm_client.py
@@ -427,7 +471,7 @@ app/
 │   ├── jwt.py        # HS256 access + refresh, 严格 typ 隔离
 │   ├── deps.py       # get_current_user / get_optional_user
 │   └── blacklist.py  # jti 粒度黑名单 (Redis SETEX, fail-open 读)
-├── schemas/        # Pydantic 模型 (ipo / agent / auth)
+├── schemas/        # Pydantic 模型 (ipo / agent / auth / favorite / push)
 ├── utils/          # 通用工具 (phone E.164 + mask)
 ├── db/             # SQLAlchemy 2.0 async Base + ORM models
 │   ├── base.py

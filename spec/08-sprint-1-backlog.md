@@ -824,16 +824,72 @@ curl -X POST localhost:8000/api/v1/favorites -H "$H" -d '{"code":"BABA"}'
 
 ---
 
-### BE-011 · 推送 token 注册（P1）
+### BE-011 · 推送 token 注册（P1） ✅ DONE
 
-**改动文件**
-- `apps/api/app/api/v1/push.py`
-- `apps/api/app/services/push_service.py`
+**目标**：把客户端拿到的 APNs / FCM / 微信小程序订阅 token 收回服务端，养出 Sprint 4 真正发推送时的"投递候选名单"。本 Sprint 不发推，只做注册 / 注销 contract。
+
+**改动文件**（已实装）
+- `apps/api/app/schemas/push.py`：`PushPlatform` Literal (`ios|android|wxmp|h5`) + 三个 Pydantic 模型；响应**不回显 ``token``**
+- `apps/api/app/services/push_service.py`：`register_token`（PG `ON CONFLICT DO UPDATE` + `RETURNING (xmax = 0)` 区分新增/覆盖）+ `unregister_token`（单条 `DELETE`，幂等）+ `list_user_tokens`（Sprint 4 推送实施时调）
+- `apps/api/app/api/v1/push.py`：`POST /push/tokens` + `DELETE /push/tokens?platform=&device_id=`，均挂 `Depends(get_current_user)`
+- `apps/api/app/api/v1/__init__.py`：注册 `push.router`
+- `apps/api/tests/test_push_token.py`：12 条端到端用例
 
 **AC**
-- [ ] `POST /push/tokens {platform, token}` 写 push_tokens 表
-- [ ] 同 user + platform 唯一（覆盖）
-- [ ] 不实际推送（推送实施排到 Sprint 4）
+- [x] `POST /push/tokens {platform, token, device_id}` 落 `push_tokens` 表
+- [x] 同 `user + platform + device_id` 唯一；复发 = 覆盖 `token` + 重新激活 `is_active`，不新增行
+- [x] **响应里不回显 token**（敏感凭据保护，前端本来就持有）
+- [x] `DELETE /push/tokens?platform=&device_id=` 幂等（不存在也返 200 + `removed=false`）
+- [x] 用户隔离：B 用户无法删 A 用户的 device 记录
+- [x] `platform` 非白名单 → 422；`device_id` 缺失 → 422；`token` < 8 字符 → 422
+- [x] 不实际推送（Sprint 4 接 APNs / FCM / wxmp 时再实施）
+
+**关键设计决策**
+1. **device_id 强制必填非空**（API schema 层）：PG 中 `UNIQUE (user_id, platform, device_id)` 在 `device_id IS NULL` 时**不去重**（NULL 互不相等是 SQL 标准的老坑），如果允许 NULL 客户端反复注册会无限堆行。强制非空让 `ON CONFLICT` 行为可预期，成本只是前端必须给一个稳定的设备标识（小程序用 openid hash、H5 用 cookie hash 即可）。
+2. **响应不 echo token**：APNs / FCM token 一旦泄露第三方可代发垃圾消息，安全大于便利。客户端本身就持有 token，无需后端再回传。
+3. **复合 DELETE 条件 `(user_id, platform, device_id)`**：即便 `device_id` 由客户端控制，越权也只能影响"绑到自己 user_id 的设备"，杜绝跨用户污染；同时不暴露 `push_tokens.id` 主键，让删除接口语义全面对齐"按设备唯一性"。
+4. **覆盖时强制 `is_active = true`**：将来如果运营加了"禁用 token"功能把 `is_active` 置 false，用户重新注册同 device 应自动重新激活，避免"明明 APP 已经在前台却收不到推送"的诡异 case。
+5. **`xmax = 0` trick 沿用 BE-010**：单 SQL 同时拿到 `id` + 是否新建 + `created_at` / `updated_at`，省一次 SELECT。
+6. **id 序列空洞是预期**：`BIGSERIAL` 在 `ON CONFLICT DO UPDATE` 命中时也会消耗一个 sequence 值（PG 行为），所以 `id=1, 3, 5...` 不连续是正常的，不影响功能。
+
+**测试结果**
+```
+有 DB:  uv run pytest -q  →  208 passed (新增 12)
+无 DB:  uv run pytest -q  →   89 passed, 119 skipped
+```
+
+**烟测命令**
+```bash
+# 0. 起服务
+cd apps/api && PYTHONUNBUFFERED=1 uv run uvicorn app.main:app --host 127.0.0.1 --port 8011
+
+# 1. 走完登录拿 ACCESS（略，见 BE-002）
+
+# 2. 注册 iOS token (created=true, 响应里没 token 字段)
+TOK1=$(printf "a%.0s" {1..64})
+curl -s -X POST localhost:8011/api/v1/push/tokens \
+  -H "Authorization: Bearer $ACCESS" -H 'content-type: application/json' \
+  -d "{\"platform\":\"ios\",\"token\":\"$TOK1\",\"device_id\":\"iphone-15\"}"
+
+# 3. 同 device 复发新 token (created=false, id 不变, DB 里 token 被覆盖)
+TOK2=$(printf "b%.0s" {1..64})
+curl -s -X POST localhost:8011/api/v1/push/tokens \
+  -H "Authorization: Bearer $ACCESS" -H 'content-type: application/json' \
+  -d "{\"platform\":\"ios\",\"token\":\"$TOK2\",\"device_id\":\"iphone-15\"}"
+
+# 4. 注销 iphone-15 (removed=true)
+curl -s -X DELETE "localhost:8011/api/v1/push/tokens?platform=ios&device_id=iphone-15" \
+  -H "Authorization: Bearer $ACCESS"
+
+# 5. 重复注销 (removed=false, 仍 200)
+curl -s -X DELETE "localhost:8011/api/v1/push/tokens?platform=ios&device_id=iphone-15" \
+  -H "Authorization: Bearer $ACCESS"
+```
+
+**遗留 / 后续**
+- Sprint 4 接 APNs / FCM / wxmp 订阅消息时调 `push_service.list_user_tokens(user_id)` 取活跃 token 群发
+- 未来可加"运营禁用 token"管理后台接口，把 `is_active=false`；本 Sprint 字段留好但不暴露
+- 未来可考虑把无效 token（推送 401 / Unregistered 反馈）自动清理，避免污染推送候选名单
 
 ---
 

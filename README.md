@@ -21,10 +21,11 @@
   - ✅ **BE-008**：`GET /ipos` 切回数据库 + 筛选 + 分页 + Redis 缓存（A 股走 `ipos` 表；HK 仍 seed；`status`/`industry` 筛选；`page`/`size` 分页 1-100；`listing_date DESC NULLS LAST` 排序；`@cached(ttl=600s, namespace="ipos:list")` 含 5 元组参数 hash）
   - ✅ **BE-009**：`GET /ipos/{code}` 字段聚合 / 多源 merge（新 schema `IPODetail` 加 `sponsors` / `underwriters` / `prospectus_url` / `highlights` / `risks` / `financial_summary`；`extra` JSONB 提取顶层字段；`@cached(ttl=1800s, namespace="ipos:detail")` `skip_if_none=True` 防 404 穿透；404 标准化错误码 `ipo_not_found`）
   - ✅ **BE-010**：用户自选股 + API（`POST/DELETE /favorites` PG `INSERT ... ON CONFLICT DO UPDATE` 单 SQL 幂等，`RETURNING (xmax=0)` 区分 INSERT/UPDATE 路径；`GET /favorites` LEFT JOIN ipos 拿最新行情；前端只持 `code` 后缀反推 market；HK seed code 也可收藏；3 个路由全部 `Depends(get_current_user)` 401 闸守）
-  - 进行中：BE-011 (推送 token 注册，P1)
+  - ✅ **BE-011**：推送 token 注册（`POST /push/tokens` PG `ON CONFLICT (user_id, platform, device_id) DO UPDATE` 幂等覆盖；`DELETE /push/tokens?platform=&device_id=` 单 SQL 幂等；响应**不回显 token**，敏感凭据保护；`device_id` 强制必填非空规避 PG NULL UNIQUE 老坑；Sprint 4 推送实施时调 `list_user_tokens` 群发）
+  - 🟢 **Sprint 1 后端 P0 + P1 全完成**；下一关切前端 FE-001（登录页）/ QA-001（API 集成测试套件）
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 107 skipped
-  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 196 passed
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 119 skipped
+  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 208 passed
 
 ## 📖 设计文档
 
