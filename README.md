@@ -98,7 +98,19 @@
 
 - ✅ **FE-S2-004**（VIP 升级 modal + 配额引导精修）：Sprint 2 前端最后一刀。在 BE-S2-008 配额闸门 + Retry-After 已就绪基础上，把 chat 页 429 banner 从"显示文案 + 占位 toast"升级为"用量进度条 + 实时倒计时 + 真升级 modal"；新建 `composables/upgradeModal.ts` 单例 + `components/UpgradeVipModal.vue` 组件让 agent / 个人中心两入口共用同一份 modal state；assistant 气泡内嵌 quota 错误也加挂"升级 VIP"次级 CTA。**4 文件改动**：① **`apps/mp/composables/upgradeModal.ts`**（新建 +60）模块级单例 ref 存 `visible / source / quota`，`useUpgradeModal()` 返回 `{ visible, source: readonly, quota: readonly, open, close, gotoPay }`；4 种 source（`quota_banner` / `inline_error` / `me_page` / `manual`）给 modal 内文案微调 + 后续 GA 上报埋点用；`gotoPay()` 当前走 `uni.showModal` 占位（"支付通道开发中"），Sprint 3 接微信支付时单点替换为 `uni.requestPayment`，调用方零改动；② **`apps/mp/components/UpgradeVipModal.vue`**（新建 +416）金色渐变顶部 + 5 条权益清单（AI 不限次高亮 / 历史打新数据库 / 无限自选+提醒 / CRS 报税向导 / 券商比价）+ 配额尾巴（仅 `quota_banner` / `inline_error` 来源时显, `used / limit` 进度条 + 倒计时秒数 + 套餐标签）+ 双 CTA（"稍后再说"灰 + "立即升级"金）+ 入场动画 `cd-slide-up` 0.24s + `v-show` 留 DOM 跑退场 + 模板嵌套 4 层封顶（避开 MP setData 性能上限）+ 不接 props / 不发 emit 完全从 composable 单例读 state；③ **`apps/mp/pages/ipo/agent.vue`**（升级 +85 -15）配额倒计时三件套 — `quotaCountdown` ref + `setInterval(1000)` tick + `watch(globalError)` 在 quota error 出现时启动 / 切回时清掉 + `onBeforeUnmount` 兜底防 timer 泄漏 + banner 增加用量进度条（`quota-progress-track + fill` 实时显示百分比）+ CTA 双形态（倒计时未归零 → "稍后再试"灰；归零 → "立即重试"蓝, 调 `retryAfterQuota()` 先 dismiss `globalError` 再 `chat.retryLast()` 绕开 store quota 门闸）+ banner "升级 VIP" 改走 `openUpgradeFromBanner()` 弹真 modal + assistant 气泡内嵌 quota 错增加"升级 VIP"金色次级 CTA 走 `openUpgradeFromInline()` + 模板尾挂 `<UpgradeVipModal />`；④ **`apps/mp/pages/me/index.vue`**（升级 +12 -8）替换 `gotoVip()` 占位 `uni.showModal` 为 `upgrade.open({ source: 'me_page' })` + 模板尾挂 `<UpgradeVipModal />`；me_page 来源走"纯营销"模式不显配额尾巴。**关键设计 / 取舍**：① **单例 composable 而非 Pinia store** — 升级 modal 是纯 UI 状态（visible / 来源 / quota context），不持久化、不与领域 store 联动，模块级 ref 足够；3 个 ref 不值得开一个 store 文件 + setup/getters/actions 全套样板（这是从 FE-S2-003 `_prospectusInflight` Set 学到的"轻量单例 > 重 Pinia"经验的延续）；② **每页各挂一个 `<UpgradeVipModal />`** — 不在 App.vue 全局挂一次，因为 MP-WEIXIN 全局组件需要在 `pages.json` 配 `usingComponents`，每页独立挂复用零成本；agent / me 同时存活的概率低（tabbar + 详情页栈）；③ **"立即重试"按钮置于"升级 VIP"右侧** — 用户主路径优先级：① 升级 VIP（终极解法）② 立即重试（窗口已过自动放行）③ 关 banner（什么都不做）；金色升级置左视觉权重最高；④ **倒计时用 `setInterval` 不用 `setTimeout` 递归** — `setInterval` 触发频率稳定, 模板直接绑数字显示；⑤ **`watch(globalError)` 而非 `watch(showQuotaBanner)`** — 直接监听源更精准, 新 `retry_after_seconds` 变化也能立即重启 tick（重试再次 429 时 banner 不会"卡住老倒计时"）；⑥ **`retryAfterQuota` 主动绕开 store 门闸** — chat store 的 `retryLast` 在 quota 状态下会主动跳过, 前端有意让用户点了"立即重试"就重试（后端窗口已过 → 服务端会放行；没过则 store 重写 globalError 重启 tick, 闭环不会卡死）；⑦ **金色主题贯穿 banner / inline-error CTA / modal** — 视觉层级与"普通蓝主色"区隔，"VIP 升级"在视觉上有 premium 感；⑧ **配额尾巴只在 quota 来源时显示** — me_page 进来不在超额场景, 强行显"今日 used / limit"反而困惑（"我没用过为什么看到 5/5？"）；⑨ **`source` 字段保留 `readonly`** — composable 内部 `readonly()` 包装暴露的 ref 防误改导致状态错位, 只有 `open(payload)` 是合法写入路径；⑩ **`modal.gotoPay()` 关弹再弹占位 modal** — 不在升级 modal 内嵌支付占位避免 modal-on-modal 视觉污染。**测试 / 质量**：vue-tsc 0 错 / ESLint 0 错（IDE LSP 全验证；`pnpm install` 因上游 `@dcloudio/uni-h5@3.0.0-4060920241225001` 被 yank 跑不动是已知历史问题, 与本 PR 无关）；端兼容 H5 + MP-WEIXIN + App 全覆盖（金色渐变文字 `background-clip: text` 在 MP-WEIXIN 退化为纯金色 `#f6c453` 可接受）；单测留 QA-S2-003 一并做（composables 单例隔离 + 三种 source 渲染分支 + 倒计时 timer 设/清 + retryAfterQuota 调用顺序）。
 
-下一步推荐 → **关 Sprint 2 + 启动 Sprint 3 backlog**：Sprint 2 前端 4 个 P0（FE-S2-001/002/003/004）+ 后端 10 个 P0（BE-S2-000~009）+ QA 2 个 P0（QA-S2-001/002）全数 ✅，可直接写 `spec/10-sprint-3-backlog.md` 拆 Sprint 3（文章聚合 + 券商对比 + VIP 订阅）。QA-S2-003 (FE 单测) 留作 Sprint 2.5 / Sprint 3 P1 补回。
+- ✅ **Sprint 2 收尾**：16 PR 全数 ✅（BE 10 + FE 4 + QA 2），567 passed + CI 三段闸门 + LangGraph ReAct + RAG + Markdown 流式 + 引用抽屉 + VIP 升级 modal 占位。详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)
+
+### 🚀 Sprint 3 启动 — 文章聚合 + 券商对比 + VIP 订阅（变现闭环）
+
+17 PR / ~14d 排期，详见 [`spec/10-sprint-3-backlog.md`](./spec/10-sprint-3-backlog.md)。三条线**完全可并行**：
+
+- **文章线**（5d）：BE-S3-001 articles 表 → 002 多源 ingest（雪球 + 智通 RSS）→ 003 simhash 去重 → 004 LLM 情感打标 → 005 TL;DR 生成 + 缓存 → 006 列表 / 详情 / 全文搜索 API → FE-S3-001 列表 UI / FE-S3-002 详情 + TL;DR 抽屉 → QA-S3-001 e2e
+- **券商线**（3d）：BE-S3-007 brokers 表 + 6-8 家种子 + 横向对比 API → 008 redirect + UTM + ConversionEvent → FE-S3-003 横滚对比表 + 详情 + 跨端跳转
+- **VIP 线**（3d）：BE-S3-009 vip_memberships + 状态机 + 7 天试用 → 010 微信支付 v3 + 配额接真表 → FE-S3-004 升级页 + uni.requestPayment（FE-S2-004 占位单点替换）→ FE-S3-005 个人中心 VIP 卡接 status → QA-S3-002 沙箱 e2e
+
+DOR 待办：**微信支付商户号申请**（appid / mch_id / api v3 key 入 .env.example）+ **6-8 家券商种子数据整理**（佣金 / 牌照 / 邀请码 / referral_url），其余前置依赖（CI 闸门 / quota `_resolve_plan` 钩子 / `useUpgradeModal.gotoPay()` 钩子）Sprint 2 已就绪。
+
+QA-S2-003（FE 单测白条）留作 Sprint 2.5 或 Sprint 3 P1 补回。
 
 ## 📖 设计文档
 
@@ -115,6 +127,7 @@
 | [07](./spec/07-MVP开发清单与排期.md) | MVP 10-12 周排期 |
 | [08](./spec/08-sprint-1-backlog.md) | Sprint 1 PR-Ready Backlog（16 issue + Sprint 1.5 收尾包）|
 | [09](./spec/09-sprint-2-backlog.md) | Sprint 2 PR-Ready Backlog（16 issue · AI Agent + RAG）|
+| [10](./spec/10-sprint-3-backlog.md) | Sprint 3 PR-Ready Backlog（17 issue · 文章聚合 + 券商对比 + VIP 订阅）|
 
 ## 🏗️ 仓库结构
 

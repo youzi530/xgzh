@@ -310,6 +310,9 @@ M8  上线（小程序+Android Beta）                       ▓
 | `05-全栈技术栈选型.md` | UniApp/Python/数据库 |
 | `06-商业化变现与合规避险.md` | CPA/订阅/法律隔离 |
 | `07-MVP开发清单与排期.md` | 本文 |
+| `08-sprint-1-backlog.md` | Sprint 1 PR-Ready Backlog（16 issue · 用户 + IPO + 自选）|
+| `09-sprint-2-backlog.md` | Sprint 2 PR-Ready Backlog（16 issue · AI Agent + RAG）|
+| `10-sprint-3-backlog.md` | Sprint 3 PR-Ready Backlog（17 issue · 文章聚合 + 券商对比 + VIP 订阅）|
 
 ---
 
