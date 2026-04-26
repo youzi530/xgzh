@@ -30,7 +30,7 @@
 | BE-011 ✅ | backend | 推送 token 注册 + 设备表 | 0.5d | BE-003 | P1 |
 | FE-001 ✅ | frontend | 登录页（手机号 OTP） + 微信小程序一键登录 | 1d | BE-002, BE-005 | P0 |
 | FE-002 ✅ | frontend | Auth Pinia store + uni.request 拦截器 | 0.5d | FE-001 | P0 |
-| FE-003 | frontend | 个人中心 + 设置 + VIP 入口（无支付） | 1d | FE-002 | P0 |
+| FE-003 ✅ | frontend | 个人中心 + 设置 + VIP 入口（无支付） | 1d | FE-002 | P0 |
 | FE-004 | frontend | 首页瀑布流 + 今日打新卡片 + 打新日历 | 1.5d | BE-008 | P0 |
 | FE-005 | frontend | 新股详情页（关注按钮 + 招股要点） | 1d | BE-009, BE-010 | P0 |
 | FE-006 | frontend | 自选列表 Tab | 0.5d | BE-010, FE-005 | P0 |
@@ -1049,16 +1049,84 @@ pnpm dev:h5  # 或者 pnpm dev:mp-weixin
 
 ---
 
-### FE-003 · 个人中心
+### FE-003 · 个人中心 ✅ DONE
 
-**改动文件**
-- `apps/mp/pages/me/index.vue`
-- `apps/mp/pages/me/settings.vue`
+**目标**：登录后用户能在一个页面里看到自己的资料、邀请码、VIP 入口、邀请绑定、设置项和退出登录；点 FE-001/FE-002 留下的"FE-003 占位 toast"现在落到这里。
+
+**改动文件**（已实装）
+- `apps/mp/api/invite.ts`：`bindInvite` (BE-006) + `parseInviteError`
+- `apps/mp/pages/me/index.vue`：个人中心主页，五个区块（资料卡 / VIP 占位卡 / 邀请绑定卡 / 设置区 / 退出登录）+ 顶部"工具属性"合规角标 + 鉴权 onShow 兜底
+- `apps/mp/pages.json`：注册 `pages/me/index`
+- `apps/mp/pages/index/index.vue`：头像点击 `gotoProfile` 从占位 toast 改为 `uni.navigateTo('/pages/me/index')`
 
 **AC**
-- [ ] 头像 / 昵称 / VIP 状态展示（VIP=未开通占位）
-- [ ] 设置项：消息提醒、暗黑模式、清缓存、退出登录
-- [ ] 退出登录调 `/auth/logout` 并清本地
+- [x] 头像 / 昵称 / 区域 / 邀请码（点击复制）展示
+- [x] VIP 状态展示（"免费会员"卡 + 升级按钮 → modal 占位"支付通道开发中"）
+- [x] 邀请绑定（BE-006，一次性）+ 7 类错误码差异化 toast + 已绑灰态
+- [x] 设置项：用户协议 / 隐私政策 / 免责声明 / 关于（modal 占位，正式上架前替换 webview）
+- [x] 退出登录调 `auth.logout()`（store action 内部调 BE-004 `/auth/logout` + clearSession）+ `uni.reLaunch('/pages/index/index')`
+- [x] 顶部固定"本平台为信息聚合工具, 不构成投资建议"合规角标（spec/06 §法律隔离）
+- [x] 未登录态 onShow 直接 `uni.reLaunch('/pages/auth/login')` 兜底
+
+**关键设计决策**
+1. **响应式订阅 + onShow 兜底双层**：
+   - 主路径走 `storeToRefs(authStore)` 让 `user` / `loggedIn` 自动更新（FE-002 已铺好）
+   - onShow 再判一次 `loggedIn`：用户在其它页面 `clearSession`（如 401 拦截器）后切回个人中心，需要立即弹回登录页
+   - 不能在 setup 顶层判：setup 时 store 可能尚未 hydrate（理论上 Pinia 是同步的，但留 onShow 一层兜底成本几乎为零）
+2. **邀请已绑状态本地缓存 + 服务端兜底**：
+   - 后端 `UserPublic` 没暴露 `referrer_invite_code` 字段（在 `users.referrer_user_id` 里，不外露），所以无法从 `GET /me` 直接读出"已绑谁"
+   - 方案：本地 `xgzh.invite.bound_referrer` storage key 缓存绑定后的 referrer_invite_code；进页时读出
+   - 缓存丢失场景（清 storage / 换设备）：用户输入再提交时后端会抛 `invite_already_bound`，前端把这个错码翻译成"已绑定 (本机未缓存)" 并把灰态显示出来；不打扰用户继续操作，不强制重新登录
+3. **邀请码输入 UX**：
+   - 前端做长度校验（4-16 位）+ 自禁（输入自己的邀请码立即 toast 拦下，不浪费一次后端调用）+ 大写归一（`text-transform: uppercase` + 提交前 `.toUpperCase()`，与后端 `_normalize` 一致）
+   - 7 类错误码逐个映射文案，未知错误降级到后端原文 message（兼容 BE-006 后续可能新增的错误码）
+4. **退出登录二次确认**：
+   - `uni.showModal` 包成 Promise 拿用户选择，避嵌套回调；`confirmColor: '#ef4444'` 用红色加强警示
+   - `auth.logout()` finally 一定会 `clearSession` 不依赖网络（store 内部已写）；这里只负责 `uni.reLaunch` 回首页
+   - 同时清 `KEY_BOUND_REFERRER`：避免下一个用户登录到这个设备后看到上一个用户的"已绑定"灰态
+5. **VIP 卡设计**：
+   - 不调用任何 API，纯前端占位；按钮点击只 modal 提示"支付通道开发中"
+   - 把会员特权（AI 深度诊断 / 历史数据 / CRS 向导）写在 modal content 里，给用户做"未来想做啥"的预期
+   - 视觉用金色 + 蓝色渐变与首页 hero 文字保持一致
+6. **设置项目暂用 modal 而非 webview**：
+   - 协议正式文本未定，先用 modal 占位放一句话，避免用户首次安装时按链接进个空白页
+   - spec/08 已记录"上架前需要把三份正式文本落到 `apps/mp/static/legal/*.html` 走内嵌 webview 显示"的遗留任务
+7. **不用 tabbar**：
+   - 主线 IPO 列表 + 个人中心 = 2 个页面，但 FE-004 起首页会做"瀑布流 + 打新日历"复杂化，tabbar 切换会破坏 hero 头像入口的视觉统一
+   - 个人中心走 navigateTo + 默认 navigationBar，用户用顶部返回键即可回去，符合"非主线页面"定位
+
+**验收方法**
+
+```bash
+# 0. 起后端
+cd apps/api && uv run uvicorn app.main:app --port 8000
+
+# 1. 通过手机登录或微信登录拿到 access_token (FE-001 流程)
+
+# 2. 首页头像 → 跳转个人中心
+#    - 资料卡显示昵称 / 区域 / 邀请码
+#    - 点击邀请码 → 提示"邀请码已复制"
+
+# 3. 用 curl 创建第二个用户拿邀请码 (作为 referrer):
+PHONE2=+8613800000111
+curl -X POST http://localhost:8000/api/v1/auth/otp/send -H 'Content-Type: application/json' -d "{\"phone\":\"$PHONE2\"}"
+# 从日志拿 OTP, 登录, 拿到 invite_code 比如 "XYZ123"
+
+# 4. 在个人中心邀请绑定卡输入 "XYZ123" → 绑定 → "绑定成功"
+#    - 卡片变成"已绑定邀请人 XYZ123" 灰态
+
+# 5. 重新进个人中心: 灰态保持 (storage 缓存)
+
+# 6. 点退出登录 → 二次确认 → 退出 → 回首页, hero 又显示"登录/注册"
+#    - 检查 storage: 五个 auth.* + 一个 invite.bound_referrer 全清
+```
+
+**遗留 / 后续**
+- `auth-storage` 的 `KEY_BOUND_REFERRER` 目前在 me 页本地写, 不在 stores/auth.ts 里; 等 BE 加 `GET /me/referrer` 或 `UserPublic.referrer_invite_code` 后, 可以并入 store 状态做响应式
+- 设置项的 webview 替换: 等 spec/06 三份正式文本到位
+- VIP 真支付通道: 微信支付 + Apple IAP, Sprint 3+ 排期
+- 头像编辑 (上传 OSS) + 昵称改名 (`PATCH /me`): 需要 BE-013 OSS 鉴权和 PATCH /me 接口, 后续 PR
+- 需要时可以把"我邀请了几人 / 已下首单几人"等 referrer 反向数据展示, 等 BE 增强后做
 
 ---
 

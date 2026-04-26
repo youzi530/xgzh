@@ -30,6 +30,12 @@
     - `apps/mp/utils/auth-storage.ts` 拆 5 个 storage key（access/refresh/user/两个过期时间戳），含 60s 安全边际的 `isAccessTokenFresh` 给 FE-002 silent refresh 接力
     - 错误码差异化 UX：`otp_invalid` 清验证码、`otp_expired` 重置倒计时、`wechat_mp_disabled` 自动切手机号 Tab
     - 首页 hero 加"登录 / 注册"胶囊（已登录显示昵称首字头像，点击占位提示 FE-003）
+  - ✅ **FE-003**：个人中心 + 设置 + VIP 入口（无支付）
+    - 资料卡（昵称首字头像 / 区域本地化 / 邀请码点击复制）+ VIP 占位卡 + 邀请绑定卡 + 设置区 + 退出登录
+    - 邀请绑定接 BE-006，前端做长度校验 + 自禁 + 大写归一，7 类错误码（`invite_code_not_found` / `invite_self_binding` / `invite_already_bound` / `invite_code_inactive` / `invite_code_expired` / `invite_code_exhausted` / `invite_code_not_personal`）逐个映射文案
+    - 已绑状态用 `xgzh.invite.bound_referrer` storage 兜底（后端 `UserPublic` 暂不暴露 referrer 字段）；缓存丢失时 `invite_already_bound` 自动翻译为灰态显示
+    - 退出登录走 `auth.logout()`（FE-002 store action 内部含拉黑后端 + clearSession）+ `uni.reLaunch('/pages/index/index')`，并清 referrer 缓存防串号
+    - 顶部固定"工具属性"合规角标（spec/06 §法律隔离），设置项暂用 modal 占位等三份正式文本到位后切 webview
   - ✅ **FE-002**：Auth Pinia store + uni.request 拦截器
     - `apps/mp/stores/auth.ts`：响应式 store，hydrate from storage；`setSession` / `setTokens` / `clearSession` / `refresh` / `logout` 5 个 action；`accessToken` / `refreshToken` / `user` / `loggedIn` / `isAccessFresh` / `isRefreshFresh` 响应式 getter
     - **silent refresh 并发去重**：单 inflight Promise，多个请求同时 401 仅触发一次 refresh，避免 BE-004 rotation 拉黑刚发的 refresh_token 把用户踢下线

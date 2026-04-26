@@ -32,6 +32,14 @@
                 "navigationBarBackgroundColor": "#0B1220",
                 "navigationBarTextStyle": "white"
             }
+        },
+        {
+            "path": "pages/me/index",
+            "style": {
+                "navigationBarTitleText": "个人中心",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
         }
     ],
     "globalStyle": {

@@ -29,8 +29,7 @@ function gotoLogin() {
 }
 
 function gotoProfile() {
-  // FE-003 个人中心还没建; 先 toast 占位, 不阻塞 FE-002 流程
-  uni.showToast({ title: '个人中心建设中 (FE-003)', icon: 'none' })
+  uni.navigateTo({ url: '/pages/me/index' })
 }
 
 async function load() {

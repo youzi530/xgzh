@@ -18,6 +18,13 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - 401 其它原因（`token_invalid` / `revoked` / `user_disabled` / 等）→ `clearSession` + 跳登录
   - 多个并发请求同时 401 仅触发一次 refresh（store 单 inflight Promise 去重）
   - 鉴权接口本身（`sendOtp` / `loginPhone` / `loginWechatMp` / `refreshToken`）统一 `skipAuth: true`
+- **个人中心（FE-003）**：资料 + 邀请 + VIP 占位 + 设置 + 退出
+  - 顶部"工具属性"合规角标（spec/06 §法律隔离）
+  - 资料卡：昵称首字头像 + 区域本地化 + 邀请码点击复制
+  - VIP 入口卡：`免费会员` 现状 + 升级按钮（modal 占位"支付通道开发中"，会员特权清单提前展示给用户预期）
+  - 邀请绑定卡：BE-006 一次性绑定；前端长度校验 + 自禁 + 大写归一；7 类错误码差异化 toast；本地 `xgzh.invite.bound_referrer` 缓存灰态展示
+  - 设置区：用户协议 / 隐私政策 / 免责声明 / 关于（modal 占位）
+  - 退出登录：二次确认 modal → `auth.logout()` → `uni.reLaunch('/pages/index/index')` → 清 referrer 缓存防串号
 
 ## 启动
 
@@ -54,13 +61,15 @@ apps/mp/
 ├── pages/
 │   ├── index/index.vue       # 首页（IPO 列表 + 登录入口；storeToRefs 响应式订阅登录态）
 │   ├── auth/login.vue        # 登录页（手机 OTP + 微信一键，FE-001；调 store.setSession）
+│   ├── me/index.vue          # 个人中心（资料 + 邀请 + VIP 占位 + 设置 + 退出，FE-003）
 │   └── ipo/
 │       ├── detail.vue        # 详情页
 │       └── agent.vue         # AI 诊断页
 ├── api/
 │   ├── ipo.ts                # IPO 接口封装
 │   ├── agent.ts              # Agent 流式接口
-│   └── auth.ts               # OTP / 手机登录 / 微信登录 / refresh / logout + parseAuthError
+│   ├── auth.ts               # OTP / 手机登录 / 微信登录 / refresh / logout + parseAuthError
+│   └── invite.ts             # 邀请码绑定 (BE-006) + parseInviteError
 ├── stores/
 │   └── auth.ts               # FE-002 Pinia 鉴权 store（hydrate from storage + silent refresh 并发去重）
 ├── utils/
