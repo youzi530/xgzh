@@ -70,7 +70,7 @@
     - 7 条新 cache 单测（前缀边界 / fail-soft / 不误删限流 key 等不变量锁定）
 - **后端测试**：
   - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 120 passed / 136 skipped（含 BE-S2-002 facade 24 条单测）
-  - 有 DB：`make test-all` ⇒ **273 passed in ~33s**（256 → 273，新增 17 条 BE-S2-000 测试：`tests/test_hkex_client.py` 9 条 + `tests/test_ipo_ingest.py` 6 条 HK 路径 + `tests/test_ipos_list.py` & `test_ipo_detail.py` DB 路径迁移；累计 11 张表：7 张 Sprint 1 + 4 张 Sprint 2）
+  - 有 DB：`make test-all` ⇒ **306 passed in ~31s**（273 → 306，新增 33 条 BE-S2-004 测试：`tests/test_pdf_loader.py` 9 + `tests/test_chunker.py` 16 + `tests/test_prospectus_ingest.py` 8 PG 真跑；累计 11 张表 + 招股书 RAG chunk 入库流水线全链路）
 
 ### 🚀 Sprint 2 进行中 — AI Agent + RAG（核心壁垒）
 
@@ -80,18 +80,18 @@
 - ✅ **BE-S2-002**（LLM facade）：单文件 `app/adapters/llm_client.py` 重构 + `chat / embed / rerank` 三入口 + 5 个 frozen dataclass（`TokenUsage / ChatResult / ChatStreamChunk / EmbeddingResult / RerankResult`）+ 3 层异常 + 8 条 hardcoded 成本表（CNY/M tokens）+ 24 条单测（路由 / 成本 / tool_calls 跨帧聚合 / 自动分批 / respx rerank 全覆盖）。Sprint 1 老 4 处调用方零修改
 - ✅ **BE-S2-003**（`ipo_documents` 扩展 + 防重）：Alembic 0003 给已有 `ipo_documents` ALTER 6 列（`chunk_index` / `token_count` / `content_hash` / `embedding_model` / `embedding_dim` / `lang`）+ 2 索引（`(doc_id, content_hash)` partial UNIQUE 防重 + `(doc_id, chunk_index)` partial 排序）+ 8 条 PG 真跑集成测试（schema 形状 / partial UNIQUE / NULL 共存 / `<=>` cosine ANN 实查 / downgrade idempotent）。BE-S2-004 招股书入库直接 `ON CONFLICT (doc_id, content_hash) DO NOTHING` 防重灌；多版本向量共存留口
 - ✅ **BE-S2-000**（HK IPO 真源接入）：`hkex_client` 抓 hkexnews `applicants_c.htm` 列表 + BeautifulSoup 解析（公司名 / 递交日 / 招股书 PDF URL）+ `AP{yymmdd}{slug:5}.HK` 16 字符占位 code 贴 `VARCHAR(16)`+ `httpx.AsyncClient` + `Semaphore(2)` 限并发 + 失败兜底返回空。`run_ingest_hk_job` 走 `upsert_ipos` 复用 BE-007 写入路径；**关键守护：`extra` 改 `jsonb || jsonb` 浅合并**（防 BE-S2-004 RAG 写入的 `highlights` / `risks` 被 ingest 整体覆盖）。`scheduler/__init__.py` 注册 `ipo_ingest_hk_initial` + `ipo_ingest_hk_cron`（默认 `9,17` HKT 二刀流）。`ipo_service` 切 DB 路径 + cold-start seed 兜底首次部署。新增 17 条测试
+- ✅ **BE-S2-004**（招股书 PDF 入库流水线）：3 层架构 — `app/adapters/pdf_loader.py` httpx 流式下载（Content-Length 提前拒 + 累计字节兜底防对端不诚实）+ pypdf 6.x 抽页文（单页失败 logger.warning + skip，全空抛 `PDFFetchError`）；`app/services/rag/chunker.py` 段落→句子→字符 3 层 fallback 切分 + CJK/英文启发式 token 估算（不引 tiktoken / transformers）；`app/services/rag/prospectus_ingest_service.py` 编排 fetch→extract→chunk→embed→upsert，5 阶段 stats + 失败 stage 定位 + `ON CONFLICT (doc_id, content_hash) WHERE content_hash IS NOT NULL DO NOTHING` 幂等（**关键 bug 自查：partial UNIQUE 必须给 `index_where` 谓词**, 否则 `InvalidColumnReferenceError`）。`doc_id = sha256(url)[:32]`，URL 改版自动新版本共存；embed dim 校验防 vector(1024) 索引污染。本 PR 不挂 scheduler（招股书几十 MB × N 撑爆带宽），手动入口给 Sprint 3 运营触发面板留口。新增 33 条测试
 
 主战场：
 
-- **RAG 流水线（BE-S2-004）**：pgvector + bge-m3 Embedding + 招股书 PDF 解析 + 切分 + 入库（依赖全到位）
-- **混合检索**：向量 + BM25 + RRF 融合 + bge-reranker 重排（top5）
+- **混合检索（BE-S2-005）**：向量（pgvector cosine）+ BM25（PG `tsvector` + 0004 中文分词器）+ RRF 融合 + bge-reranker-v2-m3 重排（top5）。BE-S2-004 已灌真 chunk 进库，可跑召回@5 真实指标
 - **Tool Use**：5 个工具（基本面 / 财务 / 同业 / 情感 / 历史）+ JSON schema + 沙盒
 - **LangGraph 主循环**：ReAct 状态机 max 5 步 + 引用源装配 + 端层兜底 disclaimer
 - **配额管理**：免费 5 次/天 / VIP 无限 / 滑动窗口 + 友好提示
 - **评测集**：80 条标注 query + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）
 - **前端**：对话页 + 打字机渲染（MP-WEIXIN onChunkReceived 兼容）+ 引用源面板 + 配额引导
 
-下一步推荐 → **BE-S2-004（招股书 PDF 解析 + 切分 + 入库，1d）**：三依赖全到位（BE-S2-000 提供 `prospectus_url` / BE-S2-002 提供 embedding facade / BE-S2-003 提供 `document_chunks` 防重表）。PR 内闭环：PDF 下载 + 切分 + 1024-d embedding 批量入 `ipo_documents` + `ON CONFLICT (doc_id, content_hash) DO NOTHING` 幂等。
+下一步推荐 → **BE-S2-005（混合检索 + RRF + reranker，1d）**：BE-S2-004 已灌 chunks 进 `ipo_documents` 表，现终于有真数据可跑。PR 内闭环：pgvector cosine 路径 + 0004 PG `tsvector` 中文分词器迁移 + RRF 融合 + bge-reranker-v2-m3 重排 + 离线召回@5 baseline。
 
 ## 📖 设计文档
 

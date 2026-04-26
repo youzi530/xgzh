@@ -162,6 +162,37 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── BE-S2-004 招股书 PDF 入库 (RAG 流水线) ────────────────────────────
+    pdf_max_size_mb: int = Field(
+        default=50,
+        description=(
+            "单份招股书 PDF 最大尺寸 (MB). 超过则 ``PDFFetchError`` 拒收, 防 OOM. "
+            "HK 招股书一般 5–30 MB, 50 MB 留 1.5x buffer."
+        ),
+    )
+    pdf_request_timeout_seconds: float = Field(
+        default=60.0,
+        description=(
+            "下载招股书 PDF 的 HTTP 超时. 几十 MB 的 PDF 比 hkexnews 列表慢, "
+            "默认 60s. 流式下载 + chunked iter 保证 connect/read 任一阶段都受约束."
+        ),
+    )
+    rag_chunk_size_tokens: int = Field(
+        default=500,
+        description=(
+            "招股书切分目标 token 数 / chunk. 500 token ≈ 中文 750 字 / 英文 2000 字, "
+            "对 bge-m3 (max_seq=8192) 是中等粒度: BE-S2-005 检索 + reranker 友好, "
+            "也能装 5–10 个 chunk 进 LLM 上下文."
+        ),
+    )
+    rag_chunk_overlap_tokens: int = Field(
+        default=50,
+        description=(
+            "相邻 chunk 重叠 token 数. 让段落边界附近的语义不被切裂; "
+            "10% overlap 是 LangChain / LlamaIndex 的事实默认."
+        ),
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

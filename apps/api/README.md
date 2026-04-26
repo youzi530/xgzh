@@ -70,6 +70,15 @@ Schema（Alembic `0001_init` + `0002_chat` + `0003_chunks`，PG 14 + pgvector 0.
   - APScheduler 二刀流：`ipo_ingest_hk_initial`（启动延迟 10s，错开 A 股 5s）+ `ipo_ingest_hk_cron`（默认 `9,17` `Asia/Hong_Kong`，开盘前 + 收盘后），独立 timezone
   - `ipo_service.list_ipos / get_ipo / get_ipo_detail` 切 DB 路径；DB 空表（首次部署 / 无 ingest 测试场景）走 `hkex_client.get_cold_start_seed` 3 条样例兜底，不让首页空白
   - 配置层 7 个新字段：`HKEX_BASE_URL` / `IPO_INGEST_HK_LIMIT` / `IPO_INGEST_HK_CRON_HOURS` / `IPO_INGEST_HK_INITIAL_DELAY_SECONDS` / `IPO_INGEST_HK_TIMEZONE` / `IPO_INGEST_HK_REQUEST_TIMEOUT_SECONDS` / `IPO_INGEST_HK_REQUEST_CONCURRENCY`
+- Sprint 2 (BE-S2-004，无 schema 改动)：招股书 PDF 入库流水线 — 新建 3 个文件 `app/adapters/pdf_loader.py` / `app/services/rag/chunker.py` / `app/services/rag/prospectus_ingest_service.py`
+  - **下载层**：`pdf_loader.fetch_pdf_bytes(url, max_size_mb, request_timeout)` httpx 流式下载 + `Content-Length` 提前拒 + 累计字节兜底（防对端不诚实），`PDFFetchError` 归一化所有 fetch / extract 错误
+  - **解析层**：`extract_text_per_page(pdf_bytes)` pypdf 6.x `PdfReader`；单页失败 logger.warning + skip，全空（扫描版 PDF）抛 `PDFFetchError`；输出 1-based page no 与读者视觉一致
+  - **切分层**：`chunker.split_text(text, max_tokens=500, overlap_tokens=50)` 段落（双换行）→ 句子（中英句号）→ 字符 3 层 fallback；`estimate_tokens` 启发式（CJK 1:1，英文 4:1，与 bge-m3 真实 tokenizer 偏差 ±15%，仅用于 cost 调试，不引 tiktoken / transformers 重依赖）
+  - **编排层**：`run_ingest_prospectus(session, ipo_code, prospectus_url, lang)` 5 阶段 stats（`pdf_pages` / `extracted_pages` / `chunks_total` / `chunks_embedded` / `inserted` / `skipped_duplicates` / `errors` / `stage`），失败一律 logger.exception + 返回 stats 不抛
+  - **幂等键**：`doc_id = sha256(url)[:32]` + `content_hash = sha256(chunk.text)`；`ON CONFLICT (doc_id, content_hash) WHERE content_hash IS NOT NULL DO NOTHING` 走 BE-S2-003 partial UNIQUE 索引（**关键 bug 自查：partial UNIQUE 必须给 `index_where` 谓词**, 否则 `InvalidColumnReferenceError: no constraint matching`）
+  - **dim 防污染**：embed 返回维度 ≠ `settings.llm_embedding_dim` 时 stage=embed 拒收，防 vector(1024) 索引被 512 维或异常维向量污染
+  - **本 PR 不挂 scheduler**：招股书几十 MB × N 只新股，lifespan startup 自动跑会撑爆带宽 / 临时盘；改成手动入口给 Sprint 3 运营触发面板留口
+  - 配置层 4 个新字段：`PDF_MAX_SIZE_MB`（50）/ `PDF_REQUEST_TIMEOUT_SECONDS`（60）/ `RAG_CHUNK_SIZE_TOKENS`（500）/ `RAG_CHUNK_OVERLAP_TOKENS`（50）；新依赖 `pypdf>=5.0`
 
 缓存层（`app/cache/`）:
 
@@ -510,7 +519,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 273 passed in ~33s (Sprint 1 + BE-S2-001/002/003/000)
+# → 306 passed in ~31s (Sprint 1 + BE-S2-001/002/003/000/004)
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e
