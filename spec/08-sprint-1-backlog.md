@@ -19,7 +19,7 @@
 | INFRA-002 ✅ | infra | Redis cache 封装 + 限流装饰器 | 0.5d | - | P0 |
 | BE-001 ✅ | backend | User 模型 + phone OTP 发送（dev 走 mock 短信） | 0.5d | INFRA-001, INFRA-002 | P0 |
 | BE-002 ✅ | backend | OTP 校验 + 注册/登录 + JWT 颁发 | 0.5d | BE-001 | P0 |
-| BE-003 | backend | JWT 中间件 + `current_user` 依赖 | 0.5d | BE-002 | P0 |
+| BE-003 ✅ | backend | JWT 中间件 + `current_user` 依赖 | 0.5d | BE-002 | P0 |
 | BE-004 | backend | Refresh token + 黑名单 | 0.5d | BE-003 | P0 |
 | BE-005 | backend | 微信小程序登录（code → openid → unionid → 绑定） | 1d | BE-002 | P0 |
 | BE-006 | backend | 邀请码生成 + 绑定（注册时落入 referrer） | 0.5d | BE-002 | P0 |
@@ -248,18 +248,50 @@ curl -X POST localhost:8000/api/v1/auth/login/phone \
 
 ---
 
-### BE-003 · JWT 中间件 + `current_user` 依赖
+### BE-003 · JWT 中间件 + `current_user` 依赖 ✅ DONE
 
 **改动文件**
-- `apps/api/app/security/deps.py`（`get_current_user`, `get_optional_user`）
-- `apps/api/app/api/v1/me.py`（`GET /me`）
-- `apps/api/tests/test_me.py`
+- `apps/api/app/security/deps.py`（手写 `Authorization` 解析 + `get_current_user` / `get_optional_user`）
+- `apps/api/app/security/__init__.py`（导出依赖）
+- `apps/api/app/api/v1/me.py`（`GET /api/v1/me`）
+- `apps/api/app/api/v1/__init__.py`（注册 `me.router`）
+- `apps/api/tests/test_me.py`（14 个端到端用例）
 
 **AC**
-- [ ] `Authorization: Bearer xxx` 解析；过期/无效返回 401
-- [ ] `get_current_user` 强校验，`get_optional_user` 允许未登录
-- [ ] `GET /api/v1/me` 返回当前用户基本信息
-- [ ] 单测覆盖：合法 token / 过期 / 无效签名 / 缺失 header
+- [x] `Authorization: Bearer xxx` 解析；区分 `token_missing` / `token_scheme_invalid` / `token_invalid` / `token_expired` 四种 401 reason
+- [x] `get_current_user` 强校验：缺 token / scheme 错 / 签名错 / 过期 / typ 不是 `access` / sub 用户不存在 / 用户被禁用 → 全部 401，并通过 `WWW-Authenticate: Bearer` header 通告
+- [x] `get_optional_user` 允许未登录：无 header / 解析失败 / 用户不存在 都返回 `None`，业务层自行决定是否提供匿名能力
+- [x] `GET /api/v1/me` 返回 `UserPublic`（user_id / nickname / avatar / region / invite_code / status / created_at）；**不含 phone** 等敏感字段
+- [x] 严格的 `typ` 隔离：refresh token 复制到 `Authorization` 也会被 401（`token typ mismatch`）
+- [x] 单测覆盖：合法 token / 过期 / 篡改 / 错误 scheme / 缺 header / refresh 当 access / 用户被软删 / 用户禁用 / sub UUID 不存在 / get_optional_user 各路径 — 全 14 用例通过
+
+**关键设计**
+1. **不复用 FastAPI 的 `HTTPBearer(auto_error=False)`**：它把"无 header"和"非 Bearer scheme"折叠成同一个 `None`，丢失诊断信号。我们手动解析 `Authorization` header，给前端不同 reason 让 UX 可以分流（过期 → silent refresh，无效 → 跳登录）。
+2. **解 token 后必查 DB 一次**：token 内的 `status` 字段不可信，被禁用的用户即使握着合法 token 也会被 401（`user_disabled`），软删用户走 `user_not_found`。
+3. **typ 强制匹配**：`decode_token(..., expected_type=ACCESS_TOKEN_TYPE)` 在 deps 层兜底，跟 `app.security.jwt` 的 `typ` 校验形成双保险。
+
+**烟测命令**
+```bash
+# 用本地 Postgres 起服务
+cd apps/api && PYTHONUNBUFFERED=1 uvicorn app.main:app --host 127.0.0.1 --port 8001
+
+# 1. 缺 header → 401 token_missing
+curl -i localhost:8001/api/v1/me
+
+# 2. 非 Bearer scheme → 401 token_scheme_invalid
+curl -i -H 'Authorization: Basic dXNlcjpwYXNz' localhost:8001/api/v1/me
+
+# 3. 走完一遍登录 → 拿 access → /me 200
+curl -X POST localhost:8001/api/v1/auth/otp/send \
+  -H 'content-type: application/json' -d '{"phone":"13900139003"}'
+# 从日志拿 OTP, 然后:
+curl -X POST localhost:8001/api/v1/auth/login/phone \
+  -H 'content-type: application/json' \
+  -d '{"phone":"13900139003","code":"<OTP>"}'  # 拿 access_token / refresh_token
+
+curl -i -H "Authorization: Bearer <access>" localhost:8001/api/v1/me   # 200
+curl -i -H "Authorization: Bearer <refresh>" localhost:8001/api/v1/me  # 401 token typ mismatch
+```
 
 ---
 

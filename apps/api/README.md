@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001 + BE-002）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003）
 
 API:
 
@@ -13,6 +13,7 @@ API:
 - `POST /api/v1/agent/diagnose` AI 一键诊断（DeepSeek-V3 SSE 流式）
 - `POST /api/v1/auth/otp/send` 手机号 OTP 发送（dev 走 Mock SMS，60s 限流，5min TTL）
 - `POST /api/v1/auth/login/phone` OTP 校验 + 自动注册 + 颁发 access/refresh JWT（5/5min 限流）
+- `GET /api/v1/me` 当前用户基本信息（需 `Authorization: Bearer <access_token>`）
 
 Schema（Alembic `0001_init`，PG 16 + pgvector 0.8.2）:
 
@@ -91,6 +92,29 @@ curl -X POST localhost:8000/api/v1/auth/login/phone \
 ```
 
 ⚠️ 生产前必做: `JWT_SECRET` 替换成 `openssl rand -hex 32` 生成的随机串, 否则启动时会打 ERROR 日志。
+
+鉴权层 - 当前用户依赖（`app/security/deps.py`，BE-003）:
+
+- `get_current_user(request, session)` — 强校验依赖，业务路由 `Depends(get_current_user)` 即可
+- `get_optional_user(request, session)` — 匿名友好，未登录返回 `None`，给 IPO 列表/Agent 试用这种公开+个性化混合接口用
+- 不复用 FastAPI 的 `HTTPBearer`：`auto_error=False` 把"无 header"和"非 Bearer scheme"折叠成同一个 `None`，丢失 401 reason；这里手动解析 `Authorization` header
+- 6 种 401 reason（`detail.code` 区分）+ 全部带 `WWW-Authenticate: Bearer realm="xgzh"`：
+  - `token_missing`：缺 Authorization header
+  - `token_scheme_invalid`：scheme 不是 Bearer（如 Basic）
+  - `token_invalid`：签名错 / 篡改 / aud / iss 错 / **typ 不是 access**（refresh 不能当 access 用）
+  - `token_expired`：access 已过期 → 前端 silent refresh
+  - `user_not_found`：sub UUID 在 DB 不存在或已软删
+  - `user_disabled`：`status != 1`
+- token 内 `status` 不可信：每次都查 DB 一次，被禁用/软删的用户即使握合法 token 也立刻 401
+
+```bash
+# 拿到 access_token 后:
+curl -i -H "Authorization: Bearer <access>" localhost:8000/api/v1/me
+# 200 {"user_id":"...","invite_code":"...","region":"CN","status":1,...}
+
+# refresh 当 access 用 -> 401 token typ mismatch
+curl -i -H "Authorization: Bearer <refresh>" localhost:8000/api/v1/me
+```
 
 ## 启动（首次）
 
@@ -175,14 +199,16 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 
 ```
 app/
-├── api/v1/         # 路由 (ipos / agent / auth)
+├── api/v1/         # 路由 (ipos / agent / auth / me)
 ├── core/           # 配置、日志
 ├── services/       # 业务逻辑 (ipo / agent / otp / user / auth)
 ├── adapters/       # 外部数据源 / 通道
 │   ├── akshare_client.py
 │   ├── llm_client.py
 │   └── sms/        # SMS 通道 (base / mock / aliyun / factory)
-├── security/       # JWT 颁发 / 解析 (HS256 access + refresh)
+├── security/       # JWT 颁发 / 解析 + FastAPI 鉴权依赖
+│   ├── jwt.py      # HS256 access + refresh, 严格 typ 隔离
+│   └── deps.py     # get_current_user / get_optional_user
 ├── schemas/        # Pydantic 模型 (ipo / agent / auth)
 ├── utils/          # 通用工具 (phone E.164 + mask)
 ├── db/             # SQLAlchemy 2.0 async Base + ORM models
