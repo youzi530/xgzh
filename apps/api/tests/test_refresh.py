@@ -245,7 +245,11 @@ async def test_refresh_with_tampered_returns_401_invalid(
 ) -> None:
     body = await _login(client, phone="+8613800138004")
     refresh = body["tokens"]["refresh_token"]
-    bad = refresh[:-1] + ("0" if refresh[-1] != "0" else "1")
+    # ⚠️ 不能简单改最后一个字符: base64url 的最后字符低 bits 可能是 padding, 改不到签名位.
+    # 改签名段中部 (倒数第 8 位) 一定改到真签名 bits.
+    pivot = -8
+    orig = refresh[pivot]
+    bad = refresh[:pivot] + ("A" if orig != "A" else "B") + refresh[pivot + 1 :]
     r = await _refresh(client, bad)
     assert r.status_code == 401
     assert r.json()["detail"]["code"] == "token_invalid"

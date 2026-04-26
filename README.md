@@ -16,10 +16,11 @@
   - ✅ **BE-003**：JWT 中间件 + `current_user` 依赖（`GET /api/v1/me`，6 种 401 reason，typ 强制隔离，`get_optional_user` 支持匿名混合接口）
   - ✅ **BE-004**：Refresh token rotation + 黑名单（`POST /api/v1/auth/refresh` + `POST /api/v1/auth/logout`，旧 refresh 一次性，access/refresh 双拉黑，jti 粒度）
   - ✅ **BE-005**：微信小程序登录（`POST /api/v1/auth/login/wechat-mp`，`code2Session` 拿 openid/unionid，unionid > openid 优先，错误码二分映射 401/502/503，session_key 不落库）
-  - 进行中：BE-006 (邀请码生成 + 绑定)
+  - ✅ **BE-006**：邀请码生成 + 绑定（注册原子落 `invite_codes` 行；`POST /api/v1/invite/bind` 一次性 + 自禁 + 并发安全 + 7 类错误码）
+  - 进行中：BE-007 (IPO 表持久化 + AKShare 调度入库)
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 75 passed / 56 skipped
-  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 131 passed
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 75 passed / 72 skipped
+  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 147 passed
 
 ## 📖 设计文档
 

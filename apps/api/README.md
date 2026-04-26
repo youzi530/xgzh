@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006）
 
 API:
 
@@ -17,6 +17,7 @@ API:
 - `POST /api/v1/auth/refresh` Refresh token rotation：旧 refresh 拉黑 + 颁发新 access+refresh（5/min 限流）
 - `POST /api/v1/auth/logout` 拉黑当前 access（+ 可选拉黑 refresh），需 `Authorization`
 - `GET /api/v1/me` 当前用户基本信息（需 `Authorization: Bearer <access_token>`）
+- `POST /api/v1/invite/bind` 绑定邀请人（一次性，需登录，10/min/user 限流）
 
 Schema（Alembic `0001_init`，PG 16 + pgvector 0.8.2）:
 
@@ -159,6 +160,32 @@ curl -X POST localhost:8000/api/v1/auth/login/wechat-mp \
 
 ⚠️ 生产前必做: 在 `.env` 配 `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET`（微信公众平台 → 小程序 → 开发设置）。
 
+邀请码（`app/services/invite_service.py`，BE-006）:
+
+- 注册时 BE-002/BE-005 在同一事务里把 `users.invite_code`（8 字符大写+数字）镜像到 `invite_codes` 表（owner_user_id=新用户、`max_usage=NULL` 无限、`is_active=true`、`note='personal'`）
+- `POST /invite/bind {code}` 在登录态下绑定 referrer：
+  - **一次性**：`users.invited_by` 一旦写入不可改。两层防御：service 层 `invited_by IS NOT NULL` fast-fail + 路由 conditional UPDATE `WHERE invited_by IS NULL` 防并发
+  - **自禁**：`code == own_invite_code`（含大小写归一）→ 400 `invite_self_binding`
+  - **`SELECT ... FOR UPDATE`** 锁住 `invite_codes` 行后做 `usage_count += 1` + max_usage/expires_at 校验，防超额
+  - **运营码 `owner_user_id IS NULL`** MVP 不接受作为 referrer（留给"渠道追踪"功能）
+  - schema 层 `strip + upper` 自动归一，DB 端只存大写
+- 7 类错误码（`detail.code` 区分）：`invite_code_not_found` (404) / `invite_already_bound` / `invite_self_binding` / `invite_code_inactive` / `invite_code_expired` / `invite_code_exhausted` / `invite_code_not_personal`（皆 400）
+- 限流 10/min/user（`namespace=invite_bind`）防暴力扫码
+
+```bash
+# 200 happy
+curl -X POST localhost:8000/api/v1/invite/bind \
+  -H "Authorization: Bearer <invitee access>" \
+  -H 'content-type: application/json' \
+  -d '{"code":"ABCD1234"}'
+# {"ok":true,"referrer_user_id":"...","referrer_invite_code":"ABCD1234","bound_at_usage_count":1}
+
+# 400 already_bound (二次绑)
+# 400 self_binding (用自己的码)
+# 404 not_found
+# 401 token_missing (未登录)
+```
+
 鉴权层 - 当前用户依赖（`app/security/deps.py`，BE-003）:
 
 - `get_current_user(request, session)` — 强校验依赖，业务路由 `Depends(get_current_user)` 即可
@@ -266,9 +293,9 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 
 ```
 app/
-├── api/v1/         # 路由 (ipos / agent / auth / me)
+├── api/v1/         # 路由 (ipos / agent / auth / me / invite)
 ├── core/           # 配置、日志
-├── services/       # 业务逻辑 (ipo / agent / otp / user / auth)
+├── services/       # 业务逻辑 (ipo / agent / otp / user / auth / invite)
 ├── adapters/       # 外部数据源 / 通道
 │   ├── akshare_client.py
 │   ├── llm_client.py

@@ -36,7 +36,7 @@ from app.security import (
     decode_token,
     is_jti_blacklisted,
 )
-from app.services import otp_service, user_service
+from app.services import invite_service, otp_service, user_service
 from app.utils.phone import mask_phone
 
 INVITE_CODE_ALPHABET = string.ascii_uppercase + string.digits  # 去歧义留待 BE-006 优化
@@ -85,7 +85,7 @@ def _generate_invite_code() -> str:
 
 
 async def _create_user_with_phone(session: AsyncSession, phone: str) -> User:
-    """新建 phone 用户 + 生成唯一 invite_code (冲突重试)."""
+    """新建 phone 用户 + 生成唯一 invite_code (冲突重试) + 同事务镜像到 ``invite_codes`` (BE-006)."""
     last_err: Exception | None = None
     for _ in range(INVITE_CODE_RETRY):
         invite_code = _generate_invite_code()
@@ -104,6 +104,8 @@ async def _create_user_with_phone(session: AsyncSession, phone: str) -> User:
                     return existing
                 raise
             continue
+        # BE-006: user.invite_code 同事务镜像到 invite_codes 表 (PK = code, 同样唯一)
+        await invite_service.register_invite_code_for_user(session, user)
         await session.refresh(user)
         return user
 
@@ -144,6 +146,8 @@ async def _create_user_with_wechat(
                 raise
             # invite_code 冲突, 重试
             continue
+        # BE-006: 镜像到 invite_codes 表
+        await invite_service.register_invite_code_for_user(session, user)
         await session.refresh(user)
         return user
 

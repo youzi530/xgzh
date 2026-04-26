@@ -22,7 +22,7 @@
 | BE-003 ✅ | backend | JWT 中间件 + `current_user` 依赖 | 0.5d | BE-002 | P0 |
 | BE-004 ✅ | backend | Refresh token + 黑名单 | 0.5d | BE-003 | P0 |
 | BE-005 ✅ | backend | 微信小程序登录（code → openid → unionid → 绑定） | 1d | BE-002 | P0 |
-| BE-006 | backend | 邀请码生成 + 绑定（注册时落入 referrer） | 0.5d | BE-002 | P0 |
+| BE-006 ✅ | backend | 邀请码生成 + 绑定（注册时落入 referrer） | 0.5d | BE-002 | P0 |
 | BE-007 | backend | IPO 表持久化 + AKShare 调度入库 | 1d | INFRA-001 | P0 |
 | BE-008 | backend | `GET /ipos` 切回数据库 + 筛选 + Redis 缓存 | 0.5d | BE-007, INFRA-002 | P0 |
 | BE-009 | backend | `GET /ipos/{code}` 字段聚合（HKEX/AKShare 多源 merge） | 0.5d | BE-008 | P0 |
@@ -413,19 +413,77 @@ curl -X POST localhost:8001/api/v1/auth/login/wechat-mp \
 
 ---
 
-### BE-006 · 邀请码
+### BE-006 · 邀请码 ✅ DONE
 
-**改动文件**
-- `apps/api/app/services/invite_service.py`
-- `apps/api/app/api/v1/invite.py`（`POST /invite/bind`）
-- `apps/api/app/utils/short_id.py`（base62 短码）
-- `apps/api/tests/test_invite.py`
+**改动文件**（已实装）
+- `apps/api/app/services/invite_service.py`（`register_invite_code_for_user` + `bind_invite` + 7 类 `InviteError` 子异常 + `InviteBindResult` DTO）
+- `apps/api/app/api/v1/invite.py`（`POST /invite/bind`，登录态 + 限流 10/min/user，全错误码映射）
+- `apps/api/app/api/v1/__init__.py` 注册 `invite.router`
+- `apps/api/app/services/auth_service.py` 在 `_create_user_with_phone` / `_create_user_with_wechat` 中**同事务**调 `register_invite_code_for_user`，注册原子地落 `invite_codes` 行
+- `apps/api/app/schemas/invite.py`（`InviteBindRequest` + `InviteBindResponse`，`code` `min_length=4`/`max_length=16`，自动 strip + upper 归一）
+- `apps/api/tests/test_invite.py`（16 个端到端测试 + 1 个 service 层单测）
+- `apps/api/tests/test_refresh.py`：顺手修了一个 flaky 用例（改 JWT 末位字符不稳定，改成中部位置）
+- ⚠️ **不需要新 alembic migration**：`invite_codes` 表 + `users.invited_by` 在 INFRA-001 已建好；不引入 `utils/short_id.py`，沿用 BE-002 的 8 字符大写+数字（`62^8 ≈ 2.18e14`，远超 backlog 写的 6 位 base62 ~`56e9`，不必降级）
 
-**AC**
-- [ ] 用户注册成功自动生成 6 位 base62 邀请码（写入 invite_codes 表）
-- [ ] `POST /invite/bind {code}` 在登录态下绑定 referrer（一次性，已绑定拒绝）
-- [ ] 自己不能绑自己（400）
-- [ ] 单测：生成唯一性、绑定成功、自绑、重复绑
+**AC**（已验证）
+- [x] **注册即落码**：phone / wechat 两个注册入口都在同一事务里把 `users.invite_code` 镜像到 `invite_codes` 行（owner_user_id=新用户、`max_usage=NULL` 无限、`is_active=true`、`note='personal'`）
+- [x] `POST /invite/bind {code}` 登录态下绑定 referrer，**一次性**（`users.invited_by` 用条件 `WHERE invited_by IS NULL` UPDATE 防双绑）
+- [x] **自禁**：`code == own_invite_code`（含大小写归一后撞）→ 400 `invite_self_binding`
+- [x] **重复绑** → 400 `invite_already_bound`（两层防御：fast-fail + conditional UPDATE 防并发）
+- [x] **不存在** → 404 `invite_code_not_found`
+- [x] **运营态控制**：`is_active=false` → 400 `invite_code_inactive`；`expires_at < now` → 400 `invite_code_expired`；`usage_count >= max_usage` → 400 `invite_code_exhausted`
+- [x] **运营码（owner_user_id IS NULL）拒绑** → 400 `invite_code_not_personal`（MVP 范围；后续渠道追踪功能再处理）
+- [x] **并发安全**：`SELECT ... FOR UPDATE` 锁 `invite_codes` 行 + conditional UPDATE 锁 `users.invited_by`；`usage_count` 在锁内自增不会少计
+- [x] **限流**：同 user 1 min 10 次（`namespace=invite_bind`，防暴力扫码）
+- [x] **大小写归一**：schema 自动 `strip + upper`，"abcd1234" 与 "ABCD1234" 视为同一码
+- [x] **测试结果**：`pytest -q` → **147 passed** with DB / 75 + 72 skipped without DB
+- [x] **烟测**：bind happy / 二次绑 / 自禁 / 不存在 / 未登录全路径
+
+**关键设计点**
+- **一次性 + 不可改 referrer**：`invited_by` 字段一旦写入禁止覆盖。这是为了防止刷邀请奖励的攻击模式（"先绑 A 拿一份奖励，改绑 B 再拿一份"）。如果将来产品需要"换邀请人"则要走人工申诉，不放进 API。
+- **两层并发防御**：service 层先用 `current_user.invited_by is not None` fast-fail（避免去碰 `invite_codes` 表），再用 `WHERE invited_by IS NULL` conditional UPDATE 抓真并发（rowcount=0 → 期间被另一请求写过）。
+- **`SELECT ... FOR UPDATE`**：锁 invite_codes 行后再做 `usage_count += 1`，避免两个请求同时通过 max_usage 校验后双双累加导致超额。
+- **运营码与个人码分离**：`owner_user_id IS NULL` 的码 MVP 当作"渠道追踪码"语义，不允许作为 referrer 来源（因为没有具体的"谁邀请了我"）。后续 BE-006 之后增 `channel_code` 字段时这块语义会扩展。
+- **个人码默认 `max_usage=NULL`**：朋友圈裂变期不限单人传播次数。运营如要限速，UPDATE 单条 `max_usage` 即可，不影响其它用户。
+- **两个事务边界**：注册 (`auth_service`) 同事务里写 user + invite_code 行，任一失败一起回滚；绑定 (`invite_service.bind_invite`) 内部 commit，路由层不再 commit（路由 try 捕异常时已经 rollback 过）。
+- **schema strip + upper**：用户在小程序里手输 `a` / `A` 容易混；DB 端只存大写，schema 端入库前归一（避免 service 层每次 case-insensitive 查询）。
+- **flaky test 修复**：`test_refresh_with_tampered_returns_401_invalid` 之前用 "改 token 最后一位字符" 来制造无效签名，但 base64url 末位的低 bits 可能是 padding，改字符不一定真改签名 bits。改成"改倒数第 8 位"以稳定命中签名段。
+
+**Smoke test**
+
+```bash
+cd apps/api && source .venv/bin/activate
+PYTHONUNBUFFERED=1 uvicorn app.main:app --host 127.0.0.1 --port 8001
+
+# 1) 注册 referrer + invitee
+curl -X POST localhost:8001/api/v1/auth/otp/send -H 'content-type: application/json' \
+  -d '{"phone":"+8613900100001"}'
+CODE_R=$(redis-cli get 'xgzh:otp:+8613900100001')
+RB=$(curl -sS -X POST localhost:8001/api/v1/auth/login/phone \
+  -H 'content-type: application/json' \
+  -d "{\"phone\":\"+8613900100001\",\"code\":\"$CODE_R\"}")
+REFERRER_CODE=$(echo "$RB" | python3 -c 'import json,sys;print(json.load(sys.stdin)["user"]["invite_code"])')
+
+curl -X POST localhost:8001/api/v1/auth/otp/send -H 'content-type: application/json' \
+  -d '{"phone":"+8613900100002"}'
+CODE_I=$(redis-cli get 'xgzh:otp:+8613900100002')
+IB=$(curl -sS -X POST localhost:8001/api/v1/auth/login/phone \
+  -H 'content-type: application/json' \
+  -d "{\"phone\":\"+8613900100002\",\"code\":\"$CODE_I\"}")
+INVITEE_TOKEN=$(echo "$IB" | python3 -c 'import json,sys;print(json.load(sys.stdin)["tokens"]["access_token"])')
+
+# 2) 绑定: 200
+curl -X POST localhost:8001/api/v1/invite/bind \
+  -H "Authorization: Bearer $INVITEE_TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"code\":\"$REFERRER_CODE\"}"
+# {"ok":true,"referrer_user_id":"...","referrer_invite_code":"...","bound_at_usage_count":1}
+
+# 3) 二次绑: 400 invite_already_bound
+# 4) 自禁: 400 invite_self_binding (用自己的码)
+# 5) 不存在: 404 invite_code_not_found
+# 6) 未登录: 401 token_missing
+```
 
 ---
 
