@@ -4,8 +4,14 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
 
 ## 功能
 
-- 首页：港股 / A 股近期 IPO 列表（hero 区右上角「登录 / 注册」胶囊；已登录显示昵称首字头像）
-- 详情页：基础信息 + 「AI 一键诊断」入口
+- **首页（FE-004 升级）**：分区式 IPO 信息聚合
+  - hero 区登录入口（未登录"登录 / 注册"胶囊；已登录昵称首字头像→个人中心）
+  - 双视图切换：瀑布流 / 打新日历（同源数据不双拉）
+  - status chip 多筛选：全部 / 申购中 / 待上市 / 已上市（后端 `?status` 走 BE-008 缓存）
+  - "今日打新"hero 卡片（最多 3 只 subscribing，金蓝渐变 + 强调 CTA）
+  - 触底加载更多（`onReachBottom`，`hasMore` 守卫，仅列表模式生效）+ 下拉刷新
+  - 数据来源 footer：aggregate items 的 `data_source` 字段（spec/06 §3 数据来源硬要求）
+- 详情页：基础信息 + 「AI 一键诊断」入口（FE-005 升级中）
 - AI 诊断页：DeepSeek-V3 流式输出（SSE）
 - **登录页（FE-001）**：手机 OTP + 微信小程序一键登录
   - 双 Tab：手机号 + 验证码（全平台）/ 微信一键（仅 `MP-WEIXIN` 条件编译）
@@ -59,14 +65,17 @@ pnpm dev:h5
 ```
 apps/mp/
 ├── pages/
-│   ├── index/index.vue       # 首页（IPO 列表 + 登录入口；storeToRefs 响应式订阅登录态）
-│   ├── auth/login.vue        # 登录页（手机 OTP + 微信一键，FE-001；调 store.setSession）
+│   ├── index/index.vue       # 首页（FE-004：双视图 + status chip + 今日打新 + 分页）
+│   ├── auth/login.vue        # 登录页（手机 OTP + 微信一键，FE-001）
 │   ├── me/index.vue          # 个人中心（资料 + 邀请 + VIP 占位 + 设置 + 退出，FE-003）
 │   └── ipo/
-│       ├── detail.vue        # 详情页
+│       ├── detail.vue        # 详情页 (FE-005 升级中)
 │       └── agent.vue         # AI 诊断页
+├── components/
+│   ├── IPOCard.vue           # FE-004: 复用卡片, default / hero 双密度, 状态色块
+│   └── IPOCalendar.vue       # FE-004: 打新日历, 按日期 group + 横滚日期轴
 ├── api/
-│   ├── ipo.ts                # IPO 接口封装
+│   ├── ipo.ts                # IPO 接口 + statusLabel / statusPalette helpers
 │   ├── agent.ts              # Agent 流式接口
 │   ├── auth.ts               # OTP / 手机登录 / 微信登录 / refresh / logout + parseAuthError
 │   └── invite.ts             # 邀请码绑定 (BE-006) + parseInviteError

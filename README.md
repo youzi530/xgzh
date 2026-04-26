@@ -30,6 +30,11 @@
     - `apps/mp/utils/auth-storage.ts` 拆 5 个 storage key（access/refresh/user/两个过期时间戳），含 60s 安全边际的 `isAccessTokenFresh` 给 FE-002 silent refresh 接力
     - 错误码差异化 UX：`otp_invalid` 清验证码、`otp_expired` 重置倒计时、`wechat_mp_disabled` 自动切手机号 Tab
     - 首页 hero 加"登录 / 注册"胶囊（已登录显示昵称首字头像，点击占位提示 FE-003）
+  - ✅ **FE-004**：首页瀑布流 + 今日打新卡片 + 打新日历
+    - `apps/mp/api/ipo.ts` 升级到 BE-008 完整签名（`page` / `size` / `status` / `industry`）+ 抽 `statusLabel` / `statusPalette` 给卡片色块复用
+    - `apps/mp/components/IPOCard.vue` 双密度（default / hero）：右上角状态色块（`subscribing` 金 / `upcoming` 蓝 / `listed` 灰 / `withdrawn` 红）+ 智能副标题（申购截止 / 上市日 / 申购窗口）
+    - `apps/mp/components/IPOCalendar.vue` 按申购开始日 / 上市日 group：顶部横滚日期 chip（含数量徽标）+ 分组卡片列表，"待定"沉底
+    - `apps/mp/pages/index/index.vue` 重构：market tab + 视图切换（列表 / 日历）+ status chip 多筛选 + 列表头插入"今日打新"hero 卡（最多 3 只 subscribing）+ 触底分页 + 数据来源 footer aggregate
   - ✅ **FE-003**：个人中心 + 设置 + VIP 入口（无支付）
     - 资料卡（昵称首字头像 / 区域本地化 / 邀请码点击复制）+ VIP 占位卡 + 邀请绑定卡 + 设置区 + 退出登录
     - 邀请绑定接 BE-006，前端做长度校验 + 自禁 + 大写归一，7 类错误码（`invite_code_not_found` / `invite_self_binding` / `invite_already_bound` / `invite_code_inactive` / `invite_code_expired` / `invite_code_exhausted` / `invite_code_not_personal`）逐个映射文案

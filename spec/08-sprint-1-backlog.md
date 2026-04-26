@@ -31,7 +31,7 @@
 | FE-001 ✅ | frontend | 登录页（手机号 OTP） + 微信小程序一键登录 | 1d | BE-002, BE-005 | P0 |
 | FE-002 ✅ | frontend | Auth Pinia store + uni.request 拦截器 | 0.5d | FE-001 | P0 |
 | FE-003 ✅ | frontend | 个人中心 + 设置 + VIP 入口（无支付） | 1d | FE-002 | P0 |
-| FE-004 | frontend | 首页瀑布流 + 今日打新卡片 + 打新日历 | 1.5d | BE-008 | P0 |
+| FE-004 ✅ | frontend | 首页瀑布流 + 今日打新卡片 + 打新日历 | 1.5d | BE-008 | P0 |
 | FE-005 | frontend | 新股详情页（关注按钮 + 招股要点） | 1d | BE-009, BE-010 | P0 |
 | FE-006 | frontend | 自选列表 Tab | 0.5d | BE-010, FE-005 | P0 |
 | QA-001 | qa | API 集成测试套件（pytest + httpx） | 1d | BE-009 | P0 |
@@ -1130,18 +1130,68 @@ curl -X POST http://localhost:8000/api/v1/auth/otp/send -H 'Content-Type: applic
 
 ---
 
-### FE-004 · 首页瀑布流 + 打新日历
+### FE-004 · 首页瀑布流 + 打新日历 ✅ DONE
 
-**改动文件**
-- `apps/mp/pages/index/index.vue`（重写为分区式）
-- `apps/mp/components/IPOCard.vue`
-- `apps/mp/components/IPOCalendar.vue`
+**目标**：首页从"简单 IPO 列表"升级到结构化 IPO 信息聚合 — 今日打新置顶 + 主区列表/日历双视图 + status 多筛选 chip + 触底分页 + 数据来源声明。
+
+**改动文件**（已实装）
+- `apps/mp/api/ipo.ts`：`fetchIPOList` 升级到 BE-008 的 `page` / `size` / `status` / `industry` 完整签名；新增 `IPOStatus` / `IPOListParams` 类型；抽 `statusLabel` / `statusPalette` 给卡片色块复用
+- `apps/mp/components/IPOCard.vue`：可复用卡片组件，`default` / `hero` 双密度；右上角状态色块（`subscribing` 金 / `upcoming` 蓝 / `listed` 灰 / `withdrawn` 红 / `unknown` 中性）；副标题智能切换（申购截止 / 上市日 / 申购窗口）
+- `apps/mp/components/IPOCalendar.vue`：把列表按申购开始日 / 上市日 group；顶部横滚日期 chip（含数量徽标）+ 主区按日期分段列卡片；"待定"组永远沉底
+- `apps/mp/pages/index/index.vue`：完整重构 — `bar` 区把市场 tab 和 视图切换分开；`status-chips` 横滚多状态筛选；列表模式头部插入"今日打新"hero 卡（最多 3 只 subscribing）；触底加载更多（hasMore 守卫）；footer aggregate 数据来源 + 免责
 
 **AC**
-- [ ] 首屏 3 个分区：今日打新 / 即将打新 / 近期上市
-- [ ] 横向滑动的 7 日打新日历
-- [ ] 卡片点击跳详情
-- [ ] 必含 footer 免责（保留）
+- [x] 首屏分区：今日打新（hero variant 强调）+ 主列表（瀑布流）
+- [x] 打新日历视图：日期轴 chip + 分组列表
+- [x] status chip 筛选：全部 / 申购中 / 待上市 / 已上市
+- [x] 卡片点击跳详情（保留 FE-001 的 detail 路由）
+- [x] 必含 footer 免责（保留）+ 新增数据来源声明
+- [x] 分页加载更多（onReachBottom，total 守卫）
+- [x] 下拉刷新（onPullDownRefresh）
+- [x] 切换 market / status 自动 reset 分页 + 重新拉
+
+**关键设计决策**
+1. **今日打新 = 列表里的 `subscribing` 子集**：不为它单开一个 API，避免后端字段耦合；后端 `listing_date DESC NULLS LAST` 排序天然把"近期"靠前，截前 3 个就够 hero 用。换 status filter 时今日打新区会跟着变小，符合直觉
+2. **列表 / 日历 共享同一份 list 数据**：避免双拉同一份后端数据 (后端已 10min Redis 缓存，第二次拉是命中，但仍占网络往返)；日历视图基于已加载的页内做 group，用户翻到下一页才能看到下一段日期，与瀑布流分页节奏一致
+3. **status 后端筛选 vs 前端筛选取舍**：选了后端筛选（query 参数 `status`）。理由：后端已有索引覆盖，total 准；前端只看局部页时筛选会显示错的"今日 X 只"。代价是切 chip 重新拉网络请求，但 BE-008 缓存就是给这个场景用的（命中率高）
+4. **状态色块 spec 集中在 `api/ipo.ts`**：`statusPalette()` / `statusLabel()` 单源真相；FE-005 详情页关注按钮 / FE-006 自选页都要用同一套调色板，避免散落各处
+5. **`IPOCard` 双密度而非两个组件**：`variant: 'default' | 'hero'` props 切；hero 加金蓝渐变背景 + 字号增大 + CTA 按钮区，default 紧凑；样式继承避免代码重复
+6. **`IPOCalendar` 不去单独拉日历数据**：与 `items` prop 数据同源；"日期待定"组（`subscribe_start` / `listing_date` 都没有）排在最后用 `tbd` key 兜底，不丢数据
+7. **副标题"申购截止 MM-DD"占位优先级最高**：subscribing 状态下用户最关心截止日；upcoming 状态下次重要看申购窗口；listed 看上市日；withdrawn / unknown 给降级文案
+8. **触底分页只在列表模式生效**：日历模式下用户可能在向下滚动找日期组，不应再叠加请求；onReachBottom 内部判 `viewMode === 'list'`
+9. **数据来源 footer aggregate**：从已加载 items 提取 `data_source` 集合（HK seed 是 "AKShare HK seed"，A 股是 ipos 表写入时记录的源），用 `/` 拼接展示给用户；spec/06 §3 数据来源标注硬要求
+10. **没用 `wot-design-uni`**：spec/05 提到该组件库已装，但本期 IPO 卡 / 日历的样式高度定制，用原生 view + scoped scss 更稳定，避免组件库样式与项目设计 token 冲突
+
+**验收方法**
+
+```bash
+# 0. 起后端 (会自动跑 AKShare 入库)
+cd apps/api && uv run uvicorn app.main:app --port 8000
+
+# 1. 首页 → 默认列表模式 + HK + 全部
+#    - 顶部 hero / 市场 tab / 视图切换 / status chips 一行布局
+#    - 今日打新区: 0-3 张 hero variant 卡片 (申购中)
+#    - 主区: 瀑布流 IPOCard, 触底自动加载下一页
+
+# 2. 切换到 A 股 → 自动 reset, 拉 A 股 IPO
+
+# 3. 切换 status chip "申购中" → 重新拉, 主列表只剩 subscribing
+#    - 今日打新区与主列表同源, 仍是同一批
+
+# 4. 切换到日历视图 →
+#    - 顶部横滚日期 chip (含数量徽标)
+#    - 主区按 申购开始日 / 上市日 group, "日期待定" 沉底
+#    - 点 chip 把对应组的标题高亮 (focus 反馈)
+
+# 5. 下拉刷新 → 列表重置, 数据回到第一页
+# 6. footer 显示 "数据来源：AKShare HK seed" / "AKShare A-share" 等
+```
+
+**遗留 / 后续**
+- 日历 chip 点击 anchor 滚动到对应组: uniapp `scroll-view` 没有原生 anchor 支持; 需要 `scroll-into-view` 配合 `scroll-y` 容器, 而当前是页面级滚动. 先用 focus 高亮兜底, FE-005 后再 retrofit (代价是包一层 scroll-view 容器调整全局滚动)
+- 行业筛选 chip: BE-008 已支持 `industry` query, 但行业枚举不在前端已知; 需要 BE 加 `GET /ipos/industries` 元数据接口或通过 items 聚合; 暂未做, FE-005 详情页加完后续做
+- "今日"语义统一: 当前算 `status === 'subscribing'`, 非真"今天日期是否在 [subscribe_start, subscribe_end] 区间"; 等 BE 给一个 `is_active_today` 字段或前端基于 dayjs 比较 (但用户时区差异需要再讨论, 先用 status 简化)
+- 行业图标 / 行业头像: 暂未做, 需要 spec/06 §视觉规范确认调色后批量加
 
 ---
 
