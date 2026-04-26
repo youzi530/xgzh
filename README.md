@@ -69,12 +69,16 @@
     - `Makefile`：`help` / `test-db-init`（幂等 createdb + pgcrypto）/ `test-unit` / `test-e2e` / `test-all` / `lint` / `typecheck`，关闭 QA-001 测试库初始化遗留
     - 7 条新 cache 单测（前缀边界 / fail-soft / 不误删限流 key 等不变量锁定）
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 96 passed / 122 skipped
-  - 有 DB：`make test-all` ⇒ **218 passed in ~25s**（211 → 218，新增 7 条 cache 单测；含 3 条 QA-001 e2e 主路径）
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 96 passed / 128 skipped
+  - 有 DB：`make test-all` ⇒ **224 passed in ~32s**（218 → 224，新增 6 条 BE-S2-001 集成测试；累计 11 张表：7 张 Sprint 1 + 4 张 Sprint 2）
 
-### 🚀 Sprint 2 已开启 — AI Agent + RAG（核心壁垒）
+### 🚀 Sprint 2 进行中 — AI Agent + RAG（核心壁垒）
 
-16 PR / ~14d 排期（含 BE-S2-000 HK ingest 真源），详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)。主战场：
+16 PR / ~14d 排期（含 BE-S2-000 HK ingest 真源），详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)。已落地：
+
+- ✅ **BE-S2-001**（4 张会话表）：`chat_sessions` / `chat_messages` / `chat_tool_calls` / `chat_token_usage` + Alembic 0002 + 6 个二级索引 + 6 条集成测试（迁移幂等、级联策略、append-only 守护齐验证）
+
+主战场：
 
 - **HK IPO ingest（BE-S2-000）**：hkexnews 真源接入，招股书 URL 入库，给 RAG 流水线供米
 - **LLM facade**：LiteLLM 升级，chat / embedding / rerank 三入口，多 provider 切换
@@ -87,7 +91,7 @@
 - **评测集**：80 条标注 query + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）
 - **前端**：对话页 + 打字机渲染（MP-WEIXIN onChunkReceived 兼容）+ 引用源面板 + 配额引导
 
-起跳推荐 → **BE-S2-001（4 张会话表）**：纯 schema 题、底座价值、零业务复杂度。BE-S2-000 与 BE-S2-001 / BE-S2-002 三者无依赖，可并行起跑。
+下一步推荐 → **BE-S2-002（LLM facade，0.5d）**：无依赖 + 短 PR，做完后 BE-S2-004/006a/007 三条线全解锁。
 
 ## 📖 设计文档
 

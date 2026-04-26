@@ -52,11 +52,14 @@ print(asyncio.run(ipo_ingest_service.run_ingest_a_job()))
 # 二次跑 → received=200 inserted=0 updated=200 (upsert 语义)
 ```
 
-Schema（Alembic `0001_init`，PG 16 + pgvector 0.8.2）:
+Schema（Alembic `0001_init` + `0002_chat`，PG 14 + pgvector 0.8.2）:
 
-- `users` / `auth_sessions` / `invite_codes`
-- `ipos` / `ipo_documents`（embedding `vector(1024)` + HNSW 索引）
-- `user_favorites` / `push_tokens`
+- Sprint 1 (`0001_init`)：`users` / `auth_sessions` / `invite_codes` / `ipos` / `ipo_documents`（embedding `vector(1024)` + HNSW 索引）/ `user_favorites` / `push_tokens`
+- Sprint 2 (`0002_chat`, BE-S2-001)：`chat_sessions` / `chat_messages` / `chat_tool_calls` / `chat_token_usage`
+  - 4 张表是 LangGraph + Tool Use 全链路的底座，详细规范见 `app/db/models/chat.py` docstring
+  - 6 个二级索引：`(user_id, created_at)` / `(ipo_code, created_at)` / `(session_id, created_at)` / `(tool_name, created_at)` / `(model, created_at)` / `(created_at)`
+  - 级联：会话→消息→工具调用/Token 用量 ON DELETE CASCADE；用户删除则会话 user_id SET NULL（与 invite_codes 同策略）
+  - append-only：`chat_messages` / `chat_tool_calls` / `chat_token_usage` 不带 `updated_at`（写入即历史，防 LLM 输出篡改）
 
 缓存层（`app/cache/`）:
 
@@ -460,7 +463,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 218 passed in ~25s
+# → 224 passed in ~32s
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e

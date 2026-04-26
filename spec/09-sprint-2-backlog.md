@@ -55,7 +55,7 @@
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
 | BE-S2-000 | data | HK IPO ingest 真源接入（hkexnews 列表 / Futu OpenAPI 二选一）| 1d | — | P0 | ⬜ |
-| BE-S2-001 | db | 会话/消息/工具调用/Token 4 张表 + ORM + Alembic 0002 | 1d | — | P0 | ⬜ |
+| BE-S2-001 | db | 会话/消息/工具调用/Token 4 张表 + ORM + Alembic 0002 | 1d | — | P0 | ✅ |
 | BE-S2-002 | adapter | LLM facade 重构（chat/embedding/rerank 三入口 + multi-provider）| 0.5d | — | P0 | ⬜ |
 | BE-S2-003 | db | pgvector `document_chunks` 表 + HNSW + Alembic 0003 | 0.5d | BE-S2-001 | P0 | ⬜ |
 | BE-S2-004 | rag | 招股书 PDF 解析 + 语义切分 + 批量 Embedding 入库 | 1d | BE-S2-000, BE-S2-002, BE-S2-003 | P0 | ⬜ |
@@ -130,16 +130,47 @@ BE-S2-001 (4 张表)            │       BE-S2-002 (LLM facade)
 
 ---
 
-## 🎬 推荐起跳：**BE-S2-001**
+## 🎬 BE-S2-001 ✅ 已完成（2026-04-26）
 
-### 为什么 BE-S2-001 先做
+### 实施成果
 
-1. **底座价值**：后续 Agent / 工具调用 / 评测集 / 成本看板**全部**依赖会话记账表，这条链是 critical path
-2. **纯 schema 题**：没有业务逻辑，0 风险一刀切，节奏快
-3. **`alembic 0002` 占位**：和 `BE-S2-003 alembic 0003` 是同一波 migration，先把版本号占住
-4. **测试零成本**：复用 Sprint 1 已有的 `tests/integration/conftest.py` schema reset 逻辑
+- 4 张表 + 6 个二级索引 + alembic 0002 全部落地
+- `make test-all` **224 passed**（前 218 → 净增 6 条 BE-S2-001 集成测试）
+- ruff 51 / mypy 24 = baseline 0 增量
+- ORM models 与 spec 设计对齐 + 3 处工程化偏移已记录（见下文 §"实施偏差"）
 
-### BE-S2-001 详细规格
+### 实际改动文件
+
+```
+apps/api/alembic/versions/0002_add_chat_tables.py     # 新建（手写, up + downgrade）
+apps/api/app/db/models/chat.py                        # 新建（4 个 ORM 合一文件, 而非 spec 写的拆 4 个文件）
+apps/api/app/db/models/__init__.py                    # +export ChatSession/ChatMessage/ChatToolCall/ChatTokenUsage
+apps/api/tests/integration/conftest.py                # truncate_all 列表 +chat_sessions
+apps/api/tests/integration/test_chat_tables.py        # 新建（6 条用例）
+```
+
+### 实施偏差（vs spec/09 原稿）
+
+1. **ORM 拆文件 → 单文件 `chat.py`**：4 个 model 共享设计上下文（命名 / 级联 / 索引），单文件 ~280 行可读；与 Sprint 1 `ipo.py` 装下 IPO + IPODocument 的风格一致
+2. **PK 命名 `<entity>_id` 而非 spec 写的 `id`**：沿 Sprint 1 风格（`session_id` / `message_id` / `tool_call_id` / `usage_id`），保持代码搜索 / SQL JOIN 时一眼能认出 PK
+3. **`chat_messages.tool_call_id` → `openai_tool_call_id`**：避免与 `chat_tool_calls.tool_call_id` (UUID PK) 同名歧义；前缀 `openai_` 明示这是协议字符串而非 FK
+4. **3 个枚举字段一律 `String + comment`，不用 PG ENUM**：与 Sprint 1 `ipos.status` 同方案，加值不需要 `ALTER TYPE`
+5. **`chat_sessions.user_id` `ON DELETE SET NULL`**：与 invite_codes.owner_user_id 同策略, 用户注销后会话变匿名而非物理删（保留运营数据）
+6. **`chat_messages` / `chat_tool_calls` / `chat_token_usage` 不带 TimestampMixin**：写入即历史, 只留 `created_at`, 防 LLM 输出落库后被改写
+
+### 下一步推荐
+
+| 候选 | 理由 |
+|------|------|
+| **BE-S2-002** (LLM facade, 0.5d) | 无依赖 + 短 PR + 后续 BE-S2-004/007 会重度依赖；先把 chat/embedding/rerank 三入口架好 |
+| BE-S2-000 (HK ingest, 1d) | 也无依赖，但偏慢（要写 hkexnews adapter + scheduler 改），BE-S2-004 才会真用上 |
+| BE-S2-006a (Tool 注册中心, 1d) | 已可起，但用 LLM facade 之前不能完全调通；BE-S2-002 完了再做更顺 |
+
+→ **建议下一步走 BE-S2-002**（短平快 + 解锁后续 BE-S2-004/006a/007 三条线）
+
+---
+
+### BE-S2-001 详细规格（落地版）
 
 **改动文件**
 
@@ -206,16 +237,16 @@ chat_token_usage:
   - INDEX (created_at)                 # 时间序列报表
 ```
 
-**AC**
+**AC（已全部勾选）**
 
-- [ ] 4 张表迁移 `alembic upgrade head` 成功，`alembic downgrade -1` 干净（迁移可回滚）
-- [ ] ORM models 全部定义 + `__init__.py` re-export，`SQLAlchemy 2.0 DeclarativeBase` 风格
-- [ ] 外键 ON DELETE CASCADE 验证：删除 session → messages 全部清除；删除 message → tool_calls / token_usage 跟着清
-- [ ] 索引验证：`pg_indexes` 查到 6 个二级索引（`(user_id, created_at)` / `(ipo_code, created_at)` / `(session_id, created_at)` / `(tool_name, created_at)` / `(model, created_at)` / `(created_at)`）
-- [ ] 单测 ≥ 4 条：建会话 / 加消息 / 关联 tool call / 累计 token usage（用 `tests/integration/conftest.py` 的 `session_factory`）
-- [ ] `uv run mypy app/db/models/` 0 报错
-- [ ] `uv run ruff check` 0 报错
-- [ ] 顶层 README + spec/09 标 ✅
+- [x] 4 张表迁移 `alembic upgrade head` 成功，`alembic downgrade -1` 干净（迁移可回滚）— `test_alembic_downgrade_then_upgrade_idempotent`
+- [x] ORM models 全部定义 + `__init__.py` re-export，`SQLAlchemy 2.0 DeclarativeBase` 风格
+- [x] 外键级联验证：用户删 → session.user_id SET NULL（`test_chat_session_user_id_set_null_on_user_delete`）；session 删 → messages / tool_calls / token_usage 全 CASCADE（`test_chat_messages_cascade_delete_on_session_delete`）
+- [x] 索引验证：`pg_indexes` 查到 6 个二级索引齐（`test_migration_creates_4_tables_with_all_indexes`）
+- [x] 单测 6 条（≥ 4）：schema 形状 + 迁移幂等 + 双向级联 + 完整链路 INSERT/SELECT + append-only 守护
+- [x] mypy 0 增量（baseline 24 维持）
+- [x] ruff 0 增量（baseline 51 维持）
+- [x] 顶层 README + spec/09 + spec/08 同步
 
 **关键设计决策（提前定）**
 

@@ -5,6 +5,12 @@
 """
 
 from app.db.models.auth import AuthSession
+from app.db.models.chat import (
+    ChatMessage,
+    ChatSession,
+    ChatTokenUsage,
+    ChatToolCall,
+)
 from app.db.models.invite import InviteCode
 from app.db.models.ipo import IPO, IPODocument
 from app.db.models.push import PushToken
@@ -12,6 +18,10 @@ from app.db.models.user import User, UserFavorite
 
 __all__ = [
     "AuthSession",
+    "ChatMessage",
+    "ChatSession",
+    "ChatTokenUsage",
+    "ChatToolCall",
     "InviteCode",
     "IPO",
     "IPODocument",
