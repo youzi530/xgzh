@@ -69,20 +69,19 @@
     - `Makefile`：`help` / `test-db-init`（幂等 createdb + pgcrypto）/ `test-unit` / `test-e2e` / `test-all` / `lint` / `typecheck`，关闭 QA-001 测试库初始化遗留
     - 7 条新 cache 单测（前缀边界 / fail-soft / 不误删限流 key 等不变量锁定）
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 96 passed / 128 skipped
-  - 有 DB：`make test-all` ⇒ **224 passed in ~32s**（218 → 224，新增 6 条 BE-S2-001 集成测试；累计 11 张表：7 张 Sprint 1 + 4 张 Sprint 2）
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 120 passed / 128 skipped（含 BE-S2-002 facade 24 条单测）
+  - 有 DB：`make test-all` ⇒ **248 passed in ~32s**（224 → 248，新增 24 条 BE-S2-002 LLM facade 单测；累计 11 张表：7 张 Sprint 1 + 4 张 Sprint 2）
 
 ### 🚀 Sprint 2 进行中 — AI Agent + RAG（核心壁垒）
 
 16 PR / ~14d 排期（含 BE-S2-000 HK ingest 真源），详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)。已落地：
 
 - ✅ **BE-S2-001**（4 张会话表）：`chat_sessions` / `chat_messages` / `chat_tool_calls` / `chat_token_usage` + Alembic 0002 + 6 个二级索引 + 6 条集成测试（迁移幂等、级联策略、append-only 守护齐验证）
+- ✅ **BE-S2-002**（LLM facade）：单文件 `app/adapters/llm_client.py` 重构 + `chat / embed / rerank` 三入口 + 5 个 frozen dataclass（`TokenUsage / ChatResult / ChatStreamChunk / EmbeddingResult / RerankResult`）+ 3 层异常 + 8 条 hardcoded 成本表（CNY/M tokens）+ 24 条单测（路由 / 成本 / tool_calls 跨帧聚合 / 自动分批 / respx rerank 全覆盖）。Sprint 1 老 4 处调用方零修改
 
 主战场：
 
 - **HK IPO ingest（BE-S2-000）**：hkexnews 真源接入，招股书 URL 入库，给 RAG 流水线供米
-- **LLM facade**：LiteLLM 升级，chat / embedding / rerank 三入口，多 provider 切换
-- **会话记账**：4 张表（chat_sessions / chat_messages / chat_tool_calls / chat_token_usage）+ token / cost 全量记账
 - **RAG 流水线**：pgvector + bge-m3 Embedding + 招股书 PDF 解析 + 切分 + 入库
 - **混合检索**：向量 + BM25 + RRF 融合 + bge-reranker 重排（top5）
 - **Tool Use**：5 个工具（基本面 / 财务 / 同业 / 情感 / 历史）+ JSON schema + 沙盒
@@ -91,7 +90,7 @@
 - **评测集**：80 条标注 query + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）
 - **前端**：对话页 + 打字机渲染（MP-WEIXIN onChunkReceived 兼容）+ 引用源面板 + 配额引导
 
-下一步推荐 → **BE-S2-002（LLM facade，0.5d）**：无依赖 + 短 PR，做完后 BE-S2-004/006a/007 三条线全解锁。
+下一步推荐 → **BE-S2-003（pgvector + Alembic 0003，0.5d）**：短 PR + 解锁后续 BE-S2-004 招股书入库 + BE-S2-005 混合检索两条 RAG 线。
 
 ## 📖 设计文档
 

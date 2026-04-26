@@ -56,7 +56,7 @@
 |----|------|------|:----:|:----:|:------:|:----:|
 | BE-S2-000 | data | HK IPO ingest 真源接入（hkexnews 列表 / Futu OpenAPI 二选一）| 1d | — | P0 | ⬜ |
 | BE-S2-001 | db | 会话/消息/工具调用/Token 4 张表 + ORM + Alembic 0002 | 1d | — | P0 | ✅ |
-| BE-S2-002 | adapter | LLM facade 重构（chat/embedding/rerank 三入口 + multi-provider）| 0.5d | — | P0 | ⬜ |
+| BE-S2-002 | adapter | LLM facade 重构（chat/embedding/rerank 三入口 + multi-provider）| 0.5d | — | P0 | ✅ |
 | BE-S2-003 | db | pgvector `document_chunks` 表 + HNSW + Alembic 0003 | 0.5d | BE-S2-001 | P0 | ⬜ |
 | BE-S2-004 | rag | 招股书 PDF 解析 + 语义切分 + 批量 Embedding 入库 | 1d | BE-S2-000, BE-S2-002, BE-S2-003 | P0 | ⬜ |
 | BE-S2-005 | rag | 混合检索 + RRF 融合 + bge-reranker 重排 | 1d | BE-S2-003 | P0 | ⬜ |
@@ -167,6 +167,63 @@ apps/api/tests/integration/test_chat_tables.py        # 新建（6 条用例）
 | BE-S2-006a (Tool 注册中心, 1d) | 已可起，但用 LLM facade 之前不能完全调通；BE-S2-002 完了再做更顺 |
 
 → **建议下一步走 BE-S2-002**（短平快 + 解锁后续 BE-S2-004/006a/007 三条线）
+
+---
+
+## 🎬 BE-S2-002 ✅ 已完成（2026-04-26）
+
+### 实施成果
+
+- 单文件 `app/adapters/llm_client.py` 内重构 + 加 `chat / embed / rerank` 三入口
+- 新增 5 个 frozen dataclass: `TokenUsage / ChatResult / ChatStreamChunk / EmbeddingResult / RerankResult`
+- 新增 3 层异常: `LLMError(基类) → LLMConfigError / LLMProviderError`，端层 main.py handler 可统一映射 503/502
+- `make test-all` **248 passed**（前 224 → **净增 24** 条 BE-S2-002 facade 单测）
+- ruff **51 = baseline 0 增量**，mypy **23（baseline 24, 顺手清掉一处过期 type: ignore, −1 改善）**
+- Sprint 1 老调用方 4 处 (`agent_service` / `test_compliance` / `tests/integration/conftest.py:fake_llm` / `apps/api/app/adapters/__init__.py`) 全部向后兼容，无任何修改
+
+### 实际改动文件
+
+```
+apps/api/app/core/config.py                    # +llm_embedding_model/dim/batch_size/llm_rerank_model/llm_chat_default_temperature/llm_request_timeout_seconds
+apps/api/.env.example                          # +Embedding/Rerank 段
+apps/api/app/adapters/llm_client.py            # 重写: 137 行 → 488 行
+apps/api/tests/test_llm_facade.py              # 新建（24 条单测，全 mock 不打远程 LLM）
+```
+
+### 三入口契约
+
+| 入口 | 用途 | 关键返回字段 |
+|------|------|-------------|
+| `chat()` | 非流式（LangGraph 决策步：要拿 tool_calls） | `ChatResult{ content, tool_calls, finish_reason, usage }` |
+| `stream_chat()` | 老 SSE 兼容（yield str + 末尾 disclaimer） | str token |
+| `astream_chat_with_meta()` | 新流式（BE-S2-007 主循环用：要拿 usage / tool_calls） | `ChatStreamChunk{ delta? \| (finish_reason, usage, tool_calls) }` |
+| `embed(texts)` | 批量嵌入（自动按 32 分批） | `EmbeddingResult{ embeddings: [[float;1024]], usage }` |
+| `rerank(query, docs, top_n)` | 候选文档重排（直接 httpx → 硅基流动 /v1/rerank cohere 兼容协议） | `RerankResult{ results: [(orig_idx, score)] desc, usage }` |
+
+### Provider 路由（按 model 字符串前缀 dispatch）
+
+- `openai/...` → 硅基流动 OpenAI 兼容（chat / embedding 通用）
+- `deepseek/...` → DeepSeek 官方
+- `zhipu/...` → 智谱
+- 未匹配 → `LLMConfigError` 抛端层
+
+### 实施偏差（vs spec/09 原稿）
+
+1. **不拆包 → 单文件 488 行**：spec 没硬要求拆，单文件用 region 区分（合规护栏 / 数据类 / Provider 路由 / 三入口）保持 `from app.adapters import llm_client` import 路径稳定，不级联改 4 处老调用方
+2. **流式 chat 拆两个 API**（`stream_chat` 老 + `astream_chat_with_meta` 新）：原 `stream_chat` yield str 的契约在 e2e SSE 测试里被 deeply 依赖，破坏成本高；新增 `astream_chat_with_meta` 给 BE-S2-007 用，老入口标记 deprecated 但不删
+3. **rerank 不走 LiteLLM**：LiteLLM 1.51 的 `arerank` 路由只走 cohere 官方（要 `COHERE_API_KEY` env），用于硅基流动需要 hack base_url；直接 `httpx.AsyncClient` POST `/v1/rerank` 反而更直接，cohere 协议兼容
+4. **成本表 hardcode**：`_PRICE_CNY_PER_M_TOKENS` 内置 8 条价格条目（DeepSeek-V3 / V2.5 / glm-4-flash / bge-m3 / bge-reranker 等），未匹配 fallback 到 `Decimal('0')` + warn（不抛），防 `chat_token_usage.cost_cny` NOT NULL 触发；Sprint 3+ 真做成本看板再做配置化
+5. **embed 数量校验**：响应向量数 ≠ 输入文本数时抛 `LLMProviderError`，防 BE-S2-004 招股书 chunk 与 embedding 错位入库（沉默故障会污染整个 RAG 索引）
+
+### 下一步推荐
+
+| 候选 | 理由 |
+|------|------|
+| **BE-S2-003** (pgvector + Alembic 0003, 0.5d) | 短 PR + 解锁 BE-S2-004 + BE-S2-005；和 BE-S2-001/002 同属"基建一刀切" |
+| BE-S2-006a (Tool 注册中心, 1d) | 已可起：BE-S2-001 chat 表 + BE-S2-002 facade 都齐；但要 7 维 IPO 数据 schema 对齐, 写起来略慢 |
+| BE-S2-000 (HK ingest, 1d) | 也无依赖，但 BE-S2-004 招股书入库才会真用上, 可挪后 |
+
+→ **建议下一步走 BE-S2-003**（先把向量检索基建落，BE-S2-004/005 后续两条 RAG 路全打开）
 
 ---
 

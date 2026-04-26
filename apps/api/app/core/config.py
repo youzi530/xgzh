@@ -31,6 +31,33 @@ class Settings(BaseSettings):
 
     llm_primary_model: str = Field(default="openai/deepseek-ai/DeepSeek-V3")
     llm_fallback_model: str = Field(default="openai/THUDM/glm-4-9b-chat")
+    llm_embedding_model: str = Field(
+        default="openai/BAAI/bge-m3",
+        description=(
+            "Embedding 模型 (BE-S2-002). 默认走硅基流动 bge-m3, 输出 1024 维; "
+            "对齐 0001_init 里 ipo_documents.embedding 的 vector(1024)."
+        ),
+    )
+    llm_embedding_dim: int = Field(
+        default=1024,
+        description="Embedding 维度. 改模型时需要同步迁移 vector(N).",
+    )
+    llm_embedding_batch_size: int = Field(
+        default=32,
+        description="单次 embed 调用的最大输入文本数. 硅基流动上限 32.",
+    )
+    llm_rerank_model: str = Field(
+        default="BAAI/bge-reranker-v2-m3",
+        description="Rerank 模型 (BE-S2-002). 走硅基流动 /v1/rerank cohere 兼容协议.",
+    )
+    llm_chat_default_temperature: float = Field(
+        default=0.3,
+        description="Chat 默认 temperature; Tool Use 决策走 0.0 (各调用方按需覆盖).",
+    )
+    llm_request_timeout_seconds: float = Field(
+        default=60.0,
+        description="LLM 单次请求超时 (含网络). 流式不受此限制.",
+    )
 
     tushare_token: str = Field(default="")
 

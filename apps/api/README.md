@@ -88,6 +88,43 @@ async def run_ingest_a_job():
     await invalidate_namespace("ipos:list", "ipos:detail")
 ```
 
+LLM facade（`app/adapters/llm_client.py`，BE-S2-002）:
+
+- **三入口** dispatch 三家 provider（硅基流动 / DeepSeek 官方 / 智谱），上层不感知厂商差异：
+  - `chat()` 非流：返回 `ChatResult{ content, tool_calls, finish_reason, usage }`，给 LangGraph 决策步用（BE-S2-007）
+  - `stream_chat()` 流（Sprint 1 兼容契约）：yield `str` token + 末尾自动追 `DISCLAIMER`
+  - `astream_chat_with_meta()` 新流：yield `ChatStreamChunk{ delta? | (finish_reason, usage, tool_calls) }`，BE-S2-007 主循环用
+  - `embed(texts, batch_size=32)`：批量嵌入，自动按 32 分批，输出维度对齐 settings.llm_embedding_dim（默认 1024 = `vector(1024)` 列）；输入数 ≠ 输出数直接抛 `LLMProviderError` 防 RAG 入库错位
+  - `rerank(query, docs, top_n)`：直接 httpx 打硅基流动 `/v1/rerank` cohere 兼容协议，不走 LiteLLM；返回按 score 降序的 `(orig_idx, score)`
+- **Provider 路由**：按 `model` 字符串前缀 dispatch — `openai/...` → 硅基流动 OpenAI 兼容 / `deepseek/...` → 官方 / `zhipu/...` → 智谱；未匹配抛 `LLMConfigError`
+- **成本估算**：`_PRICE_CNY_PER_M_TOKENS` 内置 8 条价格条目（DeepSeek-V3 / V2.5 / glm-4-flash / bge-m3 / bge-reranker 等）；返回 `Decimal`（6 位小数），未匹配 fallback `0` + warn，防 BE-S2-007 写 `chat_token_usage.cost_cny` NOT NULL 触发
+- **异常分层**：`LLMError(基类)` → `LLMConfigError`（密钥/路由）/ `LLMProviderError`（上游 5xx/网络/parse 失败），main.py 全局 handler 可统一映射 503/502
+- **合规护栏**（Sprint 1 沿用）：`forbidden_pattern_filter()` / `ensure_disclaimer()` / `DISCLAIMER` 仍 export，老调用方零修改
+
+```python
+from app.adapters.llm_client import chat, embed, rerank, ChatResult
+
+# Tool Use (BE-S2-007 LangGraph 决策步)
+result: ChatResult = await chat(
+    [{"role":"user","content":"分析 0700"}],
+    tools=[{"type":"function","function":{"name":"get_basic_info"}}],
+    temperature=0.0,
+)
+if result.tool_calls:
+    for tc in result.tool_calls:
+        # tc = {"id":"call_abc","type":"function","function":{"name":...,"arguments":'{...}'}}
+        ...
+# 落 chat_token_usage 直接读 result.usage.{prompt,completion,total}_tokens / cost_cny
+
+# 招股书入库 (BE-S2-004)
+emb = await embed([chunk1, chunk2, ...])  # 自动分批
+assert emb.dim == 1024  # 对齐 vector(1024) 列
+
+# 混合检索重排 (BE-S2-005)
+rr = await rerank("腾讯估值", candidates, top_n=5)
+top_indices = [orig_idx for orig_idx, _score in rr.results]
+```
+
 鉴权层 - OTP 发送（`app/adapters/sms/` + `app/services/otp_service.py`，BE-001）:
 
 - `MockSMSAdapter` — dev 用，把 `phone+code` 打到 loguru，便于本地手测
@@ -463,7 +500,7 @@ make test-db-init
 
 # 2. 跑全部测试 (单元 + 集成; 等价 CI)
 make test-all
-# → 224 passed in ~32s
+# → 248 passed in ~32s (Sprint 1 + BE-S2-001 + BE-S2-002)
 
 # 或者只跑 e2e (3 条 ~3s)
 make test-e2e
