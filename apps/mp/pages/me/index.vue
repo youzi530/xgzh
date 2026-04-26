@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 个人中心 (FE-003).
+ * 个人中心 (FE-003 + FE-S2-004 VIP 升级 modal).
  *
  * 模块:
  * 1. 顶部资料卡: 头像 + 昵称 + region + 邀请码 (可点击复制)
- * 2. VIP 入口卡: 当前会员等级 + 升级按钮 (本期占位; 支付通道走后续 BE-XXX)
+ * 2. VIP 入口卡: 当前会员等级 + 升级按钮 (FE-S2-004 起接 ``UpgradeVipModal`` 单例;
+ *    支付通道仍占位, Sprint 3 实接微信支付 / Apple IAP)
  * 3. 邀请绑定卡: 一次性绑定 referrer (BE-006); 已绑则灰态展示
  * 4. 设置区: 隐私协议 / 用户协议 / 免责声明 / 关于
  * 5. 退出登录按钮 (走 store.logout(), 然后 reLaunch 首页)
@@ -24,6 +25,8 @@ import { storeToRefs } from 'pinia'
 import { computed, reactive, ref } from 'vue'
 
 import { bindInvite, parseInviteError } from '@/api/invite'
+import UpgradeVipModal from '@/components/UpgradeVipModal.vue'
+import { useUpgradeModal } from '@/composables/upgradeModal'
 import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'
 
@@ -31,6 +34,7 @@ const KEY_BOUND_REFERRER = 'xgzh.invite.bound_referrer'
 
 const authStore = useAuthStore()
 const { user, loggedIn } = storeToRefs(authStore)
+const upgrade = useUpgradeModal()
 
 // 自选数量徽标; 进个人中心时若已登录顺手 loadOnce, 列表入口立刻能看到 N
 const favStore = useFavoritesStore()
@@ -145,14 +149,16 @@ async function handleBindInvite() {
   }
 }
 
+/**
+ * VIP 卡点击: 走 ``useUpgradeModal()`` 单例, 与 agent 页 banner / inline-error
+ * 共用同一份 modal state. ``source = 'me_page'`` 让 modal 内部走"个人中心"专属
+ * 文案 (无配额尾巴, 纯营销模式).
+ *
+ * 实际支付通道仍是占位 (Sprint 3); modal 内部 "立即升级" 走 ``upgrade.gotoPay()``,
+ * 当前是 uni.showModal 提示, Sprint 3 接微信支付时单点替换.
+ */
 function gotoVip() {
-  uni.showModal({
-    title: '升级 VIP',
-    content:
-      '会员特权:\n· AI 深度诊断 (现限免)\n· 无限自选 + 提醒\n· 历史打新数据库\n· CRS 报税向导\n\n支付通道开发中, 敬请期待。',
-    showCancel: false,
-    confirmText: '我知道了',
-  })
+  upgrade.open({ source: 'me_page' })
 }
 
 function openLegal(kind: 'tos' | 'privacy' | 'disclaimer' | 'about') {
@@ -319,6 +325,9 @@ onShow(() => {
     >
       {{ loggingOut ? '退出中...' : '退出登录' }}
     </button>
+
+    <!-- FE-S2-004: VIP 升级 modal; 状态走 useUpgradeModal() 单例, 与 agent 页共享 -->
+    <UpgradeVipModal />
   </view>
 </template>
 

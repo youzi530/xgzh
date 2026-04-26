@@ -25,7 +25,7 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - 空态：☆ 图标 + 引导文案 + "去发现新股"CTA 跳首页
   - 下拉刷新：`loadOnce(force=true)` + `uni.stopPullDownRefresh`
   - 跨页响应式：详情页 ★ / ☆ 切换 → 自选列表立即同步（Pinia store 单源真相，无需 reload）
-- **AI 对话页（FE-S2-001 + FE-S2-002 + FE-S2-003 升级）**：多轮 ReAct + 6 类 SSE 事件 + Markdown 渲染 + 打字机节流 + 停止生成 + 引用源底部抽屉 + 配额闸门
+- **AI 对话页（FE-S2-001 + FE-S2-002 + FE-S2-003 + FE-S2-004 升级）**：多轮 ReAct + 6 类 SSE 事件 + Markdown 渲染 + 打字机节流 + 停止生成 + 引用源底部抽屉 + 配额闸门 + VIP 升级 modal
   - 顶部三段固定区：免责 banner（黄）/ IPO 锚定 chip + "续聊中"标签 / 全局 banner（auth 红 + quota 金渐变）
   - 主体消息列表：user 蓝色右气泡 / assistant 深色左气泡，气泡内分四段：tool_call 折叠卡 → **MarkdownRenderer 渲染 content + ▋ 流式光标** → citations chip（可点 → 抽屉）→ 内嵌 error / cancelled 条（按 kind 红/金/紫/灰）
   - **Markdown 增量渲染**（FE-S2-002）：自实现轻量 parser（`utils/markdown.ts` ~245 行）支持 heading / 列表 / 加粗 / 行内代码 / 链接 / **`[N]` 引用 chip**；MarkdownRenderer 用纯 `<view>`+`<text>` 跨三端（不走 v-html / rich-text，事件冒泡可控）
@@ -33,17 +33,18 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - **停止生成按钮**（FE-S2-002）：流式中底部按钮切红色"■ 停止"，点击调 `chat.cancelStream()` → SSE handle abort（H5 AbortController / MP `task.abort()`）；停止后 partial content 保留 + 显示灰色"已停止生成"chip + "重新生成"按钮
   - **`[N]` 引用可点击 + 引用源底部抽屉**（FE-S2-002 + FE-S2-003）：parser 区分 citation `[1]` vs 链接 `[text](url)` vs 普通文本 `[xxx]`；点 `[N]` chip 弹 **`CitationDrawer`** 底部抽屉显完整 snippet + meta（页码 / 相关度 / chunk_id 短哈希），多引用时抽屉内 `‹ 1/3 ›` 切换；底部 CTA "复制片段"（剪贴板）+ "查看原文 PDF"（lazy-fetch `IPODetail.prospectus_url` 后跨端打开：H5 `window.open` / MP `wx.downloadFile + wx.openDocument` / App `plus.runtime.openURL`，全失败兜底"复制 URL + toast"）
   - **prospectus_url 三态缓存**（FE-S2-003）：抽屉打开 / 切 active citation 时父页 lazy-fetch IPODetail，结果按 `ipo_code` 存入 `ref<Map>`：`undefined`（还在拉）显"加载中"loading / `null`（明确无原文）显"原文暂未入库"disabled / `string`（URL 有）显主按钮可点；并发触发由 `_prospectusInflight: Set` 防重
+  - **VIP 升级 modal + 配额引导精修**（FE-S2-004）：429 banner 升级三件套 —— `used / limit` 用量进度条 + `setInterval(1000)` 倒计时（到 0 时主 CTA 切"立即重试"绿色）+ `useUpgradeModal()` 真升级弹层（金色渐变标题 + 5 条权益清单 + 配额尾巴 + 双 CTA）；assistant 气泡内嵌 quota 错也加挂"升级 VIP"次级金色 CTA；状态走 `composables/upgradeModal.ts` 模块级单例 ref，agent / me 两入口共用同一份 visible / source / quota state，模板各自挂 `<UpgradeVipModal />` 一次；支付通道仍是 `gotoPay()` 占位 modal，Sprint 3 接 `uni.requestPayment` 时单点替换
   - tool_call 折叠步骤卡：默认折叠仅显示 `name + status badge + latency`（ok/error/timeout 三色），点开看 `args` / `result_preview` / `error` 的 JSON pretty-print
   - 锚定 IPO 时给 4 条 quick prompts（"基本面如何 / 主要风险 / 招股价合理吗 / 行业可比"），未锚定给"通用对话"3 条引导（"本周新股 / 港股规则 / 破发风险"）
   - 多轮自动衔接：`session_id` 由后端 SSE `start` 事件回填，后续提问自动携带，进同一只 IPO 起新一轮（切 IPO `setIpoContext` 自动 reset）
   - 错误兜底 5 类分级：
-    - **HTTP 429 quota** → 顶部金色 banner + 套餐/已用/retry_after + "升级 VIP"占位 modal（FE-S2-004 实装支付路径）
+    - **HTTP 429 quota** → 顶部金色 banner（用量进度条 + 倒计时 + 倒计时归零自动切"立即重试" CTA）+ "升级 VIP" 弹 `UpgradeVipModal`（FE-S2-004; 支付通道 Sprint 3 实接）
     - **HTTP 401/403 auth** → 顶部红色 banner + "重新登录 / 暂不登录"双按钮（流接口不做 silent refresh，避免中途换 token 风险）
     - **SSE event=error** → assistant 气泡内嵌错误条 + "重试"按钮（保留 user 上下文，删失败 assistant 后重发）
     - **网络断 / parse 失败** → 同上但 kind=network
     - **用户 cancel** → 灰色"已停止生成"chip + "重新生成"按钮（不弹错 banner；保留 partial content）
   - 离页 `onUnload` 强 `reset()` 防"返回页发现上次会话还在 → 用户困惑"; reset 时自动 abort 进行中的流，防 SSE 泄露
-  - 不在本 PR 范围：VIP 升级支付通道（FE-S2-004）
+  - 不在本 PR 范围：实接微信支付 / Apple IAP（Sprint 3; 当前 `composables/upgradeModal.ts` `gotoPay()` 占位 modal 提示"支付通道开发中"）
 - **登录页（FE-001）**：手机 OTP + 微信小程序一键登录
   - 双 Tab：手机号 + 验证码（全平台）/ 微信一键（仅 `MP-WEIXIN` 条件编译）
   - 60s 倒计时（前端镜像 + 后端 429 兜底）
@@ -55,10 +56,10 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - 401 其它原因（`token_invalid` / `revoked` / `user_disabled` / 等）→ `clearSession` + 跳登录
   - 多个并发请求同时 401 仅触发一次 refresh（store 单 inflight Promise 去重）
   - 鉴权接口本身（`sendOtp` / `loginPhone` / `loginWechatMp` / `refreshToken`）统一 `skipAuth: true`
-- **个人中心（FE-003）**：资料 + 邀请 + VIP 占位 + 设置 + 退出
+- **个人中心（FE-003 + FE-S2-004 升级）**：资料 + 邀请 + VIP 升级 modal + 设置 + 退出
   - 顶部"工具属性"合规角标（spec/06 §法律隔离）
   - 资料卡：昵称首字头像 + 区域本地化 + 邀请码点击复制
-  - VIP 入口卡：`免费会员` 现状 + 升级按钮（modal 占位"支付通道开发中"，会员特权清单提前展示给用户预期）
+  - VIP 入口卡：`免费会员` 现状 + 升级按钮 → 走 `useUpgradeModal()` 单例 → `UpgradeVipModal` 金色渐变弹层（5 条权益 + 双 CTA）；source='me_page' 走纯营销模式不显配额尾巴；Sprint 3 接微信支付时只改 composable 的 `gotoPay()`，本页零改动
   - 邀请绑定卡：BE-006 一次性绑定；前端长度校验 + 自禁 + 大写归一；7 类错误码差异化 toast；本地 `xgzh.invite.bound_referrer` 缓存灰态展示
   - 设置区：用户协议 / 隐私政策 / 免责声明 / 关于（modal 占位）
   - 退出登录：二次确认 modal → `auth.logout()` → `uni.reLaunch('/pages/index/index')` → 清 referrer 缓存防串号
@@ -99,17 +100,20 @@ apps/mp/
 │   ├── index/index.vue       # 首页（FE-004：双视图 + status chip + 今日打新 + 分页）
 │   ├── auth/login.vue        # 登录页（手机 OTP + 微信一键，FE-001）
 │   ├── me/
-│   │   ├── index.vue         # 个人中心（资料 + 邀请 + VIP 占位 + 自选入口 + 设置 + 退出，FE-003 / FE-006）
+│   │   ├── index.vue         # 个人中心（资料 + 邀请 + VIP 升级 modal + 自选入口 + 设置 + 退出，FE-003 / FE-006 / FE-S2-004）
 │   │   └── favorites.vue     # 我的自选（stats + IPOCard 列表 + 长按移除 + 空态，FE-006）
 │   └── ipo/
 │       ├── detail.vue        # 详情页（FE-005：风险 banner + 关注按钮 + 4-tab 招股要点 + AI CTA）
-│       └── agent.vue         # AI 对话页（FE-S2-001/002/003：多轮 chat + 6 SSE event + Markdown 渲染 + 打字机节流 + 停止生成 + 引用源抽屉 + 配额 banner）
+│       └── agent.vue         # AI 对话页（FE-S2-001/002/003/004：多轮 chat + 6 SSE event + Markdown 渲染 + 打字机节流 + 停止生成 + 引用源抽屉 + 配额 banner 倒计时 + VIP 升级 modal）
 ├── components/
 │   ├── IPOCard.vue           # FE-004: 复用卡片, default / hero 双密度, 状态色块
 │   ├── IPOCalendar.vue       # FE-004: 打新日历, 按日期 group + 横滚日期轴
 │   ├── FavoriteButton.vue    # FE-005: 关注按钮, 未登录跳登录 / 乐观更新 / 错误码分类 toast
 │   ├── MarkdownRenderer.vue  # FE-S2-002: 跨端 markdown 渲染 (block 列表 + citation/link emit, 纯 view+text)
-│   └── CitationDrawer.vue    # FE-S2-003: 引用源底部抽屉 (snippet + meta + 多引用左右切换 + 跳原文 PDF / 复制片段 CTA)
+│   ├── CitationDrawer.vue    # FE-S2-003: 引用源底部抽屉 (snippet + meta + 多引用左右切换 + 跳原文 PDF / 复制片段 CTA)
+│   └── UpgradeVipModal.vue   # FE-S2-004: VIP 升级引导弹层 (金色渐变 + 5 条权益 + 配额尾巴 + 双 CTA; v-show 留 DOM 跑退场动画)
+├── composables/
+│   └── upgradeModal.ts       # FE-S2-004: 升级 modal 单例 composable (模块级 ref 跨入口共享 visible/source/quota; gotoPay 占位 → Sprint 3 替换 uni.requestPayment)
 ├── api/
 │   ├── ipo.ts                # IPO 接口 (列表 + IPODetail 详情, prospectus_url 给 FE-S2-003 抽屉 lazy-fetch) + statusLabel / statusPalette helpers
 │   ├── agent.ts              # Sprint 1 单轮 Agent 流式接口（/v1/agent/diagnose；保留向后兼容，Sprint 3 砍）

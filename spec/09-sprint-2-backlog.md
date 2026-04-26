@@ -73,7 +73,7 @@
 | FE-S2-001 | page | AI 对话页 UI + Pinia store + SSE consume | 1d | BE-S2-007 | P0 | ✅ |
 | FE-S2-002 | render | 打字机渲染 + Markdown 增量解析 + MP-WEIXIN onChunkReceived 兼容 | 0.5d | FE-S2-001 | P0 | ✅ |
 | FE-S2-003 | render | 引用源面板（[1] 点击 → ActionSheet → 原文片段抽屉）| 0.5d | FE-S2-001 | P0 | ✅ |
-| FE-S2-004 | quota | 配额限制 UI + VIP 升级引导 modal（接 429）| 0.5d | BE-S2-008, FE-S2-001 | P0 | ⬜ |
+| FE-S2-004 | quota | 配额限制 UI + VIP 升级引导 modal（接 429）| 0.5d | BE-S2-008, FE-S2-001 | P0 | ✅ |
 
 ### 测试 · QA-S2
 
@@ -1772,6 +1772,91 @@ const _prospectusInflight = new Set<string>()
 | Sprint 3 启动（文章聚合 / 券商对比 / VIP 订阅）| FE-S2-004 完了 Sprint 2 即可收尾, 直接开 Sprint 3 backlog 文档 |
 
 → **建议下一步走 FE-S2-004**（VIP 升级 modal + 配额引导精修, 0.5d）—— Sprint 2 前端最后一刀, 完成即可关 Sprint 2 进入 Sprint 3。
+
+---
+
+## ✅ FE-S2-004 落地总结（VIP 升级 modal + 配额引导精修）
+
+> Sprint 2 前端最后一刀。在 BE-S2-008 配额闸门 + Retry-After 已就绪的基础上，把 chat 页 429 banner 从"显示文案 + 占位 toast"升级为"用量进度条 + 实时倒计时 + 真升级 modal"，并新建 `composables/upgradeModal.ts` 单例 + `components/UpgradeVipModal.vue` 组件，让 agent 页 / 个人中心两入口共用同一份 modal state；assistant 气泡内嵌 quota 错误也加挂"升级 VIP"次级 CTA。Sprint 2 前端 P0 全部落地，可关 Sprint 2 进 Sprint 3。
+
+### 关键模块
+
+1. **`xgzh/apps/mp/composables/upgradeModal.ts`**（新增, 60 行）
+   - 模块级单例 ref 存 `visible / source / quota`，调用方零 prop drilling
+   - `useUpgradeModal()` 返回 `{ visible, source: readonly, quota: readonly, open, close, gotoPay }`
+   - `open({ source, quota? })` 一次性写入 source + quota + visible，让多入口共享同一份 state
+   - `gotoPay()` 当前走 `uni.showModal` 占位（"支付通道开发中"），Sprint 3 接微信支付时单点替换为 `uni.requestPayment`，调用方零改动
+   - 4 种 source: `quota_banner` / `inline_error` / `me_page` / `manual`，给 modal 内文案微调 + 后续 GA 上报埋点用
+
+2. **`xgzh/apps/mp/components/UpgradeVipModal.vue`**（新增, 416 行）
+   - 完整 VIP 引导弹层：金色渐变顶部 + 5 条权益清单 + 配额尾巴（仅 quota 来源时显）+ 双 CTA
+   - 5 条权益与 spec/06 §会员体系一致：AI 不限次（高亮）/ 历史打新数据库 / 无限自选+提醒 / CRS 报税向导 / 券商比价
+   - 配额尾巴（`source ∈ {quota_banner, inline_error}` 才显）：当前套餐标签 + `used / limit` 用量进度条 + 倒计时秒数提示
+   - 入场动画 `transform: translateY(100% → 0)` 0.24s ease-out，与 `CitationDrawer` 同款；MP-WEIXIN 退化为闪现可接受
+   - 模板嵌套 4 层封顶（mask > panel > body > section），避开 MP setData 性能上限
+   - **不走 v-if 而走 v-show**: 退场动画要求 DOM 仍存在，v-if 直接卸载会丢动画
+   - 不接 props / 不发 emit，完全从 `useUpgradeModal()` 单例读 state，避免父子状态错位
+   - 法律小字（VIP 服务条款 + 不构成投资建议 + 取消订阅政策）合规文案预留位
+
+3. **`xgzh/apps/mp/pages/ipo/agent.vue`**（修改）
+   - **配额倒计时**: `quotaCountdown` ref + `setInterval(1000)` tick；`watch(globalError)` 在 quota error 出现时启动 / 切回 idle 时清掉；`onBeforeUnmount` 兜底防 timer 泄漏
+   - **用量进度条**: banner 增加 `quota-progress-track + fill`，实时显示 `used / limit` 百分比；倒计时 0 时文案切"现在可重试"绿色高亮
+   - **CTA 双形态**: 倒计时未归零 → "稍后再试"灰色按钮（关 banner）；倒计时归零 → "立即重试"蓝色 CTA，调 `retryAfterQuota()` 先 dismiss `globalError` 再 `chat.retryLast()`（绕开 store 内"quota 时跳过 retry"的门闸）
+   - **"升级 VIP" → useUpgradeModal**: 替换 FE-S2-001 的 `gotoVipPlaceholder` 占位 modal，banner 入口走 `openUpgradeFromBanner()` (`source: 'quota_banner'`), 直接弹真 modal
+   - **assistant 气泡内嵌 quota 错增加"升级 VIP"金色 CTA**: 此前 `m.error.kind === 'quota'` 时 inline-error 仅显文案没有按钮，现在补上次级入口（金色 chip 与 banner 调性对齐），走 `openUpgradeFromInline()` (`source: 'inline_error'`)
+   - 模板末尾挂 `<UpgradeVipModal />` 一次
+
+4. **`xgzh/apps/mp/pages/me/index.vue`**（修改）
+   - 替换 `gotoVip()` 占位 `uni.showModal` 为 `upgrade.open({ source: 'me_page' })`
+   - 模板末尾挂 `<UpgradeVipModal />` 一次（与 agent 页共用同一份 composable state）
+   - me_page 来源走"纯营销"模式，不显配额尾巴（用户当前不在超额场景，避免"我没用过怎么看到 5/5"困惑）
+
+### 设计取舍 / Trade-off
+
+1. **单例 composable 而非 Pinia store** — 升级 modal 是纯 UI 状态（visible / 来源 / quota context），不持久化、不与领域 store 联动，模块级 ref 足够；Pinia 适合"会被 SSR 关心"或"跨多 store 联动"，这里都不沾边。**理由**：3 个 ref 不值得开一个 store 文件 + setup/getters/actions 全套样板
+2. **每页各挂一个 `<UpgradeVipModal />`** — 不在 App.vue 全局挂一次，因为 MP-WEIXIN 全局组件需要在 `pages.json` 配 `usingComponents`，每页独立挂复用零成本；且 chat / me 页同时存活的概率低（tabbar + 详情页栈），不会出现两个 modal 抢渲染
+3. **"立即重试"按钮置于"升级 VIP"右侧** — 用户主路径优先级：① 升级 VIP（终极解法）② 立即重试（窗口已过自动放行）③ 关 banner（什么都不做）；金色升级置左视觉权重最高，倒计时归零后蓝色重试切右，避免与升级抢主操作位
+4. **倒计时用 `setInterval` 不用 `setTimeout` 递归** — `setInterval` 触发频率稳定，模板直接绑 `quotaCountdown.value` 显数字；`setTimeout` 递归虽然更"精确"但需要每次重新调度 + reactivity 一致性差
+5. **`watch(globalError)` 而非 `watch(showQuotaBanner)`** — `showQuotaBanner` 是 computed 间接依赖 globalError；直接监听源更精准，新 `quota.retry_after_seconds` 变化也能立即重启 tick（重试再次 429 时 banner 不会"卡住老倒计时"）
+6. **`retryAfterQuota` 主动绕开 store 门闸** — chat store 的 `retryLast` 在 quota 状态下会主动跳过（避免立即再次 429）；前端这里 _有意_ 让用户点了"立即重试"就重试，因为后端窗口已过 → 服务端会放行；如果窗口没过后端会再返 429，store 重写 globalError，watch 重启 tick，闭环不会卡死
+7. **金色主题贯穿 banner / inline-error CTA / modal** — 视觉层级与"普通蓝主色"区隔，让"VIP 升级"在视觉上有 premium 感；与 `banner-quota` 已有的金色保持一致，用户从 banner 点进来不割裂
+8. **配额尾巴只在 quota 来源时显示** — me_page 进来用户不在超额场景，强行显"今日 used / limit"反而困惑（"我没用过为什么看到 5/5？"）；纯营销模式 modal 显得更专业
+9. **`source` 字段保留 `readonly`** — composable 内部用 `readonly()` 包装暴露的 ref，防止调用方误改 source / quota 导致 modal 状态错位；只有 `open(payload)` 是合法的写入路径
+10. **`modal.gotoPay()` 关弹再弹占位 modal** — 不在升级 modal 内嵌支付占位，避免 modal-on-modal 视觉污染；用户点"立即升级"先关弹，再起一个 `uni.showModal` 提示支付通道未上线，体验上"操作 → 反馈"链路清晰
+
+### 兼容性
+
+- **H5 / MP-WEIXIN / App** 全覆盖
+- **金色渐变文字** (`background-clip: text`) MP-WEIXIN 不支持，退化为纯金色 `#f6c453`，可接受（视觉上仍有 VIP 感，只是少了双色渐变）
+- **`v-show` 而非 `v-if`** 留住 DOM 让 transition 退场动画跑完；`v-if` 直接卸载会丢动画
+- **`safe-area-inset-bottom`** iPhone 底栏安全区兜底, 与 CitationDrawer 一致
+
+### 测试 / 质量
+
+- **vue-tsc 0 错** + **ESLint 0 错**（IDE LSP 全验证；项目 `pnpm install` 因上游 `@dcloudio/uni-h5@3.0.0-4060920241225001` 被 yank 跑不动是已知历史问题, 与本 PR 无关）
+- 单测留 QA-S2-003（vitest + happy-dom），重点：
+  - `composables/upgradeModal.ts`: open/close 单测 + source/quota 写入隔离 + gotoPay 兜底 modal 调用断言
+  - `UpgradeVipModal.vue`: 三种 source 渲染分支 + 配额尾巴 v-if 断言 + 倒计时进度条百分比计算 + 双 CTA 触发事件
+  - `agent.vue` 倒计时: timer setup + watch globalError 重启 + onBeforeUnmount 清理 + retryAfterQuota 调用顺序
+
+### 实施偏差（vs spec/09 原稿）
+
+1. **新建 composable 单例** vs 原 spec 隐含的"每页 ref 维护 visible" — 单例能让 banner / inline-error / me_page 三入口零成本共用；如果按"每页 ref"，未来加更多入口（首页 quota 提醒 / 详情页 VIP 解锁等）每个都要重复一份 visible 控制逻辑，复用极差。**这是从 FE-S2-003 `_prospectusInflight` Set 学到的"轻量单例 > 重 Pinia"经验的延续**
+2. **配额引导精修扩展到"用量进度条 + 倒计时 + 立即重试"三件套** — 原 spec 仅说"配额限制 UI"语焉不详；本 PR 推到"banner 显进度 + 倒计时清楚 + 归零自动放行"完整链路，理由：FE-S2-001 落地的 banner 静态文案已经"能用但 wow 度低"，FE-S2-004 是用户面对配额限制的最后一道印象，如果不做精修就只剩"显升级 VIP 文案"价值
+3. **assistant 气泡内嵌 quota 错也加 CTA** vs 原 spec 仅说 banner 入口 — 一次会话内 quota 错可能出现在多种位置（流前 banner / 流内气泡 inline error），用户从对话上下文滚下来看到自己最后一条问题，inline-error 是更自然的升级触点；漏掉这里就让用户必须滚回顶部点 banner，体验断裂
+4. **支付通道仍占位** — spec 写"跳支付占位"已明确; 本 PR 不超期做 Sprint 3 才接的 `uni.requestPayment`，但把 `gotoPay` 抽到 composable 让替换一次到位，**这就是 composable 化的最大价值**
+
+### 下一步推荐
+
+Sprint 2 前端 P0 全部 ✅，可关 Sprint 2 入 Sprint 3：
+
+| 候选 | 理由 |
+|------|------|
+| **关 Sprint 2** + 启动 Sprint 3 backlog | 16 个 P0 全 ✅（BE 10 + FE 4 + QA 2）；spec/07 §S3"文章聚合 / 券商对比 / VIP 订阅"拆任务时写新 `spec/10-sprint-3-backlog.md` |
+| **QA-S2-003** (FE 单测补回, 0.5d) | FE-S2-002/003/004 三个 PR 留下的单测白条；vitest + happy-dom 跑 markdown 解析 / drawer 边界 / 升级 modal 渲染分支；可放 Sprint 2.5 或 Sprint 3 P1 |
+| **FE-S1-* 残余优化** (P2) | 列表页 IPOCard 加 skeleton / 详情页骨架屏 / 首页推荐位; 都是体验优化, 非阻塞 Sprint 3 |
+
+→ **建议下一步: 启动 Sprint 3 backlog**（关 Sprint 2 ✅，跳过 QA-S2-003 单测白条让产品先跑起来；P0 都满足时优先推进新功能更高 ROI）。
 
 ## ✅ Sprint 2 完成后的产出物
 

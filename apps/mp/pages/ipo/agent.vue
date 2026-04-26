@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * AI 对话页 (FE-S2-001 + FE-S2-002 + FE-S2-003).
+ * AI 对话页 (FE-S2-001 + FE-S2-002 + FE-S2-003 + FE-S2-004).
  *
  * 对接后端 ``POST /api/v1/chat/diagnose`` (BE-S2-007 + BE-S2-008 配额).
  *
@@ -18,8 +18,14 @@
  *   ``prospectus_url`` 由 ``IPODetail`` lazy-fetch + 模块内 ``Map`` 缓存防重复请求;
  *   跨端打开 PDF 走 ``utils/prospectus.openProspectusUrl`` (H5 ``window.open`` /
  *   MP ``downloadFile + openDocument`` / App ``plus.runtime.openURL``)
+ * - **VIP 升级引导 + 配额精修** (FE-S2-004):
+ *   - 429 banner 加"用量进度条"+ 实时倒计时 (1s tick, 到 0 自动转"立即重试"按钮)
+ *   - assistant 气泡内嵌 quota 错误也加"升级 VIP"次级 CTA
+ *   - 三个入口 (banner / inline error / 个人中心) 统一调 ``useUpgradeModal()``
+ *     单例 composable, modal 组件本身只挂一次, 状态在 ``composables/upgradeModal.ts``
+ *     模块级 ref 共享; 跳支付占位由 ``gotoPay`` 统一兜底
  * - 错误兜底基础版:
- *   - 进流前 429 quota → 红色 modal-style banner 显 retry_after + "升级 VIP" CTA 占位
+ *   - 进流前 429 quota → 金色 banner 显倒计时 + "升级 VIP" 走 ``UpgradeVipModal``
  *   - 进流前 401/403 auth → 引导跳登录页
  *   - 流内 SSE event=error → assistant 气泡内嵌错误条 + 重试按钮
  *   - 网络断 → 同上
@@ -29,7 +35,9 @@
  *
  * 不在本 PR 范围
  * ==============
- * - VIP 升级支付通道 (FE-S2-004): 当前 quota 错仅引导文案, 没有实际支付路径
+ * - VIP 升级支付通道实接 (Sprint 3): ``UpgradeVipModal`` 当前点"立即升级"
+ *   走 ``upgrade.gotoPay()`` 占位 modal; 替换为 ``uni.requestPayment`` 在
+ *   ``composables/upgradeModal.ts`` 单点改即可, 调用方零改动
  *
  * 路由兼容
  * ========
@@ -40,18 +48,21 @@
 
 import { onLoad, onUnload } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import type { ChatCitation, ChatToolCallPayload } from '@/api/chat'
 import { fetchIPODetail } from '@/api/ipo'
 import CitationDrawer from '@/components/CitationDrawer.vue'
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
+import UpgradeVipModal from '@/components/UpgradeVipModal.vue'
+import { useUpgradeModal } from '@/composables/upgradeModal'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { openProspectusUrl } from '@/utils/prospectus'
 
 const chat = useChatStore()
 const auth = useAuthStore()
+const upgrade = useUpgradeModal()
 const {
   messages,
   globalError,
@@ -66,6 +77,56 @@ const {
 const draft = ref('')
 const expandedToolCalls = ref<Set<string>>(new Set())
 const scrollIntoId = ref('')
+
+// ─── FE-S2-004 配额倒计时 ─────────────────────────────────────────
+//
+// 后端 429 给的 ``retry_after_seconds`` 是"建议等待秒数"; 前端启 1s tick 倒计时,
+// 到 0 时把 banner 上的 "升级 VIP" 后面那颗"稍后再试"换成"立即重试" (绿色 CTA).
+// 用户感受上从"被卡住"变"知道还要等多久 + 到时点一下就能继续".
+//
+// - 用 ``setInterval`` 不用 ``setTimeout`` 递归: 每秒触发一次 reactive 更新, 模板
+//   ``quotaCountdown.value`` 直接绑数字显示, 简单直接
+// - 离页 / dismiss / 切到非 quota error: 必须 ``stopQuotaCountdown`` 防止 timer 泄漏
+// - watch ``globalError`` 而非 ``showQuotaBanner``: showQuotaBanner 是 computed, 内部
+//   仍然依赖 globalError; 直接监听源更准, 也能拿到新 quota.retry_after_seconds 重置 tick
+const quotaCountdown = ref<number>(0)
+let _quotaTimer: ReturnType<typeof setInterval> | null = null
+
+function stopQuotaCountdown() {
+  if (_quotaTimer) {
+    clearInterval(_quotaTimer)
+    _quotaTimer = null
+  }
+}
+
+function startQuotaCountdown(seconds: number) {
+  stopQuotaCountdown()
+  quotaCountdown.value = Math.max(0, Math.floor(seconds))
+  if (quotaCountdown.value <= 0) return
+  _quotaTimer = setInterval(() => {
+    quotaCountdown.value -= 1
+    if (quotaCountdown.value <= 0) {
+      stopQuotaCountdown()
+    }
+  }, 1000)
+}
+
+watch(
+  () => globalError.value,
+  (g) => {
+    if (g?.kind === 'quota' && g.quota?.retry_after_seconds) {
+      startQuotaCountdown(g.quota.retry_after_seconds)
+    } else {
+      stopQuotaCountdown()
+      quotaCountdown.value = 0
+    }
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  stopQuotaCountdown()
+})
 
 // ─── FE-S2-003 引用源抽屉相关 ─────────────────────────────────────
 //
@@ -231,14 +292,31 @@ function gotoLogin() {
   uni.navigateTo({ url: '/pages/auth/login' })
 }
 
-function gotoVipPlaceholder() {
-  // FE-S2-004 实装升级 modal; 本 PR 仅 toast 占位
-  uni.showModal({
-    title: 'VIP 升级',
-    content: '支付通道开发中, 敬请期待。VIP 可解除每日 Agent 调用次数限制。',
-    showCancel: false,
-    confirmText: '知道了',
-  })
+/**
+ * 打开 VIP 升级 modal. 走 ``useUpgradeModal()`` 单例 composable, 在 banner / 内嵌
+ * 错误两个入口共用同一份 visible / quota state.
+ *
+ * source 参数仅用于 modal 内部文案微调 + 后续 GA 上报埋点; 当前没有真实支付,
+ * 用户点 "立即升级" → ``upgrade.gotoPay()`` 走占位 modal, Sprint 3 接微信支付时
+ * 在 composable 内单点替换.
+ */
+function openUpgradeFromBanner() {
+  upgrade.open({ source: 'quota_banner', quota: globalError.value?.quota })
+}
+
+function openUpgradeFromInline() {
+  upgrade.open({ source: 'inline_error', quota: globalError.value?.quota })
+}
+
+/**
+ * quota 倒计时归零后的"立即重试": 先 dismiss globalError (chat store
+ * ``retryLast`` 在 quota 状态会主动跳过, 必须先清掉门闸), 再调 ``retryLast``.
+ * 后端真要还在窗口期会再返 429, store 重新写 globalError, watch 重启 tick, 闭环.
+ */
+async function retryAfterQuota() {
+  if (quotaCountdown.value > 0) return
+  chat.dismissGlobalError()
+  await retry()
 }
 
 function toggleToolCall(messageId: string, idx: number) {
@@ -293,6 +371,19 @@ const quotaPlanText = computed(() => {
   const plan = { free: '免费', vip: 'VIP', anonymous: '匿名' }[q.plan] || q.plan
   return `${plan}（${q.used}/${q.limit < 0 ? '∞' : q.limit}）`
 })
+/** quota 用量进度条百分比 (0-100); VIP 无限套餐不展示 banner, 这里不需特别处理 */
+const quotaUsagePercent = computed(() => {
+  const q = globalError.value?.quota
+  if (!q || q.limit <= 0) return 0
+  return Math.min(100, Math.round((q.used / q.limit) * 100))
+})
+/** 倒计时归零后切"立即重试", 否则显倒计时秒数 */
+const quotaCanRetryNow = computed(() => {
+  const q = globalError.value?.quota
+  // 后端没给 retry_after_seconds (滑动窗口已过) → 直接允许重试
+  if (q && !q.retry_after_seconds) return true
+  return quotaCountdown.value <= 0
+})
 const isLoggedIn = computed(() => auth.loggedIn)
 </script>
 
@@ -329,18 +420,33 @@ const isLoggedIn = computed(() => auth.loggedIn)
       <view class="banner-body">
         <text class="banner-title">⚡ 今日额度已用完</text>
         <text class="banner-desc">{{ globalError?.message }}</text>
-        <text v-if="globalError?.quota" class="banner-meta">
-          当前套餐: {{ quotaPlanText }}
-          <template v-if="globalError.quota.retry_after_seconds">
-            · 约 {{ globalError.quota.retry_after_seconds }} 秒后可重试
-          </template>
-        </text>
+        <!-- FE-S2-004: 用量进度条 + 倒计时文案 -->
+        <view v-if="globalError?.quota" class="banner-quota-progress">
+          <view class="banner-quota-head">
+            <text class="banner-meta">当前套餐: {{ quotaPlanText }}</text>
+            <text v-if="!quotaCanRetryNow" class="banner-meta banner-meta-strong">
+              {{ quotaCountdown }}s 后可重试
+            </text>
+            <text v-else class="banner-meta banner-meta-ok">现在可重试</text>
+          </view>
+          <view class="banner-progress-track">
+            <view class="banner-progress-fill" :style="`width: ${quotaUsagePercent}%;`" />
+          </view>
+        </view>
       </view>
       <view class="banner-actions">
-        <view class="banner-btn banner-btn-gold" @tap="gotoVipPlaceholder">
+        <view class="banner-btn banner-btn-gold" @tap="openUpgradeFromBanner">
           <text>升级 VIP</text>
         </view>
-        <view class="banner-btn banner-btn-ghost" @tap="dismissError">
+        <!-- 倒计时归零: 主操作切到"立即重试"; 否则保留"稍后再试"关 banner -->
+        <view
+          v-if="quotaCanRetryNow"
+          class="banner-btn banner-btn-primary"
+          @tap="retryAfterQuota"
+        >
+          <text>立即重试</text>
+        </view>
+        <view v-else class="banner-btn banner-btn-ghost" @tap="dismissError">
           <text>稍后再试</text>
         </view>
       </view>
@@ -450,11 +556,15 @@ const isLoggedIn = computed(() => auth.loggedIn)
               <text v-else>⚠️</text>
               {{ m.error.message }}
             </text>
+            <!-- quota 错: 不再哑掉, 给次级"升级 VIP" CTA, 与 banner 同入 modal -->
             <view
-              v-if="m.error.kind !== 'quota'"
-              class="inline-error-btn"
-              @tap="retry"
+              v-if="m.error.kind === 'quota'"
+              class="inline-error-btn inline-error-btn-gold"
+              @tap="openUpgradeFromInline"
             >
+              <text>升级 VIP</text>
+            </view>
+            <view v-else class="inline-error-btn" @tap="retry">
               <text>重试</text>
             </view>
           </view>
@@ -520,6 +630,9 @@ const isLoggedIn = computed(() => auth.loggedIn)
       @ensure-prospectus="onEnsureProspectus"
       @open-prospectus="onOpenProspectus"
     />
+
+    <!-- FE-S2-004: VIP 升级 modal; 状态从 useUpgradeModal() 单例读, 多入口共用同一份 -->
+    <UpgradeVipModal />
   </view>
 </template>
 
@@ -609,6 +722,40 @@ const isLoggedIn = computed(() => auth.loggedIn)
 .banner-meta {
   font-size: 22rpx;
   color: var(--color-text-muted, #94a3b8);
+}
+.banner-meta-strong {
+  color: var(--color-accent, #f6c453);
+  font-weight: 600;
+}
+.banner-meta-ok {
+  color: #34d399;
+  font-weight: 600;
+}
+/* FE-S2-004 banner 用量进度条: 与配额尾巴文案并排 */
+.banner-quota-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  margin-top: 12rpx;
+}
+.banner-quota-head {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+}
+.banner-progress-track {
+  width: 100%;
+  height: 8rpx;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4rpx;
+  overflow: hidden;
+}
+.banner-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #f6c453, #d97706);
+  border-radius: 4rpx;
+  transition: width 0.32s ease-out;
 }
 .banner-actions {
   display: flex;
@@ -921,6 +1068,12 @@ const isLoggedIn = computed(() => auth.loggedIn)
   color: #fff;
   border-radius: 6rpx;
   font-size: 22rpx;
+}
+/* FE-S2-004: quota 错的"升级 VIP"次级 CTA, 与 banner 同金色调对齐 */
+.inline-error-btn-gold {
+  background: linear-gradient(135deg, #f6c453, #d97706);
+  color: #1a1305;
+  font-weight: 700;
 }
 
 /* scroll anchor */
