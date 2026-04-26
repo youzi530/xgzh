@@ -62,12 +62,13 @@ Schema（Alembic `0001_init`，PG 16 + pgvector 0.8.2）:
 
 - `@cached(ttl_seconds=N, namespace="...")` — JSON 序列化的函数级缓存
 - `@rate_limit(times=N, per_seconds=N, key_func=...)` — Lua 原子 INCR+EXPIRE 限流
+- `invalidate_namespace(*namespaces)` — 按 `@cached` namespace 批量清缓存（Sprint 1.5；真 Redis 用 SCAN+UNLINK / InMemory 用 dict 遍历；fail-soft 保证 ingest 失败不被拖垮）
 - `RealRedisClient` 走真 Redis；`InMemoryRedisClient` 走 dict+asyncio.Lock（单测/降级用）
 - 所有 key 自动加 `xgzh:` 前缀
 - `RateLimitExceeded` 由 `main.py` 全局 handler 转 HTTP 429（带 `Retry-After` header）
 
 ```python
-from app.cache import cached, rate_limit, RateLimitExceeded
+from app.cache import cached, invalidate_namespace, rate_limit, RateLimitExceeded
 
 @cached(ttl_seconds=1800, namespace="ipo")
 async def fetch_ipo_basic(code: str) -> dict: ...
@@ -77,6 +78,11 @@ async def fetch_ipo_basic(code: str) -> dict: ...
     key_func=lambda phone: f"phone:{phone}",
 )
 async def send_otp(phone: str) -> None: ...
+
+# ingest / write 路径完成后清掉相关 namespace, 让 GET 立刻拉到新数据
+async def run_ingest_a_job():
+    ...
+    await invalidate_namespace("ipos:list", "ipos:detail")
 ```
 
 鉴权层 - OTP 发送（`app/adapters/sms/` + `app/services/otp_service.py`，BE-001）:
@@ -442,6 +448,31 @@ uv run alembic revision --autogenerate -m "add foo table"
 
 ## 测试
 
+**Sprint 1.5 已封装到 `Makefile`，3 条命令搞定**：
+
+```bash
+# 起基础设施 (PG + Redis); 已起则跳过
+cd ../../infra && docker compose up -d postgres redis
+cd ../apps/api
+
+# 1. 测试库初始化 (幂等; 含 pgcrypto extension)
+make test-db-init
+
+# 2. 跑全部测试 (单元 + 集成; 等价 CI)
+make test-all
+# → 218 passed in ~25s
+
+# 或者只跑 e2e (3 条 ~3s)
+make test-e2e
+
+# 或者只跑单元 (无 DB 依赖, 集成自动 skip, ~5s)
+make test-unit
+```
+
+`make help` 列全部 7 个 target（`help` / `test-db-init` / `test-unit` / `test-e2e` / `test-all` / `lint` / `typecheck`）。
+
+底层等价命令（不想用 Makefile 时）:
+
 ```bash
 # 单测（无 DB 集成测试自动跳过）
 uv run pytest
@@ -449,7 +480,8 @@ uv run pytest
 # 含 DB 集成测试（迁移 up/down/idempotent + e2e 主路径）
 # 先建测试库 xgzh_test:
 psql -U postgres -c "CREATE DATABASE xgzh_test OWNER xgzh;"
-psql -U postgres -d xgzh_test -c "CREATE EXTENSION pgcrypto; CREATE EXTENSION vector;"
+psql -U postgres -d xgzh_test -c "CREATE EXTENSION pgcrypto;"
+# pgvector extension 留给 BE-S2-003 PR 加 (Sprint 2)
 
 XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh_test' \
   uv run pytest -q
@@ -464,22 +496,7 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 - **不依赖真 Redis**: `redis_client` fixture 用 `InMemoryRedisClient`，覆盖 INCR/EXPIRE/Lua 路径，与 `RealRedisClient` 行为一致（BE-005）。
 - **没设 `XGZH_TEST_DATABASE_URL` 时整个 session skip**: 顶层 `tests/conftest.py` 的 `db` marker hook 兜底，CI 不会因没起 PG 红。
 
-本地一键跑 e2e:
-
-```bash
-# 1. 起基础设施 (PG + Redis, Meili 不需要)
-cd ../../infra && docker compose up -d postgres redis
-
-# 2. 准备测试库 (与 dev 库同实例不同库, 防误清)
-psql -U xgzh -h localhost -d postgres -c 'CREATE DATABASE xgzh_test'
-
-# 3. 跑 e2e (3 条用例 ~1.2s)
-cd ../apps/api
-XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh_test' \
-  uv run pytest tests/integration/ -v
-```
-
-预期 `3 passed`，详见 `spec/08-sprint-1-backlog.md` §QA-001。
+预期 `3 passed`，详见 `spec/08-sprint-1-backlog.md` §QA-001 / §Sprint 1.5。
 
 ## 项目结构
 

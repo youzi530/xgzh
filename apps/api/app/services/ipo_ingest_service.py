@@ -30,6 +30,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import akshare_client
+from app.cache import invalidate_namespace
 from app.core.config import Settings, get_settings
 from app.core.logging import logger
 from app.db import get_session_factory
@@ -174,9 +175,17 @@ async def run_ingest_a_job(settings: Settings | None = None) -> dict[str, int]:
         stats["errors"] = 1
         return stats
 
+    # ingest 落库后清 BE-008 / BE-009 写入的缓存, 让下一次 ``GET /ipos`` /
+    # ``GET /ipos/{code}`` 立刻回源新数据 (否则最差 10/30 min stale).
+    # 失效失败本身已被 invalidate_namespace 内部 catch + warn, 不影响 ingest 成功状态.
+    stats["cache_invalidated"] = await invalidate_namespace(
+        "ipos:list", "ipos:detail"
+    )
+
     logger.info(
         f"ipo_ingest.a.ok received={stats['received']} "
-        f"inserted~={stats['inserted']} updated~={stats['updated']}"
+        f"inserted~={stats['inserted']} updated~={stats['updated']} "
+        f"cache_invalidated={stats['cache_invalidated']}"
     )
     return stats
 

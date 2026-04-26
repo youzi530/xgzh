@@ -54,10 +54,11 @@
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
+| BE-S2-000 | data | HK IPO ingest 真源接入（hkexnews 列表 / Futu OpenAPI 二选一）| 1d | — | P0 | ⬜ |
 | BE-S2-001 | db | 会话/消息/工具调用/Token 4 张表 + ORM + Alembic 0002 | 1d | — | P0 | ⬜ |
 | BE-S2-002 | adapter | LLM facade 重构（chat/embedding/rerank 三入口 + multi-provider）| 0.5d | — | P0 | ⬜ |
 | BE-S2-003 | db | pgvector `document_chunks` 表 + HNSW + Alembic 0003 | 0.5d | BE-S2-001 | P0 | ⬜ |
-| BE-S2-004 | rag | 招股书 PDF 解析 + 语义切分 + 批量 Embedding 入库 | 1d | BE-S2-002, BE-S2-003 | P0 | ⬜ |
+| BE-S2-004 | rag | 招股书 PDF 解析 + 语义切分 + 批量 Embedding 入库 | 1d | BE-S2-000, BE-S2-002, BE-S2-003 | P0 | ⬜ |
 | BE-S2-005 | rag | 混合检索 + RRF 融合 + bge-reranker 重排 | 1d | BE-S2-003 | P0 | ⬜ |
 | BE-S2-006a | agent | Tool 注册中心 + 2 个最简工具（basic_info / financial）| 1d | BE-S2-001 | P0 | ⬜ |
 | BE-S2-006b | agent | 余下 3 个 Tool（peers / sentiment_placeholder / historical）+ 沙盒 | 1d | BE-S2-006a | P0 | ⬜ |
@@ -83,20 +84,24 @@
 
 ### 总计
 
-- **15 PR**，约 **13 工作日**
-- 后端 9 PR（~9d）+ 前端 4 PR（~2.5d）+ 测试 2 PR（~1.5d）
+- **16 PR**，约 **14 工作日**
+- 后端 10 PR（~10d，含 BE-S2-000 HK ingest）+ 前端 4 PR（~2.5d）+ 测试 2 PR（~1.5d）
+
+> Sprint 1.5 收尾包（已合并）：缓存失效 hook + Makefile DX + ✅ 关闭 Sprint 1 的 BE-008/009/QA-001 三处遗留。详见 `spec/08-sprint-1-backlog.md` §Sprint 1.5。
 
 ---
 
 ## 🔗 依赖图（mermaid 简版）
 
 ```
-BE-S2-001 (4 张表)         BE-S2-002 (LLM facade)
-    │                          │
-    ├──► BE-S2-003 (pgvector)  │
-    │       │                  │
-    │       ├──► BE-S2-004 (招股书入库) ──┐
-    │       └──► BE-S2-005 (混合检索) ────┤
+BE-S2-000 (HK ingest) ────────┐
+                              │
+BE-S2-001 (4 张表)            │       BE-S2-002 (LLM facade)
+    │                         │           │
+    ├──► BE-S2-003 (pgvector) │           │
+    │       │                 │           │
+    │       ├──► BE-S2-004 (招股书入库) ──┘
+    │       └──► BE-S2-005 (混合检索) ────┐
     │                                     ▼
     └──► BE-S2-006a (basic_info, financial)
               │
@@ -120,6 +125,8 @@ BE-S2-001 (4 张表)         BE-S2-002 (LLM facade)
 ```
 
 **关键路径**：BE-S2-001 → BE-S2-006a → BE-S2-006b → BE-S2-007 → FE-S2-001 → QA-S2-001（约 7 天串行）
+
+**HK ingest 并行路径**：BE-S2-000 与 BE-S2-001 / BE-S2-002 / BE-S2-003 三者均无依赖，可并行起跑；只在 BE-S2-004（招股书 PDF 入库）时被强制汇合。
 
 ---
 
@@ -220,6 +227,66 @@ chat_token_usage:
 
 ---
 
+## 📦 BE-S2-000 详细规格（HK IPO ingest 真源 — 与 BE-S2-001 并行可起）
+
+### 为什么单独立项
+
+Sprint 1 的 BE-007 周期任务只接了 A 股（AKShare 1.18 没干净的 HK IPO API），HK 一直走内存 seed 的 3 条样例。但 Sprint 2 的 RAG 主战场是**招股书 PDF**：
+
+- A 股招股书在证监会网站，反爬很狠 + 单 PDF 几十 MB + 经常被改版（且监管下载有合规争议）
+- HK 招股书在 [hkexnews.hk](https://www.hkexnews.hk) 完全公开，按上市编号一一对应（A1 / A1A 表），格式相对稳定（PDF + 中英双版本）
+- spec/04 §4 已写 "HK 是 RAG MVP 主战场"，没真 IPO 列表 → 没 PDF URL → BE-S2-004 无米下锅
+
+所以 HK ingest 必须放到 BE-S2-004 之前，不能拖到 Sprint 3。
+
+### 改动文件
+
+```
+apps/api/app/adapters/hkex_client.py                  # 新建（hkexnews 列表 + 招股书 URL 抓取）
+apps/api/app/services/ipo_ingest_service.py           # 新增 run_ingest_hk_job
+apps/api/app/scheduler/__init__.py                    # 注册 hk cron job
+apps/api/app/core/config.py                           # +ipo_ingest_hk_limit / hkex_base_url
+apps/api/.env.example                                 # +HKEX_BASE_URL placeholder
+apps/api/tests/test_hkex_client.py                    # 新建（respx mock 列表 + PDF URL）
+apps/api/tests/test_ipo_ingest.py                     # +HK 路径 happy / 网络失败 / 空结果 3 条
+```
+
+### 数据源选择（二选一，PR 内拍板）
+
+| 选项 | 优势 | 劣势 |
+|------|------|------|
+| **hkexnews 公开列表（推荐）** | 完全公开，无需 API key，PDF URL 在同一页 | HTML 解析（BeautifulSoup），需要 IP 友好（不要太频繁，2 req/s 上限） |
+| Futu OpenAPI | 结构化 JSON，字段全（含一手中签率历史） | 需要 token 注册 + 调用配额；商业用途要核合规 |
+
+**推荐 hkexnews + httpx**：MVP 阶段不引入额外凭据；BeautifulSoup 已是 BE-007 间接依赖（akshare 用），不增包体。Sprint 3+ 真上线规模上去了再切 Futu。
+
+### AC
+
+- [ ] `fetch_hk_ipos(limit: int = 100) -> list[IPOItem]`：从 hkexnews "近期上市 / 招股中" 列表抓取，含 `code` (5 位港股代码 `0700.HK`) / `name` / `market="HK"` / `subscribe_start` / `subscribe_end` / `listing_date` / `prospectus_url`（招股书 PDF URL，存进 `extra.prospectus_url`）
+- [ ] 失败兜底：网络 5xx / HTML 改版 / 解析失败时 `logger.warning` + 返回空 list，不 raise（与 BE-007 A 股路径一致）
+- [ ] 速率限制：`asyncio.Semaphore(2)` 限并发 + `httpx.AsyncClient(timeout=10)` 防长 hang
+- [ ] `run_ingest_hk_job()`：调 `fetch_hk_ipos` → `upsert_ipos`（复用 BE-007 写入逻辑）→ `invalidate_namespace("ipos:list", "ipos:detail")`（复用 Sprint 1.5 收尾包的 hook）
+- [ ] APScheduler 每天跑一次（HK IPO 节奏比 A 股慢，cron `30 9 * * *` 早 9:30 一波 + `30 16 * * *` 收盘后一波二刀流即可）
+- [ ] `ipo_service.list_ipos(market="HK")` 切回 DB 路径（拆掉内存 seed 分支），保留 seed 作为 init fallback（DB 空时启动一次 ingest 不阻塞）
+- [ ] 单测 ≥ 5 条：respx mock hkexnews HTML（happy / 列表为空 / HTTP 5xx / 解析失败 / `run_ingest_hk_job` happy + cache 失效一起）
+
+### 关键设计决策（提前定）
+
+1. **`code` 格式统一为 `XXXXX.HK`（5 位补零）**：与 Sprint 1 favorites store / FE-005 详情页一致，不引入新格式（hkexnews 原始展示是无后缀的 `0700`，adapter 层补 `.HK`）
+2. **`prospectus_url` 存进 `extra` 而非顶层列**：BE-009 `IPODetail.prospectus_url` 已从 `extra` 读，走同一存储格式不动 schema
+3. **不在本 PR 做招股书 PDF 下载**：那是 BE-S2-004 的职责（要做切分 + embedding）；BE-S2-000 只负责把 PDF URL 入库，文件下载不在范围内
+4. **HK 与 A 股共享同一份 cron 注册函数**：`scheduler/register_jobs` 内部按 `if settings.scheduler_enabled: register a + register hk` 判断，单 pod 配置即开
+5. **保留 seed 作为 cold-start fallback**：DB 空表（lifespan startup 第一次跑）时 `ipo_service.list_ipos(market="HK")` 还能拿到 3 条样例，不让首次部署的用户看到空首页
+6. **复用 Sprint 1.5 的 cache invalidation**：`run_ingest_hk_job` 末尾 `await invalidate_namespace("ipos:list", "ipos:detail")` —— 这就是 Sprint 1.5 收尾包给 Sprint 2 留下的复用价值，HK 写完 ipos 表后立即让缓存回源，前端 / RAG 都看到最新
+
+### 不做（明确 P1+）
+
+- HK 一手中签率历史（hkexnews 没这字段，要爬 [aastocks](https://www.aastocks.com) 或 [moomoo](https://moomoo.com) → 反爬 + 数据合规风险，Sprint 3 接 Futu 时一起做）
+- 暗盘行情 / 灰盘价（券商数据，需付费，Sprint 4 VIP 增值功能）
+- 港股新股辅助计算器（认购倍数 / 中签预估，Sprint 3 业务功能）
+
+---
+
 ## 🛡 Sprint 2 不能碰的事
 
 - 真实 LLM Key 写到代码里（永远走 `.env` + `fake_llm` fixture mock）
@@ -234,6 +301,7 @@ chat_token_usage:
 - AI 输出在硬护栏（关键词过滤 + 强制免责声明 + 引用强制校验）下基本不出违规
 - 评测集 80 条 → 召回@5 ≥ 0.7（baseline）/ 幻觉率 ≤ 10% / 单次平均成本 < ¥0.05
 - 配额 5 次/天 / VIP 无限的限流闭环跑通，前端有友好升级引导
-- 15 PR + 累计 ≥ 240 个测试 + 11 张 DB 表 + 1 个 LangGraph + 80 条评测集
+- HK IPO 走真源 ingest（hkexnews）入库，招股书 URL 闭环到 RAG 流水线
+- 16 PR + 累计 ≥ 250 个测试 + 11 张 DB 表 + 1 个 LangGraph + 80 条评测集
 
 > 然后进入 Sprint 3（文章聚合 + 券商对比 + VIP 订阅），spec/07 §S3 拆任务时再开新 backlog 文档。

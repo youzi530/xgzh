@@ -1,11 +1,14 @@
 """缓存 + 限流装饰器单测.
 
 覆盖:
-- ``InMemoryRedisClient``: get/set/delete/ttl 过期 / incr_with_expire 原子
+- ``InMemoryRedisClient``: get/set/delete/ttl 过期 / incr_with_expire 原子 /
+                           delete_by_prefix
 - ``@cached``: miss → 执行 + 落缓存; hit → 不重复执行; ttl 过期后再次执行;
               不同 args 不同 key; 返回 None 时不缓存 (skip_if_none)
 - ``@rate_limit``: 配额内通过; 超限 raise; 窗口超时后重置;
                    key_func 区分用户; 失败时 retry_after 合理
+- ``invalidate_namespace``: 按 namespace 清 ``@cached`` 写入的所有 keys (Sprint 1.5);
+                            其它 namespace / 其它前缀 key 不受影响; client 抛异常 fail-soft
 
 不依赖真实 Redis, 不依赖 fakeredis. 全部走自家 ``InMemoryRedisClient``.
 """
@@ -21,6 +24,7 @@ from app.cache import (
     InMemoryRedisClient,
     RateLimitExceeded,
     cached,
+    invalidate_namespace,
     rate_limit,
     reset_redis_client,
     set_redis_client,
@@ -249,3 +253,159 @@ async def test_rate_limit_invalid_args_raises() -> None:
 
         @rate_limit(times=1, per_seconds=0, namespace="rl6")
         async def f2() -> None: ...
+
+
+# ---------------- delete_by_prefix ----------------
+
+
+async def test_inmemory_delete_by_prefix() -> None:
+    """前缀边界精确: ``ipos:list`` 不应误删 ``ipos:list-ext`` 之类相邻 namespace."""
+    c = InMemoryRedisClient()
+    await c.set("cache:ipos:list:f1:abc", "v1")
+    await c.set("cache:ipos:list:f2:def", "v2")
+    await c.set("cache:ipos:list-ext:f1:xxx", "v3")  # 边界相邻
+    await c.set("cache:ipos:detail:f1:y", "v4")  # 不同 namespace
+    await c.set("rate:otp:phone:13800000000", "1")  # 不同前缀
+
+    removed = await c.delete_by_prefix("cache:ipos:list:")
+    assert removed == 2
+
+    assert await c.get("cache:ipos:list:f1:abc") is None
+    assert await c.get("cache:ipos:list:f2:def") is None
+    assert await c.get("cache:ipos:list-ext:f1:xxx") == "v3"
+    assert await c.get("cache:ipos:detail:f1:y") == "v4"
+    assert await c.get("rate:otp:phone:13800000000") == "1"
+
+
+async def test_inmemory_delete_by_prefix_zero_match() -> None:
+    c = InMemoryRedisClient()
+    await c.set("cache:foo:bar", "v")
+    assert await c.delete_by_prefix("cache:nonexistent:") == 0
+    assert await c.get("cache:foo:bar") == "v"
+
+
+# ---------------- invalidate_namespace ----------------
+
+
+async def test_invalidate_namespace_clears_only_target_namespace() -> None:
+    """实测 ``@cached`` 写入后, ``invalidate_namespace`` 能精确清掉自己的 key."""
+    miss_count = {"list": 0, "detail": 0}
+
+    @cached(ttl_seconds=600, namespace="ipos:list")
+    async def list_ipos(market: str) -> dict:
+        miss_count["list"] += 1
+        return {"market": market, "items": []}
+
+    @cached(ttl_seconds=600, namespace="ipos:detail")
+    async def get_detail(code: str) -> dict:
+        miss_count["detail"] += 1
+        return {"code": code}
+
+    # 各填 2 条不同 args 的 cache
+    await list_ipos("HK")
+    await list_ipos("A")
+    await get_detail("0700.HK")
+    await get_detail("600519.SH")
+    assert miss_count == {"list": 2, "detail": 2}
+
+    # hit 不增长
+    await list_ipos("HK")
+    await get_detail("0700.HK")
+    assert miss_count == {"list": 2, "detail": 2}
+
+    # 只清 ipos:list, ipos:detail 不应被影响
+    removed = await invalidate_namespace("ipos:list")
+    assert removed == 2  # 两个不同 args 的 key
+
+    # ipos:list 全部 miss → 重新执行
+    await list_ipos("HK")
+    await list_ipos("A")
+    assert miss_count["list"] == 4
+
+    # ipos:detail 仍 hit, 不重新执行
+    await get_detail("0700.HK")
+    await get_detail("600519.SH")
+    assert miss_count["detail"] == 2
+
+
+async def test_invalidate_namespace_multi_namespaces() -> None:
+    """传多个 namespace 时, 每个独立调用 + 总数累加."""
+
+    @cached(ttl_seconds=600, namespace="ipos:list")
+    async def f1(x: int) -> int:
+        return x
+
+    @cached(ttl_seconds=600, namespace="ipos:detail")
+    async def f2(x: int) -> int:
+        return x
+
+    await f1(1)
+    await f1(2)
+    await f2(1)
+
+    removed = await invalidate_namespace("ipos:list", "ipos:detail")
+    assert removed == 3
+
+
+async def test_invalidate_namespace_empty_args_returns_zero() -> None:
+    assert await invalidate_namespace() == 0
+
+
+async def test_invalidate_namespace_fail_soft_on_client_error() -> None:
+    """单个 namespace client 失败时, 函数 catch + warn, 不抛, 其它 ns 继续清.
+
+    场景: Redis 网络抖动. 失效失败让 ingest 末尾照样成功落库, 最差 stale 10/30 min.
+    """
+
+    class BoomClient(InMemoryRedisClient):
+        async def delete_by_prefix(self, prefix: str) -> int:
+            if prefix == "cache:ipos:list:":
+                raise RuntimeError("simulated redis outage")
+            return await super().delete_by_prefix(prefix)
+
+    boom = BoomClient()
+    set_redis_client(boom)
+    try:
+        # 给 ipos:detail 塞 1 条
+        await boom.set("cache:ipos:detail:f:abc", "v")
+
+        # 不抛, 哪怕 ipos:list 抛异常
+        removed = await invalidate_namespace("ipos:list", "ipos:detail")
+
+        # ipos:list 计 0 (失败), ipos:detail 计 1 (成功)
+        assert removed == 1
+        assert await boom.get("cache:ipos:detail:f:abc") is None
+    finally:
+        await boom.aclose()
+
+
+async def test_invalidate_namespace_does_not_touch_rate_limit_keys() -> None:
+    """``invalidate_namespace`` 只清 ``cache:`` 前缀, ``rate:`` 限流 key 不受影响.
+
+    防止 ingest 误把 OTP / agent 限流计数器一起清了, 等于绕过限流.
+    """
+
+    @cached(ttl_seconds=60, namespace="ipos:list")
+    async def f(x: int) -> int:
+        return x
+
+    await f(1)
+
+    # 模拟限流装饰器写过的 key
+    @rate_limit(times=10, per_seconds=60, namespace="otp")
+    async def send_otp() -> None:
+        return None
+
+    await send_otp()
+    await send_otp()
+
+    removed = await invalidate_namespace("ipos:list")
+    assert removed == 1
+
+    # 限流计数仍在 (再 hit 一次后应是 3)
+    await send_otp()
+    # 没法直接读 raw key (装饰器 hash key), 改为再调 8 次后第 11 次应被限流
+    for _ in range(7):
+        await send_otp()
+    with pytest.raises(RateLimitExceeded):
+        await send_otp()

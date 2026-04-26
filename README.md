@@ -64,14 +64,19 @@
     - 跳登录用 `navigateTo` 保留页面栈；`_redirectingToLogin` 防抖 + `getCurrentPages()` 豁免登录页本身，杜绝并发 401 / 死循环
     - `apps/mp/api/auth.ts` 补 `refreshToken` (BE-004) + `logout` (BE-004)；`sendOtp` / `loginPhone` / `loginWechatMp` / `refreshToken` 全部 `skipAuth: true`
     - 首页改用 `storeToRefs(authStore)` 响应式订阅，删 `onShow` 手动 refresh；登录页改用 `auth.setSession(resp)`
+  - ✅ **Sprint 1.5 收尾包**：缓存失效 hook + Makefile DX 整理（详见 [`spec/08` §Sprint 1.5](./spec/08-sprint-1-backlog.md#-sprint-15-收尾包----跨-sprint-12-的破窗清理)）
+    - `cache.invalidate_namespace("ipos:list", "ipos:detail")` 接入 `run_ingest_a_job` 末尾，SCAN + UNLINK 实现，关闭 BE-008 / BE-009 缓存 stale 遗留
+    - `Makefile`：`help` / `test-db-init`（幂等 createdb + pgcrypto）/ `test-unit` / `test-e2e` / `test-all` / `lint` / `typecheck`，关闭 QA-001 测试库初始化遗留
+    - 7 条新 cache 单测（前缀边界 / fail-soft / 不误删限流 key 等不变量锁定）
 - **后端测试**：
-  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 122 skipped
-  - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ **211 passed in ~25s**（含 3 条 QA-001 e2e 主路径）
+  - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 96 passed / 122 skipped
+  - 有 DB：`make test-all` ⇒ **218 passed in ~25s**（211 → 218，新增 7 条 cache 单测；含 3 条 QA-001 e2e 主路径）
 
 ### 🚀 Sprint 2 已开启 — AI Agent + RAG（核心壁垒）
 
-15 PR / ~13d 排期，详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)。主战场：
+16 PR / ~14d 排期（含 BE-S2-000 HK ingest 真源），详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)。主战场：
 
+- **HK IPO ingest（BE-S2-000）**：hkexnews 真源接入，招股书 URL 入库，给 RAG 流水线供米
 - **LLM facade**：LiteLLM 升级，chat / embedding / rerank 三入口，多 provider 切换
 - **会话记账**：4 张表（chat_sessions / chat_messages / chat_tool_calls / chat_token_usage）+ token / cost 全量记账
 - **RAG 流水线**：pgvector + bge-m3 Embedding + 招股书 PDF 解析 + 切分 + 入库
@@ -82,7 +87,7 @@
 - **评测集**：80 条标注 query + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）
 - **前端**：对话页 + 打字机渲染（MP-WEIXIN onChunkReceived 兼容）+ 引用源面板 + 配额引导
 
-起跳推荐 → **BE-S2-001（4 张会话表）**：纯 schema 题、底座价值、零业务复杂度。
+起跳推荐 → **BE-S2-001（4 张会话表）**：纯 schema 题、底座价值、零业务复杂度。BE-S2-000 与 BE-S2-001 / BE-S2-002 三者无依赖，可并行起跑。
 
 ## 📖 设计文档
 
@@ -97,7 +102,8 @@
 | [05](./spec/05-全栈技术栈选型.md) | UniApp + FastAPI + Postgres |
 | [06](./spec/06-商业化变现与合规避险.md) | CPA / 订阅 / 法律隔离 |
 | [07](./spec/07-MVP开发清单与排期.md) | MVP 10-12 周排期 |
-| [08](./spec/08-sprint-1-backlog.md) | Sprint 1 PR-Ready Backlog（16 issue） |
+| [08](./spec/08-sprint-1-backlog.md) | Sprint 1 PR-Ready Backlog（16 issue + Sprint 1.5 收尾包）|
+| [09](./spec/09-sprint-2-backlog.md) | Sprint 2 PR-Ready Backlog（16 issue · AI Agent + RAG）|
 
 ## 🏗️ 仓库结构
 

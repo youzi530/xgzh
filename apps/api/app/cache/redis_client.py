@@ -53,6 +53,7 @@ class RedisClientProtocol(Protocol):
     async def get(self, key: str) -> str | None: ...
     async def set(self, key: str, value: str, ttl_seconds: int | None = None) -> None: ...
     async def delete(self, key: str) -> int: ...
+    async def delete_by_prefix(self, prefix: str) -> int: ...
     async def incr_with_expire(self, key: str, ttl_seconds: int) -> int: ...
     async def ttl(self, key: str) -> int: ...
     async def ping(self) -> bool: ...
@@ -74,6 +75,29 @@ class RealRedisClient:
 
     async def delete(self, key: str) -> int:
         return int(await self._client.delete(namespaced_key(key)))
+
+    async def delete_by_prefix(self, prefix: str) -> int:
+        """按前缀批量删除 keys (生产 Redis: SCAN + UNLINK).
+
+        ``prefix`` 是 *逻辑前缀* (不含 ``xgzh:``), 内部会自动加.
+        实现要点:
+        - 用 ``SCAN`` 而不是 ``KEYS``: 后者会阻塞 Redis 单线程几十毫秒甚至秒级,
+          ingest 任务删 100+ 缓存键时影响业务.
+        - 用 ``UNLINK`` 而不是 ``DEL``: 前者把回收交给后台线程, 主线程响应更快.
+          老版本 Redis (< 4.0) 没 UNLINK 就 fallback 到 DEL.
+        - 分批 ``count=500`` 平衡单次 RTT 与 cursor 遍历轮数.
+        - 异常向上传播: 缓存失效失败应让调用方 (例如 ``invalidate_namespace``)
+          决定是否吞掉; 这里不静默防止业务以为已清.
+        """
+        full_prefix = namespaced_key(prefix)
+        pattern = f"{full_prefix}*"
+        deleted = 0
+        async for raw_key in self._client.scan_iter(match=pattern, count=500):
+            try:
+                deleted += int(await self._client.unlink(raw_key))
+            except (AttributeError, redis_async.ResponseError):
+                deleted += int(await self._client.delete(raw_key))
+        return deleted
 
     async def incr_with_expire(self, key: str, ttl_seconds: int) -> int:
         """原子: ``INCR`` + 仅首次执行 ``EXPIRE``. 防止双 INCR 间未设置 TTL.
@@ -141,6 +165,19 @@ class InMemoryRedisClient:
         nk = namespaced_key(key)
         async with self._lock:
             return 1 if self._store.pop(nk, None) is not None else 0
+
+    async def delete_by_prefix(self, prefix: str) -> int:
+        """按前缀批量删除 keys (内存版: dict 遍历).
+
+        语义与 :meth:`RealRedisClient.delete_by_prefix` 一致, ``prefix`` 同样
+        是逻辑前缀 (不带 ``xgzh:``), 内部加. 测试与单机降级场景用.
+        """
+        full_prefix = namespaced_key(prefix)
+        async with self._lock:
+            keys = [k for k in self._store if k.startswith(full_prefix)]
+            for k in keys:
+                del self._store[k]
+            return len(keys)
 
     async def incr_with_expire(self, key: str, ttl_seconds: int) -> int:
         nk = namespaced_key(key)

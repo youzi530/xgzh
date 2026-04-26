@@ -662,9 +662,7 @@ redis-cli TTL 'xgzh:cache:ipos:list:list_ipos:67dea2d9...'
 ```
 
 **遗留 / 后续**
-- 缓存失效：BE-007 ingest 完成后没主动清 `ipos:list` 缓存，最差 10min stale。
-  P0 不接，后续若用户感知明显再做：在 `run_ingest_a_job` 末尾 `redis.del("xgzh:cache:ipos:list:*")`
-  （需 SCAN，少量 keys 直接 del 即可）。
+- ~~缓存失效：BE-007 ingest 完成后没主动清 `ipos:list` 缓存，最差 10min stale~~ → ✅ Sprint 1.5 收尾包 `cache.invalidate_namespace("ipos:list", "ipos:detail")` 已接入 `run_ingest_a_job` 末尾，SCAN + UNLINK 实现，详见本文档 §Sprint 1.5
 - 排序选择：当前固定 `listing_date DESC NULLS LAST, code ASC`，没暴露 `sort` 参数。
   BE-009 详情或 FE-004 首页有需求时再加。
 - HK 切 DB：等 Sprint 2 HKEX adapter 落地。
@@ -740,9 +738,9 @@ curl -sw "\nHTTP=%{http_code}\n" http://127.0.0.1:8001/api/v1/ipos/000999.SZ
 ```
 
 **遗留 / 待办**
-- BE-018 招股书 RAG 落地后，把 `highlights` / `risks` / `financial_summary` 改为 ingest pipeline 自动写入，而不是运营手动 update
+- BE-018 招股书 RAG 落地后，把 `highlights` / `risks` / `financial_summary` 改为 ingest pipeline 自动写入，而不是运营手动 update（Sprint 2 §BE-S2-004 / BE-S2-005 主战场）
 - `financial_summary` 后续接入 AKShare `stock_financial_abstract_em` 等接口
-- 详情缓存应在 ingest 全表 upsert 后失效（可在 `ipo_ingest_service` 末尾 `KEYS xgzh:cache:ipos:detail:*` 批量删；需要把列表缓存一起处理；先不做，等真实数据库写入吞吐确认后再加）
+- ~~详情缓存应在 ingest 全表 upsert 后失效~~ → ✅ Sprint 1.5 收尾包 `cache.invalidate_namespace` 已统一处理列表 + 详情两个 namespace（详见本文档 §Sprint 1.5）
 
 ---
 
@@ -1364,7 +1362,7 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 
 - 当前 e2e 未覆盖 BE-007 调度任务（APScheduler 周期性 ingest）— 那是后台任务，e2e 难以稳定 trigger，单测 `test_ipo_ingest.py` 已覆盖逻辑。
 - `test_e2e_diagnose_anonymous_allowed` 这条用例当前 PASS = 默认行为（spec/04 §1.3 允许匿名调 `/agent/diagnose`）。如果 Sprint 2 改为"登录强制 + 配额限制"，这条用例会 fail 提醒同步更新 spec 文档。
-- 测试库还需要手动 `createdb xgzh_test` 一次。考虑 Sprint 2 加个 `make test-db-init` target 自动化。
+- ~~测试库还需要手动 `createdb xgzh_test` 一次~~ → ✅ Sprint 1.5 收尾包 `make test-db-init` 已自动化（含 pgcrypto extension 安装），详见本文档 §Sprint 1.5
 
 ---
 
@@ -1401,4 +1399,100 @@ XGZH_TEST_DATABASE_URL='postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/x
 - AI 诊断仍可用（依赖 LLM Key 配置）
 - 16 PR + 60+ 测试 + 7 张 DB 表 + 1 个调度任务
 
-> 然后进入 Sprint 2（AI Agent + RAG），spec/07 里有完整任务，需要时再拆 PR。
+> 然后进入 Sprint 2（AI Agent + RAG），spec/07 / spec/09 里有完整任务。
+
+---
+
+## 🧹 Sprint 1.5 收尾包 ✅ — 跨 Sprint 1/2 的"破窗"清理
+
+> 定位：Sprint 1 验收完成后、Sprint 2 起跳前的**轻量收尾**。
+> 目标：把 Sprint 2 真正会复用的 Sprint 1 遗留扫干净，避免被 RAG 主战场带出连锁问题。
+> 节奏：1 个 PR，~3 小时。**不做** Sprint 3+ 才会触发的遗留（律师文本 / 真支付 / OSS 等）。
+
+### Sprint 1.5 · 缓存失效 hook + Makefile DX 整理
+
+**改动文件**
+
+```
+apps/api/app/cache/redis_client.py             # +RedisClientProtocol.delete_by_prefix
+                                               #  + RealRedisClient.delete_by_prefix (SCAN+UNLINK)
+                                               #  + InMemoryRedisClient.delete_by_prefix (dict 遍历)
+apps/api/app/cache/__init__.py                 # +invalidate_namespace(*namespaces) helper + export
+apps/api/app/services/ipo_ingest_service.py    # run_ingest_a_job 末尾 await invalidate_namespace
+apps/api/tests/test_cache.py                   # +7 条单测 (delete_by_prefix x2 + invalidate_namespace x5)
+apps/api/Makefile                              # 新建: help / test-db-init / test-unit / test-e2e / test-all / lint / typecheck
+spec/08-sprint-1-backlog.md                    # 三处遗留勾 ✅ + 本章节
+spec/09-sprint-2-backlog.md                    # +BE-S2-000 HK ingest (作为 BE-S2-004 前置) + Sprint 1.5 注脚
+```
+
+**AC**
+
+- [x] `RedisClientProtocol.delete_by_prefix(prefix: str) -> int`：抽象接口加一刀，真 Redis / InMemory 双端实现
+- [x] 真 Redis 用 `SCAN match=xgzh:<prefix>* count=500` + `UNLINK`（非阻塞 DEL；老版本 fallback 到 DEL）
+- [x] InMemory 用 dict 遍历 + `startswith` 删除
+- [x] `cache.invalidate_namespace("ipos:list", "ipos:detail")`：按 `@cached(namespace=...)` 批量清；逻辑前缀 `cache:<ns>:` 带冒号边界，不会误删 `ipos:list-ext`
+- [x] **fail-soft**：单个 namespace client 抛异常时 catch + warn，其它 namespace 继续清；总函数不抛（让 ingest 任务"成功落库"状态不被缓存失效失败拖垮）
+- [x] `run_ingest_a_job` 末尾接入；返回值新增 `cache_invalidated: int` 统计字段（不影响现有调用方对 `received/inserted/updated` 的断言）
+- [x] **`Makefile`** 提供 7 个一行命令：`help` / `test-db-init`（幂等 createdb + pgcrypto extension）/ `test-unit` / `test-e2e` / `test-all` / `lint` / `typecheck`
+- [x] `make test-db-init` 实测：第一次创建库 + 装 extension；第二次 noop 不报错
+- [x] `make test-e2e` 实测：3 e2e 用例 2.1s 跑通
+- [x] 全套 `uv run pytest` 218 passed（211 → 218，新增 7 条 cache 单测）
+- [x] `uv run mypy app/cache/` / `uv run ruff check app/cache app/services/ipo_ingest_service.py tests/test_cache.py` 我新增代码 0 报错（pre-existing baseline 保持不变）
+
+**关键设计决策**
+
+1. **新加抽象接口而不是装饰器层 hard-code**：让 `delete_by_prefix` 进 `RedisClientProtocol`，未来 Sprint 3+ 文章流水线 / 评测集 ingest 也能直接 reuse；如果只在 `cache/__init__.py` 里 `if isinstance(client, InMemoryRedisClient)` 分支处理，会在 protocol-based 设计哲学上倒退。
+2. **逻辑前缀必须带冒号** (`cache:<ns>:`)：装饰器写入时是 `cache:<ns>:<func>:<hash>`，天然有冒号边界。如果删 `cache:ipos:list`（无尾冒号）会误删 `cache:ipos:list-ext` / `cache:ipos:listing`。这条不变量在 `test_inmemory_delete_by_prefix` 里用真用例锁定。
+3. **fail-soft 而不是 fail-fast**：缓存失效失败不应让 ingest 整个任务被 scheduler 标 failed 后停掉。最差就是用户看到 stale 10/30 min 的数据，业务可降级；但每一次失败都 log warn 让运维可追。这与 BE-007 `run_ingest_a_job` "永不抛" 的整体设计一致。
+4. **不在 `delete_by_prefix` 里 catch 异常**：异常向上传到 `invalidate_namespace`，让上层决定是否吞；如果 client 层就把异常吞了，调用方分不清"删了 0 个"和"出错了"。这在 `test_invalidate_namespace_fail_soft_on_client_error` 里用 `BoomClient` 子类验证。
+5. **`Makefile` 用 BSD/GNU 兼容的 grep 正则**：`[a-zA-Z0-9_-]+:` 必须含数字（`test-e2e` 中的 `2`），否则 `make help` 会神秘漏 target；这条踩过坑后写注释提醒。
+6. **测试库自动化只装 pgcrypto，不装 pgvector**：pgvector 是 Sprint 2 BE-S2-003 才需要的扩展，Sprint 1.5 范围只覆盖 Sprint 1 已有需求；Sprint 2 BE-S2-003 PR 把 `pgvector` 加进 Makefile target 即可。
+7. **不动 `test_ipo_ingest.py` 已有 fixture**：3 条 happy / fetch_error / empty 测试不强绑定 `cache_invalidated` 字段，只读 `received/inserted/errors`。本 PR 验证它们仍 PASS（实际跑了一遍）。后续 Sprint 2 真要测"ingest 完后 list_ipos 立刻拿新数据"再单独加 e2e 用例。
+8. **`make test-e2e` 与 `make test-all` 区分**：CI 用 `test-all`（单元 + 集成），本地快速反馈用 `test-unit`（不依赖 PG，~5s）；e2e 单独跑用 `test-e2e`（~3s）。`test` 默认 alias 到 `test-all` 让"我要全跑"的直觉一发命中。
+
+**Sprint 1.5 给 Sprint 2 留下的复用价值**
+
+- BE-S2-000 HK ingest → 直接复用 `invalidate_namespace`，HK 写完 ipos 表立刻让缓存回源
+- BE-S2-007 LangGraph 主循环依赖 `get_ipo_detail` 拉 RAG context → 缓存永远新鲜，不会出现"AI 给的发行价是 30 min 前的"
+- QA-S2-001 / QA-S2-002 评测 CI → `make test-db-init` + `make test-e2e` 两条命令搞定环境，CI yaml 不再需要散在 README 的多步操作
+- Sprint 3+ 文章流水线 / 评测集 ingest → `cache.invalidate_namespace` 可以直接 reuse，不需要每次重新发明轮子
+
+**手测脚本**
+
+```bash
+# 1. 测试库初始化（幂等）
+cd apps/api
+make test-db-init
+# → ==> 创建测试库 xgzh_test (如已存在则跳过)...
+# → ==> 安装 pgcrypto extension (gen_random_uuid() 需要)...
+# → ==> 测试库就绪: postgresql+asyncpg://xgzh:xgzh_dev_pass@localhost:5432/xgzh_test
+
+# 2. 跑全部测试 (CI 等价命令)
+make test-all
+# → ============================== 218 passed in 24.85s =============================
+
+# 3. 单跑 e2e
+make test-e2e
+# → 3 passed in 2.15s
+
+# 4. 验证缓存失效 hook 真生效（手测）
+uv run python -c "
+import asyncio
+from app.cache import invalidate_namespace, get_redis_client
+
+async def main():
+    c = get_redis_client()
+    # 假设之前 list_ipos 已被调过, 缓存里有 xgzh:cache:ipos:list:* 这种 keys
+    removed = await invalidate_namespace('ipos:list', 'ipos:detail')
+    print(f'removed {removed} keys')
+
+asyncio.run(main())
+"
+```
+
+**已知限制 / 不做**
+
+- HK ingest 真源接入：1d 估时超出 Sprint 1.5 的 ~3h 范围，已升级为 **BE-S2-000** 编号管理（spec/09 已加），与 BE-S2-001 并行起跑，BE-S2-004 前必须完成
+- pgvector extension 安装：留给 BE-S2-003 PR 统一处理，避免 Sprint 1.5 装了 Sprint 2 不用而徒增复杂度
+- `pyproject.toml` `[tool.ruff]` baseline 收紧：51 个 pre-existing ruff error（大多是 `N818` Exception 命名 / `F401` import 未用）由 Sprint 2 内 BE-S2-007 / BE-S2-009 各自顺手清，不在 Sprint 1.5 范围
+- `pyproject.toml` `[tool.mypy]` baseline 收紧：24 个 pre-existing mypy error（多在 redis-py / litellm 的 stub 不全），同上由 Sprint 2 各 PR 顺手处理
