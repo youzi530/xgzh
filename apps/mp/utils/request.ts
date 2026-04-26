@@ -1,9 +1,19 @@
 /**
- * 请求封装：统一 baseURL / 错误处理 / 超时
- * 不要在组件中直写 uni.request，一律走这里。
+ * 请求封装 (FE-001 + FE-002):
+ * - 统一 baseURL (H5 走相对路径让 vite proxy 接管, 其余端打绝对地址)
+ * - 自动注入 ``Authorization: Bearer <access_token>``
+ * - 401 ``token_expired`` 触发 silent refresh + 重试一次
+ * - 其它 401 (``token_invalid`` / ``token_revoked`` / ``user_disabled``) 直接清 session + 跳登录
+ * - silent refresh 并发去重在 ``stores/auth`` (多个请求同时 401 只 refresh 一次)
+ *
+ * 不要在组件中直写 ``uni.request``, 一律走这里。
  */
 
+import { readAccessTokenSync, useAuthStore } from '@/stores/auth'
+
 const DEFAULT_BASE_URL = 'http://localhost:8000'
+
+const LOGIN_PAGE_URL = '/pages/auth/login'
 
 export interface RequestOptions<TData = unknown> {
   url: string
@@ -11,6 +21,16 @@ export interface RequestOptions<TData = unknown> {
   data?: TData
   header?: Record<string, string>
   timeout?: number
+  /**
+   * ``true`` 跳过 Authorization 注入 + 401 silent refresh 重试.
+   * 用于:
+   * - 鉴权接口本身 (otp/send, login/phone, login/wechat-mp, refresh):
+   *   它们没必要带 access; refresh 接口若带 access 还会在 access 过期时 401 死循环
+   * - 完全公开接口 (例如 /healthz, /api/v1/ipos GET 匿名也能看)
+   */
+  skipAuth?: boolean
+  /** 内部用: 标记这是 silent refresh 后的重试请求, 避免无限重试 */
+  _isRetry?: boolean
 }
 
 export class APIError extends Error {
@@ -32,12 +52,44 @@ function getBaseURL(): string {
   // #endif
 }
 
-export async function request<TResp = unknown, TData = unknown>(
-  opts: RequestOptions<TData>,
-): Promise<TResp> {
-  const baseURL = getBaseURL()
-  const fullUrl = opts.url.startsWith('http') ? opts.url : `${baseURL}${opts.url}`
+/**
+ * 解析后端 ``HTTPException(detail={"code","message"})`` 的 ``detail.code``.
+ * 401 / 400 等错误码用这个判别业务分支; 与 ``api/auth.ts:parseAuthError`` 同源逻辑,
+ * 但这里只取 code 字符串。
+ */
+function detailCode(err: APIError): string | null {
+  const d = err.detail as { detail?: { code?: string } | string } | undefined
+  const inner = d?.detail
+  if (inner && typeof inner === 'object' && typeof inner.code === 'string') {
+    return inner.code
+  }
+  return null
+}
 
+let _redirectingToLogin = false
+
+function redirectToLogin(reason: string) {
+  // 防抖: 多个并发 401 同一时刻可能都触发跳转, 只跳一次
+  if (_redirectingToLogin) return
+  _redirectingToLogin = true
+  console.warn(`[auth] redirect to login: ${reason}`)
+  // 已经在登录页就不跳了 (防止登录页内部请求 401 死循环)
+  const pages = getCurrentPages()
+  const top = pages[pages.length - 1]
+  // route 在 H5 上可能是 'pages/auth/login', 小程序也是同样 path
+  if (top && (top as { route?: string }).route?.endsWith('auth/login')) {
+    _redirectingToLogin = false
+    return
+  }
+  uni.navigateTo({
+    url: LOGIN_PAGE_URL,
+    complete: () => {
+      _redirectingToLogin = false
+    },
+  })
+}
+
+function rawRequest<TResp>(opts: RequestOptions, fullUrl: string): Promise<TResp> {
   return new Promise<TResp>((resolve, reject) => {
     uni.request({
       url: fullUrl,
@@ -61,4 +113,60 @@ export async function request<TResp = unknown, TData = unknown>(
       },
     })
   })
+}
+
+export async function request<TResp = unknown, TData = unknown>(
+  opts: RequestOptions<TData>,
+): Promise<TResp> {
+  const baseURL = getBaseURL()
+  const fullUrl = opts.url.startsWith('http') ? opts.url : `${baseURL}${opts.url}`
+
+  // 直接走 storage 读 token, 不引 store: 避免 hydrate race & 循环依赖陷阱
+  const headers = { ...(opts.header ?? {}) }
+  if (!opts.skipAuth) {
+    const access = readAccessTokenSync()
+    if (access) {
+      headers['Authorization'] = `Bearer ${access}`
+    }
+  }
+
+  try {
+    return await rawRequest<TResp>({ ...opts, header: headers }, fullUrl)
+  } catch (e) {
+    if (!(e instanceof APIError) || e.statusCode !== 401) throw e
+
+    const code = detailCode(e)
+
+    // skipAuth 接口的 401 是业务错 (例如 login/phone 401 = otp_invalid),
+    // 不应触发 silent refresh / 跳登录, 直接抛给业务层处理
+    if (opts.skipAuth) throw e
+
+    // 已经重试过一次还 401, 说明 refresh 也救不了, 跳登录
+    if (opts._isRetry) {
+      const auth = useAuthStore()
+      auth.clearSession()
+      redirectToLogin(`401 after silent refresh, code=${code}`)
+      throw e
+    }
+
+    // token_expired 是预期路径 → silent refresh 后重试原请求
+    if (code === 'token_expired') {
+      const auth = useAuthStore()
+      try {
+        await auth.refresh()
+      } catch (refreshErr) {
+        auth.clearSession()
+        redirectToLogin(`refresh failed: ${(refreshErr as Error).message}`)
+        throw e
+      }
+      return request<TResp, TData>({ ...opts, _isRetry: true })
+    }
+
+    // token_invalid / token_revoked / user_not_found / user_disabled / token_missing
+    // 这些 refresh 也救不回来, 直接登出
+    const auth = useAuthStore()
+    auth.clearSession()
+    redirectToLogin(`401 unrecoverable, code=${code ?? 'unknown'}`)
+    throw e
+  }
 }

@@ -1,22 +1,23 @@
 <script setup lang="ts">
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
+import { storeToRefs } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { fetchIPOList, type IPOItem, type Market } from '@/api/ipo'
-import { getStoredUser, isLoggedIn } from '@/utils/auth-storage'
 import type { UserPublic } from '@/api/auth'
+import { fetchIPOList, type IPOItem, type Market } from '@/api/ipo'
+import { useAuthStore } from '@/stores/auth'
 
 const list = ref<IPOItem[]>([])
 const loading = ref(false)
 const error = ref<string>('')
 const market = ref<Market>('HK')
 
-const currentUser = ref<UserPublic | null>(null)
-const loggedIn = computed(() => currentUser.value !== null)
+// FE-002: 走 store 响应式订阅, 不再 onShow 手动 refresh; 用户在登录页 setSession
+// 后回首页, hero 会自动从"登录/注册"切到头像态
+const authStore = useAuthStore()
+const { user, loggedIn } = storeToRefs(authStore)
 
-function refreshAuthState() {
-  currentUser.value = isLoggedIn() ? getStoredUser() : null
-}
+const currentUser = computed<UserPublic | null>(() => user.value)
 
 function nicknameInitial(u: UserPublic): string {
   if (u.nickname && u.nickname.length > 0) return u.nickname.slice(0, 1)
@@ -28,7 +29,7 @@ function gotoLogin() {
 }
 
 function gotoProfile() {
-  // FE-003 个人中心还没建; 先 toast 占位, 不阻塞 FE-001 流程
+  // FE-003 个人中心还没建; 先 toast 占位, 不阻塞 FE-002 流程
   uni.showToast({ title: '个人中心建设中 (FE-003)', icon: 'none' })
 }
 
@@ -65,7 +66,6 @@ function fmtPrice(item: IPOItem) {
 }
 
 onShow(() => {
-  refreshAuthState()
   if (list.value.length === 0) load()
 })
 onPullDownRefresh(() => load())

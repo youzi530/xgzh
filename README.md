@@ -30,7 +30,13 @@
     - `apps/mp/utils/auth-storage.ts` 拆 5 个 storage key（access/refresh/user/两个过期时间戳），含 60s 安全边际的 `isAccessTokenFresh` 给 FE-002 silent refresh 接力
     - 错误码差异化 UX：`otp_invalid` 清验证码、`otp_expired` 重置倒计时、`wechat_mp_disabled` 自动切手机号 Tab
     - 首页 hero 加"登录 / 注册"胶囊（已登录显示昵称首字头像，点击占位提示 FE-003）
-  - 进行中：FE-002 (Auth Pinia store + uni.request 拦截器，P0)
+  - ✅ **FE-002**：Auth Pinia store + uni.request 拦截器
+    - `apps/mp/stores/auth.ts`：响应式 store，hydrate from storage；`setSession` / `setTokens` / `clearSession` / `refresh` / `logout` 5 个 action；`accessToken` / `refreshToken` / `user` / `loggedIn` / `isAccessFresh` / `isRefreshFresh` 响应式 getter
+    - **silent refresh 并发去重**：单 inflight Promise，多个请求同时 401 仅触发一次 refresh，避免 BE-004 rotation 拉黑刚发的 refresh_token 把用户踢下线
+    - `apps/mp/utils/request.ts`：自动注入 `Authorization: Bearer`；401 `token_expired` → silent refresh + 重试一次（`_isRetry` 标志防无限重试）；其它 401（`token_invalid` / `revoked` / `user_disabled`）→ `clearSession` + 跳登录；`skipAuth` 给鉴权接口豁免
+    - 跳登录用 `navigateTo` 保留页面栈；`_redirectingToLogin` 防抖 + `getCurrentPages()` 豁免登录页本身，杜绝并发 401 / 死循环
+    - `apps/mp/api/auth.ts` 补 `refreshToken` (BE-004) + `logout` (BE-004)；`sendOtp` / `loginPhone` / `loginWechatMp` / `refreshToken` 全部 `skipAuth: true`
+    - 首页改用 `storeToRefs(authStore)` 响应式订阅，删 `onShow` 手动 refresh；登录页改用 `auth.setSession(resp)`
 - **后端测试**：
   - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 119 skipped
   - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ 208 passed

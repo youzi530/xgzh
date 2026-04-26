@@ -1,9 +1,11 @@
 /**
- * 鉴权 API 客户端 (FE-001).
+ * 鉴权 API 客户端 (FE-001 + FE-002).
  *
  * 对齐后端契约 (apps/api/app/schemas/auth.py):
  * - BE-001: POST /api/v1/auth/otp/send       手机号 OTP 发送 (60s 节流)
  * - BE-002: POST /api/v1/auth/login/phone    OTP 校验 + 注册/登录 + JWT
+ * - BE-004: POST /api/v1/auth/refresh        refresh rotation, 旧 refresh 拉黑
+ * - BE-004: POST /api/v1/auth/logout         拉黑 access (+ 可选 refresh)
  * - BE-005: POST /api/v1/auth/login/wechat-mp 微信小程序 code 登录
  *
  * 字段名 / 错误码完全对齐后端, 不在前端做"语义翻译", 减少双向维护成本。
@@ -68,6 +70,7 @@ export function sendOtp(req: OtpSendRequest) {
     url: '/api/v1/auth/otp/send',
     method: 'POST',
     data: req,
+    skipAuth: true,
   })
 }
 
@@ -85,6 +88,7 @@ export function loginPhone(req: PhoneLoginRequest) {
     url: '/api/v1/auth/login/phone',
     method: 'POST',
     data: req,
+    skipAuth: true,
   })
 }
 
@@ -101,6 +105,57 @@ export function loginPhone(req: PhoneLoginRequest) {
 export function loginWechatMp(req: WechatMpLoginRequest) {
   return request<LoginResponse>({
     url: '/api/v1/auth/login/wechat-mp',
+    method: 'POST',
+    data: req,
+    skipAuth: true,
+  })
+}
+
+export interface RefreshRequest {
+  refresh_token: string
+}
+
+/**
+ * Refresh token rotation (BE-004): 旧 refresh 拉黑, 颁发新 access+refresh.
+ *
+ * 注意:
+ * - 必须 ``skipAuth: true`` (refresh 接口本身不带 access, 否则一旦 access 也过期会 401 死循环)
+ * - 返回 ``TokenPair`` 而非 ``LoginResponse``: 不带 ``user``, store 应保留旧 user
+ *
+ * 错误码:
+ * - 401 ``token_invalid`` / ``token_revoked`` / ``token_expired``: refresh 不合法或已过期
+ *   → 必须重登录, 不能再次 refresh
+ * - 429 ``token_refresh_rate_limited``: 同一 refresh_token 5/min 限流
+ */
+export function refreshToken(req: RefreshRequest) {
+  return request<TokenPair>({
+    url: '/api/v1/auth/refresh',
+    method: 'POST',
+    data: req,
+    skipAuth: true,
+  })
+}
+
+export interface LogoutRequest {
+  refresh_token?: string
+}
+
+export interface LogoutResponse {
+  logged_out: boolean
+  revoked_access: boolean
+  revoked_refresh: boolean
+}
+
+/**
+ * 登出 (BE-004): 拉黑当前 access (从 Authorization), 可选拉黑 refresh.
+ *
+ * 强烈建议带 ``refresh_token``, 否则 refresh 仍可用直至自然过期, 是 fallback 不是默认行为.
+ * 网络失败也认为登出成功 (前端 clearSession 即可); 服务端 Redis 短暂不可用最多让用户
+ * 多保留一个 jti 30min, 不是安全灾难.
+ */
+export function logout(req: LogoutRequest = {}) {
+  return request<LogoutResponse>({
+    url: '/api/v1/auth/logout',
     method: 'POST',
     data: req,
   })

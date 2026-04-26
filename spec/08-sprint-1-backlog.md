@@ -25,11 +25,11 @@
 | BE-006 ✅ | backend | 邀请码生成 + 绑定（注册时落入 referrer） | 0.5d | BE-002 | P0 |
 | BE-007 ✅ | backend | IPO 表持久化 + AKShare 调度入库 | 1d | INFRA-001 | P0 |
 | BE-008 ✅ | backend | `GET /ipos` 切回数据库 + 筛选 + Redis 缓存 | 0.5d | BE-007, INFRA-002 | P0 |
-| BE-009 | backend | `GET /ipos/{code}` 字段聚合（HKEX/AKShare 多源 merge） | 0.5d | BE-008 | P0 |
-| BE-010 | backend | 用户自选股表 + add/remove API | 0.5d | BE-003, BE-008 | P0 |
-| BE-011 | backend | 推送 token 注册 + 设备表 | 0.5d | BE-003 | P1 |
-| FE-001 | frontend | 登录页（手机号 OTP） + 微信小程序一键登录 | 1d | BE-002, BE-005 | P0 |
-| FE-002 | frontend | Auth Pinia store + uni.request 拦截器 | 0.5d | FE-001 | P0 |
+| BE-009 ✅ | backend | `GET /ipos/{code}` 字段聚合（HKEX/AKShare 多源 merge） | 0.5d | BE-008 | P0 |
+| BE-010 ✅ | backend | 用户自选股表 + add/remove API | 0.5d | BE-003, BE-008 | P0 |
+| BE-011 ✅ | backend | 推送 token 注册 + 设备表 | 0.5d | BE-003 | P1 |
+| FE-001 ✅ | frontend | 登录页（手机号 OTP） + 微信小程序一键登录 | 1d | BE-002, BE-005 | P0 |
+| FE-002 ✅ | frontend | Auth Pinia store + uni.request 拦截器 | 0.5d | FE-001 | P0 |
 | FE-003 | frontend | 个人中心 + 设置 + VIP 入口（无支付） | 1d | FE-002 | P0 |
 | FE-004 | frontend | 首页瀑布流 + 今日打新卡片 + 打新日历 | 1.5d | BE-008 | P0 |
 | FE-005 | frontend | 新股详情页（关注按钮 + 招股要点） | 1d | BE-009, BE-010 | P0 |
@@ -963,16 +963,89 @@ pnpm dev:h5  # 或者 pnpm dev:mp-weixin
 
 ---
 
-### FE-002 · Auth Pinia store + 拦截器
+### FE-002 · Auth Pinia store + 拦截器 ✅ DONE
 
-**改动文件**
-- `apps/mp/stores/auth.ts`
-- `apps/mp/utils/request.ts`（加 Authorization 自动注入 + 401 自动跳登录）
+**目标**：把 FE-001 的 storage helper 升级成响应式 Pinia store + 全局请求拦截器，让业务页面只调四个动词（`setSession` / `clearSession` / `refresh` / `logout`），其余靠 store + 拦截器自动协作。
+
+**改动文件**（已实装）
+- `apps/mp/stores/auth.ts`：Pinia store；hydrate from storage；并发去重的 silent refresh；`setSession` / `setTokens` / `clearSession` / `refresh` / `logout` 五个 action；`accessToken` / `refreshToken` / `user` / `loggedIn` / `isAccessFresh` / `isRefreshFresh` 响应式状态
+- `apps/mp/utils/request.ts`：自动注入 `Authorization: Bearer`；401 `token_expired` → silent refresh + 重试一次；其它 401 → `clearSession` + 跳登录；`skipAuth` 选项给鉴权接口本身用；防抖跳登录避免并发触发多次
+- `apps/mp/api/auth.ts`：补 `refreshToken` (BE-004) + `logout` (BE-004) + 类型；`sendOtp` / `loginPhone` / `loginWechatMp` / `refreshToken` 全部 `skipAuth: true`
+- `apps/mp/utils/auth-storage.ts`：补 `saveTokens(TokenPair)`，给 refresh rotation 落 storage 用
+- `apps/mp/pages/auth/login.vue`：`saveAuth(resp)` 改为 `auth.setSession(resp)`
+- `apps/mp/pages/index/index.vue`：`getStoredUser` + `isLoggedIn` 手动调 → `storeToRefs(authStore)` 响应式订阅，删 `onShow` 里的 `refreshAuthState`
 
 **AC**
-- [ ] `useAuthStore()` 暴露 `user`, `accessToken`, `login()`, `logout()`, `refresh()`
-- [ ] uni.storage 持久化 token
-- [ ] 401 时尝试一次 refresh，失败再跳登录页
+- [x] `useAuthStore()` 暴露 `user`, `accessToken`, `loggedIn`, `setSession()`, `logout()`, `refresh()`, `clearSession()`
+- [x] `uni.storage` 持久化 token（双写：store state + storage）
+- [x] 401 时拦截器尝试一次 silent refresh，失败再跳登录页
+- [x] 多个并发请求同时 401 仅触发一次 refresh（store 单 inflight Promise）
+- [x] 防止从登录页内部发出的 401 触发跳转死循环
+- [x] 鉴权接口 (`sendOtp` / `loginPhone` / `loginWechatMp` / `refreshToken`) `skipAuth: true`，不带 access 也不被拦截器误重定向
+
+**关键设计决策**
+1. **silent refresh 并发去重在 store 而非拦截器**：
+   - 同时 5 个请求 401，store 维护一个 `inflightRefresh` Promise，所有请求 await 同一个 Promise，避免并发 refresh 拉黑 5 次同一个 refresh_token（BE-004 rotation 是一次性的，第 2 次以后会拿到 `token_revoked`，把刚刚成功登录的用户踢下线）
+   - 拦截器只负责"什么时候调 refresh / 什么时候放弃跳登录"，并发去重职责单一在 store
+2. **storage 是 source of truth, store 是 hot path**：
+   - `setSession` / `clearSession` / `setTokens` 都"双写"回 storage，关闭 APP 后再开仍登录
+   - 拦截器不引 store 读 token，直接 `readAccessTokenSync()` 读 storage：避免 hydrate race + 模块循环依赖（`request → store → api/auth → request`）
+   - store 做 silent refresh 时才需要 `useAuthStore()`，那时 Pinia 已挂载
+3. **`token_expired` 是预期路径，其它 401 是登出路径**：
+   - `token_expired` → silent refresh + 重试一次（`_isRetry=true` 标志防无限重试）
+   - `token_invalid` / `token_revoked` / `token_missing` / `user_not_found` / `user_disabled` → refresh 也救不回来，直接 `clearSession` + 跳登录
+   - 后端 BE-003 deps 已经把这 5 种 reason 区分清楚了，前端拦截器一一对应即可
+4. **`skipAuth` 是关键开关**：
+   - 鉴权接口本身（`/auth/otp/send`、`/auth/login/*`、`/auth/refresh`）必须 `skipAuth: true`，否则 refresh 接口在 access 也过期时会触发自己的 silent refresh → 死循环
+   - 完全公开接口（`/healthz` 等）也 `skipAuth: true`，匿名访问不带过期 token 给后端添乱
+   - `skipAuth: true` 接口的 401 是业务错（如 `otp_invalid`），不触发跳登录，直接抛给业务层
+5. **跳登录用 `navigateTo` 而非 `reLaunch`**：保留页面栈，让用户登完按返回能回到原页面（如详情页 → 触发 401 → 登录 → 返回详情页）。代价是栈可能加深，但小程序栈上限 10 层，业务正常使用够用
+6. **跳登录防抖 + 登录页豁免**：
+   - `_redirectingToLogin` flag 防止多个并发 401 都触发 navigateTo（避免栈被一连串登录页填满）
+   - 通过 `getCurrentPages()` 判断当前已经在登录页就不跳了，防止登录页内部的 401 死循环（理论上 skipAuth 已经避免了，但双保险）
+7. **`logout` 后端失败也 `clearSession`**：
+   - 用户视角已经"登出"了，不能因 Redis 短暂故障阻塞；最坏 case jti 多保留 30min 直至自然过期，不是安全灾难
+   - try/finally 模式：API 调用包在 try 里，finally 强制 `clearSession`
+8. **不引入 `pinia-plugin-persistedstate`**：
+   - 该插件 hydrate 时机依赖 Vue mount 周期，可能晚于业务请求；自管 storage hydrate 在 store setup 同步执行，更早可靠
+   - 也省一个依赖 + 一个潜在版本兼容问题
+
+**典型时序图**
+
+```
+请求 → readAccessTokenSync() 读 storage → 注入 Authorization → 后端
+                                              ↓ 401 token_expired
+                                  store.refresh() (并发去重)
+                                              ↓ 成功
+                                  setTokens (state + storage)
+                                              ↓
+                                  重试原请求 (_isRetry=true)
+                                              ↓ 200
+                                  resolve 业务
+
+                                              ↓ 401 其它
+                                  clearSession + navigateTo /pages/auth/login
+                                              ↓
+                                  reject APIError
+```
+
+**验收方法**
+
+```bash
+# 前端 (HBuilderX 或修复 deps 后 pnpm dev:h5):
+# 1. 登录后 30min (access TTL) 内: 任何业务请求都正常返回, 不发 refresh
+# 2. 把后端 .env 的 JWT_ACCESS_TTL_MIN 改成 1, 重启 → 1 分钟后任何请求会
+#    自动 silent refresh 然后重试; F12 Network 看到 /auth/refresh 200 接着原请求 200
+# 3. 把 storage 里 access_token 手动改成乱码 → 下个请求 401 token_invalid
+#    → 自动跳登录页 (clearSession 已生效, 首页 hero 又显示"登录/注册")
+# 4. 同时点 5 个会发请求的按钮 → /auth/refresh 仅请求 1 次, 不会出现 token_revoked
+```
+
+**遗留 / 后续**
+- FE-003 个人中心：调 `auth.logout()` 然后 `uni.reLaunch('/pages/index/index')`
+- FE-004/005/006 业务页面：所有需要登录的 API 都自然走拦截器, 401 自动处理, 不需要每个页面 try/catch
+- 单测目前用 IDE 类型检查 + 手测兜底；引入 vitest 后建议至少加 store.refresh 并发去重 + token_expired 重试两条
+- `auth-storage.ts` 现在和 store 双写, 是冗余设计但成本可接受 (5 个 setStorageSync per setSession). 如果未来 storage IO 成为热点, 可改为 store 单写, 拦截器读 store; 当前保留 storage 直读避免 hydrate race
 
 ---
 

@@ -33,13 +33,20 @@ export interface StoredAuth {
 }
 
 export function saveAuth(resp: LoginResponse): void {
+  saveTokens(resp.tokens)
+  uni.setStorageSync(KEY_USER, resp.user)
+}
+
+/**
+ * 仅写 token + 过期时间, 保留 user (refresh rotation 用).
+ * BE-004 ``/auth/refresh`` 返回 ``TokenPair`` 不带 user, 用这个 helper 落 storage。
+ */
+export function saveTokens(t: TokenPair): void {
   const now = Date.now()
-  const t = resp.tokens
   uni.setStorageSync(KEY_ACCESS, t.access_token)
   uni.setStorageSync(KEY_REFRESH, t.refresh_token)
   uni.setStorageSync(KEY_ACCESS_EXP, now + t.expires_in * 1000)
   uni.setStorageSync(KEY_REFRESH_EXP, now + t.refresh_expires_in * 1000)
-  uni.setStorageSync(KEY_USER, resp.user)
 }
 
 export function clearAuth(): void {

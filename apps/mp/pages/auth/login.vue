@@ -26,7 +26,9 @@ import {
   parseAuthError,
   sendOtp,
 } from '@/api/auth'
-import { saveAuth } from '@/utils/auth-storage'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
 
 type Tab = 'phone' | 'wechat'
 
@@ -144,7 +146,7 @@ async function handlePhoneLogin() {
       phone: form.phone.trim(),
       code: form.code.trim(),
     })
-    saveAuth(resp)
+    auth.setSession(resp)
     uni.showToast({
       title: resp.is_new_user ? '欢迎加入新股智汇' : '登录成功',
       icon: 'success',
@@ -193,7 +195,7 @@ async function handleWechatLogin() {
       throw new Error('微信授权失败: 未获取到 code')
     }
     const resp = await loginWechatMp({ code: loginRes.code })
-    saveAuth(resp)
+    auth.setSession(resp)
     uni.showToast({
       title: resp.is_new_user ? '欢迎加入新股智汇' : '登录成功',
       icon: 'success',

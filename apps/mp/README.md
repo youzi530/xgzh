@@ -12,6 +12,12 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
   - 60s 倒计时（前端镜像 + 后端 429 兜底）
   - 协议勾选 + 合规 footer（《用户协议》《隐私政策》《免责声明》）
   - 错误码差异化 UX：`otp_invalid` 清验证码 / `otp_expired` 重置倒计时 / `wechat_mp_disabled` 自动切回手机号 Tab
+- **鉴权 store + 拦截器（FE-002）**：响应式登录态 + 全局 silent refresh
+  - `useAuthStore()` 暴露 `user` / `accessToken` / `loggedIn` / `setSession` / `refresh` / `logout` / `clearSession`
+  - 401 `token_expired` → silent refresh + 自动重试一次
+  - 401 其它原因（`token_invalid` / `revoked` / `user_disabled` / 等）→ `clearSession` + 跳登录
+  - 多个并发请求同时 401 仅触发一次 refresh（store 单 inflight Promise 去重）
+  - 鉴权接口本身（`sendOtp` / `loginPhone` / `loginWechatMp` / `refreshToken`）统一 `skipAuth: true`
 
 ## 启动
 
@@ -46,19 +52,21 @@ pnpm dev:h5
 ```
 apps/mp/
 ├── pages/
-│   ├── index/index.vue       # 首页（IPO 列表 + 登录入口）
-│   ├── auth/login.vue        # 登录页（手机 OTP + 微信一键，FE-001）
+│   ├── index/index.vue       # 首页（IPO 列表 + 登录入口；storeToRefs 响应式订阅登录态）
+│   ├── auth/login.vue        # 登录页（手机 OTP + 微信一键，FE-001；调 store.setSession）
 │   └── ipo/
 │       ├── detail.vue        # 详情页
 │       └── agent.vue         # AI 诊断页
 ├── api/
 │   ├── ipo.ts                # IPO 接口封装
 │   ├── agent.ts              # Agent 流式接口
-│   └── auth.ts               # 鉴权接口 (OTP / 手机登录 / 微信登录) + parseAuthError
+│   └── auth.ts               # OTP / 手机登录 / 微信登录 / refresh / logout + parseAuthError
+├── stores/
+│   └── auth.ts               # FE-002 Pinia 鉴权 store（hydrate from storage + silent refresh 并发去重）
 ├── utils/
-│   ├── request.ts            # uni.request 封装
+│   ├── request.ts            # uni.request 封装 + Authorization 注入 + 401 silent refresh + 跳登录
 │   ├── sse.ts                # 跨端 SSE 流式接收
-│   └── auth-storage.ts       # access/refresh/user storage helper (FE-002 升级到 Pinia)
+│   └── auth-storage.ts       # access/refresh/user storage helper（store 调用它做持久化）
 ├── App.vue / main.ts / pages.json / manifest.json
 └── tsconfig.json / vite.config.ts
 ```
