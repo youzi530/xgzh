@@ -112,6 +112,12 @@ DOR 待办：**微信支付商户号申请**（appid / mch_id / api v3 key 入 .
 
 QA-S2-003（FE 单测白条）留作 Sprint 2.5 或 Sprint 3 P1 补回。
 
+## 🛠 运维 / 部署手册
+
+> **本地三端跑通 + 三平台部署方案（免费版 + 付费版）**：[`docs/RUNBOOK.md`](./docs/RUNBOOK.md)
+>
+> 涵盖 H5 / 微信小程序 / Android 真机 / iOS 模拟器 1 小时跑通流程、已知坑速查表（`pnpm install` yank / 真机 localhost / 小程序登录 503 等）、Oracle Free Tier 免费版部署、阿里云 / 腾讯云付费版 ICP 备案 + 微信支付商户号 + iOS / Android 上架完整路径，年成本估算 ¥30-60K 分档。
+
 ## 📖 设计文档
 
 完整产品 / 技术 / 商业 / 合规设计在 [`spec/`](./spec/) 下：
@@ -150,6 +156,8 @@ xgzh/
 ```
 
 ## 🚀 快速开始（First Slice）
+
+> **想跑全 4 端（H5 / 小程序 / Android / iOS）+ 看部署方案？** → 直接去 [`docs/RUNBOOK.md`](./docs/RUNBOOK.md)，本节只覆盖最小可用 First Slice。
 
 第一刀 = 端到端跑通：UniApp 列表页 → FastAPI → AKShare + DeepSeek → SSE 流式输出。
 
