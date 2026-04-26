@@ -68,6 +68,22 @@
   - 无 DB：`cd apps/api && uv run pytest -q` ⇒ 89 passed / 122 skipped
   - 有 DB：`XGZH_TEST_DATABASE_URL=... uv run pytest -q` ⇒ **211 passed in ~25s**（含 3 条 QA-001 e2e 主路径）
 
+### 🚀 Sprint 2 已开启 — AI Agent + RAG（核心壁垒）
+
+15 PR / ~13d 排期，详见 [`spec/09-sprint-2-backlog.md`](./spec/09-sprint-2-backlog.md)。主战场：
+
+- **LLM facade**：LiteLLM 升级，chat / embedding / rerank 三入口，多 provider 切换
+- **会话记账**：4 张表（chat_sessions / chat_messages / chat_tool_calls / chat_token_usage）+ token / cost 全量记账
+- **RAG 流水线**：pgvector + bge-m3 Embedding + 招股书 PDF 解析 + 切分 + 入库
+- **混合检索**：向量 + BM25 + RRF 融合 + bge-reranker 重排（top5）
+- **Tool Use**：5 个工具（基本面 / 财务 / 同业 / 情感 / 历史）+ JSON schema + 沙盒
+- **LangGraph 主循环**：ReAct 状态机 max 5 步 + 引用源装配 + 端层兜底 disclaimer
+- **配额管理**：免费 5 次/天 / VIP 无限 / 滑动窗口 + 友好提示
+- **评测集**：80 条标注 query + 离线评测脚手架（召回@5 / 幻觉率 / LLM-as-judge）
+- **前端**：对话页 + 打字机渲染（MP-WEIXIN onChunkReceived 兼容）+ 引用源面板 + 配额引导
+
+起跳推荐 → **BE-S2-001（4 张会话表）**：纯 schema 题、底座价值、零业务复杂度。
+
 ## 📖 设计文档
 
 完整产品 / 技术 / 商业 / 合规设计在 [`spec/`](./spec/) 下：
