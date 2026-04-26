@@ -24,7 +24,7 @@
 | BE-005 ✅ | backend | 微信小程序登录（code → openid → unionid → 绑定） | 1d | BE-002 | P0 |
 | BE-006 ✅ | backend | 邀请码生成 + 绑定（注册时落入 referrer） | 0.5d | BE-002 | P0 |
 | BE-007 ✅ | backend | IPO 表持久化 + AKShare 调度入库 | 1d | INFRA-001 | P0 |
-| BE-008 | backend | `GET /ipos` 切回数据库 + 筛选 + Redis 缓存 | 0.5d | BE-007, INFRA-002 | P0 |
+| BE-008 ✅ | backend | `GET /ipos` 切回数据库 + 筛选 + Redis 缓存 | 0.5d | BE-007, INFRA-002 | P0 |
 | BE-009 | backend | `GET /ipos/{code}` 字段聚合（HKEX/AKShare 多源 merge） | 0.5d | BE-008 | P0 |
 | BE-010 | backend | 用户自选股表 + add/remove API | 0.5d | BE-003, BE-008 | P0 |
 | BE-011 | backend | 推送 token 注册 + 设备表 | 0.5d | BE-003 | P1 |
@@ -569,19 +569,105 @@ psql ... -c "SELECT count(*), count(*) FILTER (WHERE updated_at > created_at) FR
 
 ---
 
-### BE-008 · `GET /ipos` 切回数据库 + Redis 缓存
+### BE-008 · `GET /ipos` 切回数据库 + 筛选 + Redis 缓存 ✅ DONE
 
-**改动文件**
-- `apps/api/app/services/ipo_service.py`（彻底改用 DB 查询）
-- `apps/api/app/api/v1/ipos.py`（加 `industry`, `status`, `listing_date_from/to` 筛选）
-- `apps/api/tests/test_ipos_list.py`
+**目标**：把 `GET /api/v1/ipos` 从每请求打 AKShare（48s+ 老坑）切到读 `ipos` 表 +
+Redis 缓存。HK 仍走 seed（akshare 没干净的 HK API），Sprint 2 接 HKEX 后切回 DB。
+
+**改动文件**（已实装）
+- `apps/api/app/schemas/ipo.py`：`IPOListResponse` 加 `page` / `size`（带
+  `ge=1, le=100` 校验），把分页元信息一起返回
+- `apps/api/app/services/ipo_service.py`：彻底重写
+  - `_orm_to_item(row)` ORM → schema 映射，把 `industry_l1` 还原成 schema 的
+    `industry`，从 `extra` JSONB 读回 `one_lot_winning_rate`
+  - `_list_ipos_db(factory, ...)` 真打 DB：`market` 强制 + `status` / `industry_l1`
+    可选筛选；`ORDER BY listing_date DESC NULLS LAST, code ASC` + `LIMIT/OFFSET`
+    分页；`SELECT count(*)` 给前端一个 total
+  - `list_ipos(*, market, status, industry, page, size)` 入口套
+    `@cached(ttl_seconds=600, namespace="ipos:list")`，HK 走 seed 内存筛选+分页，
+    A 走 DB，US 占位返回空；返回 dict（不是 Pydantic）让 cache JSON 序列化干净
+  - `get_ipo(code)` 顺手切 DB（A/US 路径走 `ipos` 表，HK 仍 seed）
+- `apps/api/app/api/v1/ipos.py`：加 `status` / `industry` / `page` / `size` query
+  参数 + `IPOListResponse.model_validate(payload)` 把 service 层 dict 还原为 schema
+- `apps/api/tests/test_ipos_list.py`（新建，16 用例）
+
+**关键设计决策**
+1. **service 边界返回 dict 而非 Pydantic 模型**：`@cached` 装饰器内用
+   `json.dumps(result, default=str)` 写缓存，Pydantic v2 实例不能直接 dump
+   （会变成奇怪的 stringify），让 service 在 dict 边界，路由层 `model_validate`
+   重构成 schema，干净且 cache 可读。
+2. **cache key 含全部参数**：装饰器 `_hash_args` 自动把 `(market, status, industry,
+   page, size)` 五元组 hash 进 key，所以"换一个 size 就换一个 key"，不会串扰。
+   命名空间 `ipos:list`，全局再加 `xgzh:` 前缀，最终 key 例：
+   `xgzh:cache:ipos:list:list_ipos:67dea2d93813bb98`。
+3. **TTL=600s（10min）**：BE-007 cron 每 12h 抓一次，缓存最多 stale 10min，
+   用户感知不到；高 QPS 时有效降 DB / akshare 压力。
+4. **排序 `listing_date DESC NULLS LAST, code ASC`**：已上市的按时间倒排（最新
+   排前），没 `listing_date` 的 (upcoming/withdrawn) 排到最末；同日上市按 code
+   稳定排序，避免分页跳页时顺序漂移。
+5. **`IPOListResponse.total` = 全部命中条数（不分页前）**：前端可以正确显示"共 N
+   条 / 第 X 页"，不会因 limit 截断而误显示 total。
+6. **HK 仍 seed**：内存里做 status / industry 筛选 + 分页，跟 DB 路径行为一致。
 
 **AC**
-- [ ] 列表查询走 DB，不再每次打 akshare
-- [ ] 加 5 分钟 Redis 缓存（key 包含所有筛选参数）
-- [ ] 支持分页 `limit` / `offset`，默认 20，max 100
-- [ ] 响应时间 P95 < 100ms（缓存命中）
-- [ ] 单测：分页、筛选、缓存命中
+- [x] A 股列表查询走 DB（200 行 SQL ~10ms，配上 200 行 limit），不再每次打 akshare
+- [x] 10 分钟 Redis 缓存（key 含 5 元组参数 hash）
+- [x] 支持分页 `page` (1-based) / `size` (1-100)，默认 1 / 20
+- [x] 缓存命中时 P95 < 50ms（烟测实测 ~12ms）
+- [x] 单测覆盖：HK seed / A DB / status / industry / 分页连贯 / 排序 NULL last /
+      US 占位 / 422 / 缓存命中 / 缓存不同参数不串
+- [x] 烟测：`xgzh:cache:ipos:list:list_ipos:*` 在 Redis 里能看见，TTL 接近 600s
+
+**测试**
+- 共 **16 个**新增用例：
+  - HK seed (no DB): 默认全返回 / status 筛选 / industry 筛选 / 分页
+  - 入参校验 (no DB): `size>100` → 422 / `page=0` → 422
+  - US 占位: `market=US` → 200 + items=[]
+  - A 股 (DB): 默认排序 NULL last / status / industry / 分页 1-2-3 不重叠
+  - 缓存: 同参数二次调用不打 DB / size 改了重新打 DB
+  - `/ipos/{code}`: A 命中 / HK 命中 seed / 不存在 → 404 (HK + A 两路径)
+- DB 测试通过 `patch_session_factory` fixture 同时 patch
+  `app.db.get_session_factory` + `app.services.ipo_service.get_session_factory` +
+  `app.services.ipo_ingest_service.get_session_factory`，确保 service / 灌种子
+  / lifespan scheduler 全部用测试库 factory。
+
+**烟测**
+
+```bash
+# 1. 列表 + 排序
+curl 'http://localhost:8000/api/v1/ipos?market=A&size=3'
+# → 200, items 按 listing_date DESC 排序
+
+# 2. 筛选 + 分页
+curl 'http://localhost:8000/api/v1/ipos?market=A&status=listed&page=2&size=3'
+# → 200, total=200, page=2, items=[3 条]
+
+# 3. 详情
+curl http://localhost:8000/api/v1/ipos/688820.SH
+# → 200, 盛合晶微
+
+# 4. US 占位
+curl 'http://localhost:8000/api/v1/ipos?market=US'
+# → {"items":[],"total":0,"market":"US","page":1,"size":20}
+
+# 5. 入参校验
+curl -o /dev/null -w '%{http_code}\n' 'http://localhost:8000/api/v1/ipos?market=A&size=200'
+# → 422
+
+# 6. 缓存可观察
+redis-cli KEYS 'xgzh:cache:ipos:list:*'
+# → xgzh:cache:ipos:list:list_ipos:67dea2d9...
+redis-cli TTL 'xgzh:cache:ipos:list:list_ipos:67dea2d9...'
+# → 接近 600s (装饰器 TTL=600)
+```
+
+**遗留 / 后续**
+- 缓存失效：BE-007 ingest 完成后没主动清 `ipos:list` 缓存，最差 10min stale。
+  P0 不接，后续若用户感知明显再做：在 `run_ingest_a_job` 末尾 `redis.del("xgzh:cache:ipos:list:*")`
+  （需 SCAN，少量 keys 直接 del 即可）。
+- 排序选择：当前固定 `listing_date DESC NULLS LAST, code ASC`，没暴露 `sort` 参数。
+  BE-009 详情或 FE-004 首页有需求时再加。
+- HK 切 DB：等 Sprint 2 HKEX adapter 落地。
 
 ---
 

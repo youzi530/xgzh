@@ -44,5 +44,7 @@ class IPOItem(BaseModel):
 
 class IPOListResponse(BaseModel):
     items: list[IPOItem]
-    total: int
+    total: int = Field(description="当前 query 命中的总条数 (不分页前)")
     market: Market
+    page: int = Field(default=1, ge=1, description="当前页, 1-based")
+    size: int = Field(default=20, ge=1, le=100, description="每页条数")

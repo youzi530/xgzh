@@ -2,14 +2,14 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007/008）
 
 API:
 
 - `GET /healthz` 健康检查
-- `GET /api/v1/ipos?market=HK` 港股近期新股列表（akshare 暂用 seed，HKEX/Futu 接入排在 Sprint 2）
-- `GET /api/v1/ipos?market=A` A 股近期新股列表（AKShare `stock_new_ipo_cninfo`）
-- `GET /api/v1/ipos/{code}` 新股详情
+- `GET /api/v1/ipos?market=A&status=listed&industry=信息技术&page=1&size=20` A 股新股列表（走 `ipos` 表，BE-007 调度入库；`status` / `industry_l1` 精确筛选；分页 size 1-100；`listing_date DESC NULLS LAST` 排序；Redis 缓存 10min，BE-008）
+- `GET /api/v1/ipos?market=HK` 港股新股列表（akshare 暂用 seed，HKEX/Futu 接入排 Sprint 2；同 schema 支持 status/industry/page/size）
+- `GET /api/v1/ipos/{code}` 新股详情（A/US 走 DB；HK 走 seed）
 - `POST /api/v1/agent/diagnose` AI 一键诊断（DeepSeek-V3 SSE 流式）
 - `POST /api/v1/auth/otp/send` 手机号 OTP 发送（dev 走 Mock SMS，60s 限流，5min TTL）
 - `POST /api/v1/auth/login/phone` OTP 校验 + 自动注册 + 颁发 access/refresh JWT（5/5min 限流）
