@@ -746,18 +746,81 @@ curl -sw "\nHTTP=%{http_code}\n" http://127.0.0.1:8001/api/v1/ipos/000999.SZ
 
 ---
 
-### BE-010 · 用户自选股 + API
+### BE-010 · 用户自选股 + API ✅ DONE
 
 **改动文件**
-- `apps/api/app/services/favorite_service.py`
-- `apps/api/app/api/v1/favorites.py`（`POST/DELETE/GET /favorites`）
-- `apps/api/tests/test_favorites.py`
+- `apps/api/app/schemas/favorite.py`：`FavoriteAddRequest` / `FavoriteAddResponse` / `FavoriteRemoveResponse` / `FavoriteItem` / `FavoriteListResponse`
+- `apps/api/app/services/favorite_service.py`：
+  - `_parse_code(raw) -> (code_upper, market)`：白名单后缀（`.HK` / `.SH` / `.SZ` / `.BJ` / `.US`），不合法抛 `FavoriteCodeInvalidError`
+  - `add_favorite`：PG `INSERT ... ON CONFLICT (user_id, ipo_code, market) DO UPDATE` 一条 SQL；`RETURNING (xmax = 0)` 区分 INSERT/UPDATE 路径，省一次 SELECT
+  - `remove_favorite`：`DELETE` 后看 `rowcount`，0 行也返 200，幂等
+  - `list_favorites`：`user_favorites` LEFT JOIN `ipos` 拿最新行情；按 `created_at DESC, ipo_code ASC` 排
+- `apps/api/app/api/v1/favorites.py`：3 个路由，全部 `Depends(get_current_user)`
+- `apps/api/app/api/v1/__init__.py`：注册 `favorites.router`
+- `apps/api/tests/test_favorites.py`：15 条新用例
+
+**关键设计决策**
+
+1. **`code` 由前端带市场后缀** — 客户端只持一份 `code` 标识就能在"列表/详情/收藏"三处共用，不需要额外维护 `(code, market)` 对；后端用白名单后缀反推 market（`.HK` → HK，`.SH/.SZ/.BJ` → A，`.US` → US），脏数据 400 直接拒，不进表。
+2. **幂等 ON CONFLICT** — `POST /favorites` 重复调用只会 `DO UPDATE SET notify_on_subscribe=...`，不会撞 `(user_id, ipo_code, market)` 主键约束；同时支持用户重新收藏时切换"打新提醒"开关。
+3. **`RETURNING (xmax = 0)` 区分 INSERT vs UPDATE** — PG 老 trick：`xmax=0` 表示该行刚被本事务 INSERT，非 0 表示走了 `ON CONFLICT DO UPDATE`；比"再发一条 SELECT 判已存在"省一次 round-trip。
+4. **删除返 200 不返 404** — `DELETE /favorites/{code}` 即使本来就没收藏也 200 + `removed=False`，前端不需要 try/catch；这跟"幂等删除"的 RESTful 实践一致。
+5. **LEFT JOIN ipos 而非 INNER JOIN** — 用户收藏的 HK seed code 当前不在 `ipos` 表（HKEX adapter 排在 Sprint 2），LEFT JOIN 让自选页仍能渲染"占位卡片"，不会因为 ingest 还没跑就让用户看到空 list。
+6. **`one_lot_winning_rate` 从 `extra` JSONB 提到顶层** — 与 BE-009 `IPODetail` 同样的策略，`FavoriteItem` 不暴露 `extra`，schema 演进可控。
+7. **不分页** — MVP 假设单用户自选 < 100 支；列表里没分页参数。如果后续单用户量大，加 `limit/offset` 即可，schema 保留 `total` 字段已为分页做好准备。
+8. **rate limit 暂不加** — `add/remove` 都是幂等 + 单用户作用域，不会造成 DB 雪崩；后续如果有滥用迹象再加 60/min/user 即可。
 
 **AC**
-- [ ] `POST /favorites {code}` 添加；重复返回 200 不报错
-- [ ] `DELETE /favorites/{code}` 移除
-- [ ] `GET /favorites` 返回用户全部自选 IPO（带最新行情字段）
-- [ ] 必须登录态（401 if no token）
+- [x] `POST /favorites {code}` 添加；重复返回 200 + `created=False` 不报错；可切换 `notify_on_subscribe`
+- [x] `DELETE /favorites/{code}` 移除；不存在也返 200 + `removed=False`
+- [x] `GET /favorites` 返回用户全部自选 IPO（LEFT JOIN ipos 带 name/listing_date/status 等行情字段）
+- [x] 必须登录态（401 `token_missing` if no token）
+- [x] `code` 不带后缀 / 后缀未知 → 400 `favorite_code_invalid`
+- [x] 用户隔离：A 用户的自选 B 用户看不到
+
+**测试 (`tests/test_favorites.py`，15 条)**
+- 鉴权：3 个路由分别 401
+- POST 路径：首次 created=True / 重复 created=False / toggle notify / 大小写归一 / HK seed 也可收藏 / 无后缀 400 / 未知后缀 400
+- DELETE 路径：删除成功 / 重复删除幂等 / 不合法 code 400
+- GET 路径：空 / 混合 A+HK 倒序 / 用户隔离
+
+**烟测**
+```bash
+# 1) 拿 token
+PHONE=13800139999
+curl -X POST localhost:8000/api/v1/auth/otp/send -d '{"phone":"'$PHONE'"}'
+CODE=$(redis-cli get "xgzh:otp:+86$PHONE")
+TOKEN=$(curl -X POST localhost:8000/api/v1/auth/login/phone \
+  -d "{\"phone\":\"$PHONE\",\"code\":\"$CODE\"}" | jq -r .tokens.access_token)
+H="Authorization: Bearer $TOKEN"
+
+# 2) 添加 (DB-backed A 股)
+curl -X POST localhost:8000/api/v1/favorites -H "$H" -d '{"code":"920156.SH"}'
+# {"ok":true,"code":"920156.SH","market":"A","created":true,...}
+
+# 3) 重复添加 + 切 notify off → created=False
+curl -X POST localhost:8000/api/v1/favorites -H "$H" \
+  -d '{"code":"920156.SH","notify_on_subscribe":false}'
+
+# 4) HK seed code (ipos 表无) 也可收
+curl -X POST localhost:8000/api/v1/favorites -H "$H" -d '{"code":"02015.HK"}'
+
+# 5) GET 混合列表 (HK 字段 None, A 股 LEFT JOIN 出 name/listing_date)
+curl -H "$H" localhost:8000/api/v1/favorites | jq
+
+# 6) DELETE 幂等
+curl -X DELETE -H "$H" localhost:8000/api/v1/favorites/920156.SH  # removed=true
+curl -X DELETE -H "$H" localhost:8000/api/v1/favorites/920156.SH  # removed=false
+
+# 7) 无后缀 → 400
+curl -X POST localhost:8000/api/v1/favorites -H "$H" -d '{"code":"BABA"}'
+# {"detail":{"code":"favorite_code_invalid",...}}
+```
+
+**遗留 / 待办**
+- BE-011 推送 token 落地后，cron 在 IPO `status` 进入 `subscribing` 时按 `notify_on_subscribe=true` 推单
+- 单用户自选 > 100 时考虑加 `(user_id, created_at)` 复合索引 + 分页参数
+- 自选数量限制（MVP 不做）：免费用户 50 支 / VIP 无限，留给 BE-014 VIP 配额校验
 
 ---
 

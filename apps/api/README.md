@@ -2,7 +2,7 @@
 
 XGZH (新股智汇) FastAPI 后端。
 
-## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007/008/009）
+## 当前能力（Sprint 0 + INFRA-001/002 + BE-001/002/003/004/005/006/007/008/009/010）
 
 API:
 
@@ -18,6 +18,9 @@ API:
 - `POST /api/v1/auth/logout` 拉黑当前 access（+ 可选拉黑 refresh），需 `Authorization`
 - `GET /api/v1/me` 当前用户基本信息（需 `Authorization: Bearer <access_token>`）
 - `POST /api/v1/invite/bind` 绑定邀请人（一次性，需登录，10/min/user 限流）
+- `POST /api/v1/favorites` 添加自选（BE-010：幂等，需登录；body `{code, notify_on_subscribe?}`）
+- `DELETE /api/v1/favorites/{code}` 移除自选（幂等：不存在也 200 + `removed=False`）
+- `GET /api/v1/favorites` 当前用户全部自选（LEFT JOIN `ipos` 带最新行情字段；按 `favorited_at DESC` 排）
 
 后台调度（`app/scheduler/__init__.py` + `app/services/ipo_ingest_service.py`，BE-007）:
 
@@ -225,6 +228,58 @@ curl -s localhost:8000/api/v1/ipos/<code> | jq '.sponsors, .highlights'
 # 6) 不存在 -> 404
 curl -sw '\nHTTP=%{http_code}\n' localhost:8000/api/v1/ipos/000999.SZ
 # {"detail":{"code":"ipo_not_found","message":"IPO 000999.SZ not found"}}
+```
+
+用户自选股（`app/services/favorite_service.py`，BE-010）:
+
+- **市场后缀白名单**：`_parse_code` 把 `0700.HK` / `600519.SH` / `BABA.US` 反推 market；`.HK` → HK，`.SH` / `.SZ` / `.BJ` → A，`.US` → US；其它一律 400 `favorite_code_invalid`，避免脏数据进表
+- **PG `INSERT ... ON CONFLICT DO UPDATE` 单 SQL 幂等**：`(user_id, ipo_code, market)` 复合主键自动去重；`DO UPDATE SET notify_on_subscribe=...` 让用户重新收藏时可切换"打新提醒"开关
+- **`RETURNING (xmax = 0)` 区分 INSERT vs UPDATE**：PG 老 trick，`xmax=0` 表示该行刚被本事务 INSERT，非 0 表示走了 `ON CONFLICT DO UPDATE`；比"再发一条 SELECT 判已存在"省一次 round-trip
+- **删除幂等**：`DELETE` 后看 `rowcount`，0 行也返 200 + `removed=False`，前端不需要 try/catch
+- **LEFT JOIN ipos 而非 INNER JOIN**：HK seed code 当前不在 `ipos` 表，LEFT JOIN 让自选页仍能渲染"占位卡片"，行情字段为 `null`
+- **`one_lot_winning_rate` 从 `extra` JSONB 提到顶层**：与 BE-009 同策略，`FavoriteItem` 不暴露 `extra`，schema 演进可控
+- **3 个路由全部 `Depends(get_current_user)`**：401 复用 BE-003 的 6 种 reason
+- **MVP 不分页**：单用户自选 < 100 支假设；schema 已含 `total` 字段为后续分页留位
+
+```bash
+# 1) 拿 access_token (省略 OTP 步骤)
+
+# 2) 添加自选 (DB-backed A 股)
+curl -X POST localhost:8000/api/v1/favorites \
+  -H "Authorization: Bearer <access>" -H 'content-type: application/json' \
+  -d '{"code":"600519.SH"}'
+# {"ok":true,"code":"600519.SH","market":"A","created":true,
+#  "notify_on_subscribe":true,"favorited_at":"..."}
+
+# 3) 重复添加 + 切 notify off → created=False (幂等)
+curl -X POST localhost:8000/api/v1/favorites \
+  -H "Authorization: Bearer <access>" -H 'content-type: application/json' \
+  -d '{"code":"600519.SH","notify_on_subscribe":false}'
+# {"ok":true,"created":false,"notify_on_subscribe":false,...}
+
+# 4) HK seed code 也可收 (ipos 表无, list 时 LEFT JOIN 字段为 null)
+curl -X POST localhost:8000/api/v1/favorites \
+  -H "Authorization: Bearer <access>" -d '{"code":"02015.HK"}'
+
+# 5) GET 列表 (混合 A/HK, 按 favorited_at DESC)
+curl -H "Authorization: Bearer <access>" localhost:8000/api/v1/favorites
+# {"items":[
+#    {"code":"02015.HK","market":"HK","name":null,"listing_date":null,"status":"unknown",...},
+#    {"code":"600519.SH","market":"A","name":"贵州茅台","listing_date":"2025-01-15","status":"listed",...}
+#  ], "total":2}
+
+# 6) DELETE 幂等
+curl -X DELETE -H "Authorization: Bearer <access>" \
+  localhost:8000/api/v1/favorites/600519.SH
+# {"ok":true,"removed":true}
+curl -X DELETE -H "Authorization: Bearer <access>" \
+  localhost:8000/api/v1/favorites/600519.SH
+# {"ok":true,"removed":false}
+
+# 7) 无后缀 → 400
+curl -X POST localhost:8000/api/v1/favorites \
+  -H "Authorization: Bearer <access>" -d '{"code":"BABA"}'
+# {"detail":{"code":"favorite_code_invalid","message":"code 必须带市场后缀..."}}
 ```
 
 邀请码（`app/services/invite_service.py`，BE-006）:
