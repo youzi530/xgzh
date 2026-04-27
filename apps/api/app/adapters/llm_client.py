@@ -544,7 +544,7 @@ async def astream_chat_with_meta(
     #
     # 2) 这里加 ``asyncio.wait_for`` per-chunk 超时, 是不依赖 LiteLLM 的硬兜底:
     #    每次等 chunk 超过 ``llm_chunk_idle_timeout_seconds`` (默认 ~30s) 就抛
-    #    ``asyncio.TimeoutError`` → 转成 ``LLMProviderError``. 即便 LiteLLM /
+    #    ``TimeoutError`` → 转成 ``LLMProviderError``. 即便 LiteLLM /
     #    httpx / provider 任意一层不遵守 timeout 协议, 这里也兜得住.
     #
     # 取舍: per-chunk 而不是总 timeout 是因为 LLM 流可能正常持续 1-3 分钟 (长答),
@@ -605,7 +605,7 @@ async def astream_chat_with_meta(
 
             if delta_text:
                 yield ChatStreamChunk(delta=delta_text)
-    except asyncio.TimeoutError as e:
+    except TimeoutError as e:
         logger.error(
             f"llm.stream_chat_meta TIMEOUT model={use_model} "
             f"chunk_idle={chunk_idle_timeout}s — provider 没在限时内返回新 chunk, "

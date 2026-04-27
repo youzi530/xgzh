@@ -46,13 +46,18 @@ from app.core.config import Settings, get_settings
 
 @pytest.fixture
 def llm_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[Settings]:
-    """注入一个三 provider key 都齐全的 Settings, 让路由测试可以走通."""
+    """注入一个三 provider key 都齐全的 Settings, 让路由测试可以走通.
+
+    锁死 LLM_PRIMARY_MODEL 走 SiliconFlow (代码默认), 防止开发机 .env 把
+    primary model 改成 zhipu/deepseek 后, 默认 provider 断言失败.
+    """
     monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-siliconflow-test")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
     monkeypatch.setenv("ZHIPU_API_KEY", "sk-zhipu-test")
     monkeypatch.setenv(
         "SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"
     )
+    monkeypatch.setenv("LLM_PRIMARY_MODEL", "openai/deepseek-ai/DeepSeek-V3")
     get_settings.cache_clear()
     yield get_settings()
     get_settings.cache_clear()
