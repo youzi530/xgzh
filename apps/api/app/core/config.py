@@ -525,6 +525,42 @@ class Settings(BaseSettings):
         le=1000,
     )
 
+    # ─── BE-S3-005 文章 TL;DR 生成配置 ───────────────────────────────────
+    article_tldr_model: str = Field(
+        default="zhipu/glm-4-flash",
+        description=(
+            "TL;DR 生成使用的 LLM model slug. 默认 GLM-4-Flash (免费); "
+            "重要场景可切 ``deepseek/deepseek-chat`` 或 ``openai/deepseek-ai/DeepSeek-V3``."
+        ),
+    )
+    article_tldr_window_days: int = Field(
+        default=7,
+        description=(
+            "候选池回看窗口 (天). 默认 7 天: 新闻新鲜度 + 池足够大. "
+            "调小到 3 天反应更快但池可能不足; 调大到 14 天会引入过时论据."
+        ),
+        ge=1,
+        le=30,
+    )
+    article_tldr_pool_size: int = Field(
+        default=30,
+        description=(
+            "候选池大小上限 (按 hot_score DESC). 30 篇 ~ GLM-4-Flash 8K token 上限. "
+            "调大会撑爆 token; 调小损失论据多样性."
+        ),
+        ge=3,
+        le=100,
+    )
+    article_tldr_cache_ttl_seconds: int = Field(
+        default=1800,
+        description=(
+            "TL;DR Redis 缓存 TTL. 30 min 平衡新鲜度 vs LLM cost — 新闻热度变化"
+            "通常以小时为粒度, 30 min 足够; 强刷新 ``?force_refresh=true`` 旁路."
+        ),
+        ge=60,
+        le=24 * 3600,
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

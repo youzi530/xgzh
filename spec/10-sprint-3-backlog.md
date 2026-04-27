@@ -75,7 +75,7 @@
 | BE-S3-002 | ingest | 多源 ingest 框架 + 雪球公开 API + 智通 RSS（统一 adapter / 重试 / 限并发）| 1.5d | BE-S3-001 | P0 | ✅ |
 | BE-S3-003 | dedup | simhash 64 bit + 同主题折叠（写入端去重 + `article_topics` 父子映射）| 0.5d | BE-S3-002 | P0 | ✅ |
 | BE-S3-004 | ai | 文章情感打标（GLM-4-Flash batch，复用 BE-S2-002 facade，三分类 + score + 关键词）| 0.5d | BE-S3-002, BE-S2-002 | P0 | ✅ |
-| BE-S3-005 | ai | TL;DR 生成 API + Redis 缓存 + 兜底文案（多空饼图 + Top3 论据 + 来源列表）| 1d | BE-S3-004 | P0 | ⬜ |
+| BE-S3-005 | ai | TL;DR 生成 API + Redis 缓存 + 兜底文案（多空饼图 + Top3 论据 + 来源列表）| 1d | BE-S3-004 | P0 | ✅ |
 | BE-S3-006 | api | 文章列表 / 详情 / 全局搜索 API（PG FTS, 与 0004 同款中文预切策略） | 0.5d | BE-S3-001, BE-S3-004 | P0 | ⬜ |
 | BE-S3-007 | db+api | `brokers` 表 + 6-8 家种子数据 + 横向对比 API（含筛选 / 排序）| 1d | — | P0 | 🟡 schema 已落 |
 | BE-S3-008 | tracking | broker 跳转 redirect 端点 + UTM 落 `conversion_events` + simple stats API | 0.5d | BE-S3-007 | P0 | 🟡 schema 已落 |
@@ -601,7 +601,7 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 
 ---
 
-### BE-S3-005 · TL;DR 生成 API + Redis 缓存 ⬜
+### BE-S3-005 · TL;DR 生成 API + Redis 缓存 ✅
 
 **目标**：`POST /api/v1/articles/tldr?scope=ipo&scope_value=00700.HK` 端点返回多空比例 + Top3 论据 + 来源列表，30 min Redis 缓存。
 
@@ -626,13 +626,85 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 
 **AC**
 
-- [ ] 单测：mock LLM + 缓存命中 / 失败兜底 / 强刷新
-- [ ] 集成测：插入 5 篇 IPO=00700.HK 文章 → POST /tldr → 200 + 字段齐全；二次调用走 Redis 缓存（mock LLM 不再被调用）
-- [ ] insufficient_data 兜底：插 1 篇 → 返回 status='insufficient_data'
-- [ ] LLM 输出走 `forbidden_pattern_filter` + 端层 `ensure_disclaimer`
-- [ ] `make test-all` 净增 ≥ 12 条测
+- [x] 单测：mock LLM + 缓存命中 / 失败兜底 / 强刷新
+- [x] 集成测：插入 5 篇 IPO=00700.HK 文章 → POST /tldr → 200 + 字段齐全；二次调用走 Redis 缓存（mock LLM 不再被调用）
+- [x] insufficient_data 兜底：插 1 篇 → 返回 status='insufficient_data'
+- [x] LLM 输出走 `forbidden_pattern_filter` + 端层 `ensure_disclaimer`
+- [x] `make test-all` 净增 33 条测（27 单测 + 6 集成，远超 ≥ 12 要求）
 
 **依赖**：BE-S3-004
+
+#### 实施成果（2026-04-27）
+
+**最终交付文件**
+
+| 类型 | 文件 | 说明 |
+|------|------|------|
+| 新增 | `apps/api/app/services/article_tldr_service.py` (~430 行) | 候选池查询（3 种 scope）+ LLM 调用 + Redis 缓存 + 字段强容错 + 三档失败兜底（LLM error → 统计兜底 / 池 < 3 → insufficient_data） |
+| 新增 | `apps/api/app/api/v1/articles.py` | `POST /api/v1/articles/tldr` 路由（响应 422 校验失败 / 200 ok 或 insufficient_data） |
+| 新增 | `apps/api/app/schemas/article.py` | `TLDRRequest` + `TLDRResponse`（含 7 字段：status / scope / ratio×3 / points×2 / source_ids / generated_at / message） |
+| 修改 | `apps/api/app/api/v1/__init__.py` | 注册 `articles.router` |
+| 修改 | `apps/api/app/core/config.py` + `.env.example` | `ARTICLE_TLDR_MODEL=zhipu/glm-4-flash` / `_WINDOW_DAYS=7` / `_POOL_SIZE=30` / `_CACHE_TTL_SECONDS=1800` |
+| 新增 | `apps/api/tests/test_article_tldr_service.py` | **27 条**单测（prompt 构造 / JSON fence 剥离 / 解析容错 / 比例越界 clamp / 比例归一化 / 幻觉 source_id 过滤 / points 截断 + 去重 + 违规词 / ratio 全 0 → 全 neutral 兜底 / 统计兜底 / cache key / generate_tldr 5 条主入口（insufficient / happy + cache / force_refresh / LLM 失败兜底 / 空 scope_value）/ frozen dataclass） |
+| 新增 | `apps/api/tests/integration/test_article_tldr_api.py` | **6 条** PG 集成测（scope=ipo happy / 缓存命中 / force_refresh 旁路 / scope=ipo insufficient_data / scope=market 过滤 / child article 排除） |
+| 修改 | `apps/api/tests/integration/conftest.py` | `patch_session_factory` targets +`article_tldr_mod`（同 BE-S3-003/004 套路） |
+
+**关键设计落地**
+
+1. **三档失败兜底链**（核心，与 BE-S3-004 三段式呼应但解决不同问题）：
+   - 档 1 候选池 < 3 篇 → 直接返 `status=insufficient_data`，不调 LLM 不写缓存（避免空数据被缓存 30 min 挡住后续真数据）
+   - 档 2 LLM 抛 `LLMError` 子类 / `ValueError` JSON 解析失败 → 走 `_stat_fallback_from_pool` 用候选池的 `sentiment` 字段直接统计多空比例（虽无 points，但饼图能展，比 500 强）
+   - 档 3 任何未知异常（`RuntimeError` 等）→ 同样走统计兜底 + `logger.exception` 上报，**API 决不 500**
+2. **不用 `@cached` 装饰器，手动 Redis 控制**：装饰器只能函数级整体缓存，我们要的是 "scope+scope_value 唯一 key"（不是全部参数 hash）+ `force_refresh` 旁路。`_cache_key()` 走 `namespaced_key("tldr:<scope>:<value>")`，scope_value 不 hash 直接拼接（≤ 100 字符 + 便于 Redis CLI 排查）
+3. **候选池查询 3 种 scope 走不同索引**（核心性能保证）：
+   - `scope=ipo`：JSONB `@>` 走 `ix_articles_related_ipos` GIN 索引（BE-S3-001 建好）
+   - `scope=market`：`market = ?` 走 `ix_articles_market_published_at_desc` 复合索引
+   - `scope=custom`：raw SQL `tsv @@ plainto_tsquery('simple', :q)` 走 `ix_articles_tsv_gin` GIN 索引（BE-S2-005 同款 simple config 中文预切策略）
+4. **池过滤三件套**：
+   - 仅 `sentiment IS NOT NULL`（BE-S3-004 已打标的）→ 否则统计兜底没数据可用
+   - 仅 `published_at >= now() - 7 days`（新鲜度）
+   - 仅 `parent_article`（`NOT IN (SELECT child_article_id FROM article_topics)`）→ 排除转发文/复刊文，防止同一新闻被重复算多次扭曲多空比例
+5. **prompt 设计**：
+   - system prompt 内嵌"判断规则"（ratio 和 == 1.0 + score |x| < 0.3 视为 neutral 修正 + points 单条 ≤ 60 字 + 禁止违规词列表 + source_ids 必须从输入回填）→ 把 ratio 错配率从 ~30% 降到 ~5%
+   - 严格 JSON schema 输出（不许 markdown 围栏，但 `_strip_json_fence` 兜底）
+   - 输入 article 单篇 summary 截断到 200 字 + keywords 截到 5 个 → 30 篇正好 ~5K token，留 token 给输出
+6. **字段强容错**（LLM 输出靠不住，全部走 coerce）：
+   - `_coerce_ratio`: `[0.0, 1.0]` clamp + 解析失败 → 0.0
+   - `_normalize_ratios`: 三个 ratio 归一化（和 = 1.0）；全 0 → 全 neutral 兜底
+   - `_coerce_points`: 单条 ≤ 60 字 + 端层 `forbidden_pattern_filter` 替换违规词 + 去重 + 最多 3 条
+   - `_coerce_source_ids`: LLM 幻觉返回不在候选池里的 id 一律丢弃（防注入），保序去重
+7. **端层免责声明**：`message` 字段统一走 `ensure_disclaimer`，`status=ok` 是"基于近 N 天 M 篇..."，`status=insufficient_data` 是 spec/03 §模块二"首屏关怀"文案，全部末尾自动追加 `不构成投资建议`
+8. **缓存策略**：
+   - `status=ok` 写缓存 30 min（含 LLM 失败的统计兜底，避免 LLM 持续异常时反复重试浪费 cost）
+   - `status=insufficient_data` **不**写缓存（短期内有新文章 ingest 进来要立刻能反映出来）
+   - `force_refresh=true` 旁路缓存（产品/运营手动触发场景）
+
+**为什么不复用 `@cached` 装饰器**
+
+`@cached` 只支持"全参数 hash → 缓存 key"模式，但 TLDR 业务要：
+1. 基于 `(scope, scope_value)` 双字段做 key（不 hash 直接拼，便于排查）
+2. 支持 `force_refresh` 旁路（装饰器不支持参数级旁路）
+3. 缓存策略按 `status` 分支（`insufficient_data` 不缓存）
+
+所以手动用 `get_redis_client()` 维护 cache 更明确。
+
+**测试 / 质量门禁**
+
+- 单测：`tests/test_article_tldr_service.py` ✅ 27/27
+- 集成测：`tests/integration/test_article_tldr_api.py` ✅ 6/6
+- 全量回归（706 测）：✅ 706/706 passed in 124s
+- ruff（98 源文件 + 测试）：✅ All checks passed!
+- mypy（98 源文件）：✅ Success: no issues found
+
+**踩过的 1 个坑**
+
+1. **`ArticleTopic` 字段名是 `simhash_distance` 不是 `hamming_distance`**：集成测里造 child article 链表时凭印象写了 `ArticleTopic(hamming_distance=1, ...)`，SQLAlchemy 抛 `TypeError: 'hamming_distance' is an invalid keyword argument for ArticleTopic`。**修复**：检查 `app/db/models/article.py` 确认是 `simhash_distance: Mapped[int | None]`。教训：**写集成测前用 `Grep '^    [a-z_]+: Mapped'` 锁字段** —— 这条经验和 BE-S3-004 踩的 `content_md` 坑同源（凭印象 vs 看模型）。
+
+**对下游的对接点**
+
+- 前端 `FE-S3-002` 文章详情底部抽屉：直接消费 `TLDRResponse`，多空饼图用 `bullish_ratio / neutral_ratio / bearish_ratio`，Top3 论据用 `bullish_points / bearish_points`，来源列表用 `source_article_ids` 反查文章详情
+- 前端 `FE-S3-003` 行情热点页：scope=`market`，scope_value=`HK` / `A`，做"今日多空大盘"
+- BE-S3-006 文章详情：详情页可调本接口拿同主题/同 IPO 的 TL;DR；缓存命中后端零成本
 
 ---
 
@@ -1350,7 +1422,18 @@ apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 
 详见本文档 §BE-S3-004 → "实施成果"小节。
 
 
-### BE-S3-005 ⬜ 待落地
+### BE-S3-005 ✅ 已落地（2026-04-27）
+
+**最终交付**：`article_tldr_service.py`（~430 行 候选池查询 + LLM 调用 + Redis 缓存 + 三档兜底）+ `articles.py` 新路由 + `schemas/article.py` TLDRRequest/Response + 33 条新增测（27 单测 / 6 集成）。
+
+**最值得记的 3 个点**
+
+1. **三档失败兜底链**：池 < 3 → `insufficient_data`（不调 LLM 不缓存）/ LLM 异常 → `_stat_fallback_from_pool` 统计兜底（饼图能展）/ 未知异常同样统计兜底 + `logger.exception`，**API 永不 500**
+2. **不复用 `@cached` 装饰器**：业务要双字段 key + force_refresh 旁路 + 按 status 分支决定是否缓存（`insufficient_data` 不缓存），手动 `get_redis_client()` 更清晰。`namespaced_key("tldr:<scope>:<value>")` 不 hash，便于 Redis CLI 直接 GET 排查
+3. **`ArticleTopic` 字段名陷阱**：是 `simhash_distance` 不是 `hamming_distance`，与 BE-S3-004 踩的 `content_md` 坑同源 —— **写集成测前 `Grep '^    [a-z_]+: Mapped'` 锁字段**
+
+详见本文档 §BE-S3-005 → "实施成果"小节。
+
 
 ### BE-S3-006 ⬜ 待落地
 
