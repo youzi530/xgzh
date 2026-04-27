@@ -4,12 +4,12 @@
   "private": true,
   "description": "新股智汇 UniApp 客户端 (小程序 + App + H5)",
   "scripts": {
-    "dev:mp-weixin": "uni -p mp-weixin",
-    "dev:h5": "uni",
-    "dev:app": "uni -p app",
-    "build:mp-weixin": "uni build -p mp-weixin",
-    "build:h5": "uni build",
-    "build:app": "uni build -p app",
+    "dev:mp-weixin": "UNI_INPUT_DIR=. uni -p mp-weixin",
+    "dev:h5": "UNI_INPUT_DIR=. uni",
+    "dev:app": "UNI_INPUT_DIR=. uni -p app",
+    "build:mp-weixin": "UNI_INPUT_DIR=. uni build -p mp-weixin",
+    "build:h5": "UNI_INPUT_DIR=. uni build",
+    "build:app": "UNI_INPUT_DIR=. uni build -p app",
     "lint": "eslint . --ext .ts,.vue",
     "format": "prettier --write \"**/*.{ts,vue,json,md}\""
   },

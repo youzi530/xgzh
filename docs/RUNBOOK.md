@@ -1657,89 +1657,191 @@ function parseSSEBuffer(buffer: string, onEvent: (evt: SSEEvent) => void): strin
 
 ---
 
-### 坑 24：mp-weixin VIP modal 关不掉, 进 me 页"立马弹起", 13007458553 白名单也没用 ⏳ 进行中
+### 坑 24：mp-weixin VIP modal "数据 false 视图 true" 永远弹着关不掉, 同一份代码 H5 完全正常 ✅ 实战已修
 
 **现象** (用户在微信开发者工具里复现):
 
-1. **进 me 页就立马弹 VIP 升级 modal**, 点 X / 稍后再说 / 点 mask 都**没反应**, modal 锁屏
-2. **13007458553 白名单用户**也一样: 点 AI 一键诊断 → 跳 modal, 点头像进 me 页 → 跳 modal, 都关不掉
+1. **进 me 页就立马弹 VIP 升级 modal**, 视觉上 modal 完整渲染在屏幕上
+2. 点 X / 稍后再说 / 点 mask 都**没反应**, modal 锁屏
+3. 13007458553 白名单用户登录后也一样, 跨页面切换 modal 跟着走
+
+**最关键的数据矛盾** (诊断 console.log 打出来后):
+
+```text
+[me-page] refreshAuthGate, loggedIn= true modal.visible= false
+[upgrade-store] close called, prev visible= false
+```
+
+→ vue 数据层 ``visible`` 全程是 ``false``, 但 wxml 渲染层 modal **仍在屏幕上**! 这种"数据假视图真"的状态不是事件 / 回调 bug, 是 **vue → mp-weixin reactivity 推送链路断了**.
 
 **关键背景**:
 
-- 同一份 ``UpgradeVipModal.vue`` 在 H5 上完全正常 (坑 20 修过了, ``e.target.dataset.role === 'mask'`` 判断 + ``upgrade.close()``).
-- 后端 ``.env`` 里 ``VIP_USER_PHONE_WHITELIST=13007458553`` 配了, 后端日志确认该用户调 chat/diagnose 时 **plan 解析正确, 没返 429** — 所以"小程序里弹 modal"不是后端 quota 拒绝触发, 是 **前端 modal 状态 stale**.
-- ``visible`` 是 ``composables/upgradeModal.ts`` 模块级 ``ref(false)``, 所有页面共享一份单例.
+- 同一份 ``UpgradeVipModal.vue`` 在 H5 上**完全正常** (坑 20 修过了); 只在 mp-weixin 出问题
+- 后端 ``.env`` 里 ``VIP_USER_PHONE_WHITELIST=13007458553`` 配置正确, 后端日志确认 ``chat/diagnose`` 200 OK + ``user_id=1abe8ea0-...`` (= 13007458553) — 后端识别 VIP 没问题, 这次纯前端 bug
+- ``visible`` 是 ``composables/upgradeModal.ts`` 模块级 ``ref(false)``, 所有页面共享一份单例
 
-**根因 (3 重叠加, 互相强化症状)**:
+**根因 (1 个核心 + 2 个串联坑)**:
 
-1. **mp-weixin 嵌套 view + hover-class + ``@tap`` 兼容性 bug**:
-   原写法 ``<view class="uv-close" hover-class="uv-close-hover" @tap="onClose">`` 在小程序基础库 3.5.x 上, hover 状态机偶发吃掉 ``@tap`` 事件, 表现就是"按钮亮了一下但没触发 onClose". 这是经验教训 — H5 上没有 hover 状态机, 所以同一份代码 H5 行为正常, mp 行为异常.
+### 核心: ``v-show`` + 模块级 ref 在 mp-weixin 上 reactivity 失灵
 
-2. **agent 页 onLoad 进入时没 ``upgrade.close()``**:
-   原 ``apps/mp/pages/ipo/agent.vue`` 只有 ``onLoad / onUnload``, 没有 ``onShow``. 用户在 agent 页打开 modal 后没关就 navigateBack, 再 ``navigateTo`` 进新的 agent 页 (mp-weixin 是 push 新实例), 新页面 ``<UpgradeVipModal />`` 挂载时直接读 ``visible=true`` → modal 立刻显示. me 页有 onShow close 但 agent 页没有, 跨页留下 stale.
+原代码:
 
-3. **vip-card 是大块可点区域, 用户进 me 页时容易误触**:
-   ``<view class="vip-card" @tap="gotoVip">`` 整个卡片都是 hot zone, 加上 modal 关闭被 bug 1 卡住, 用户感觉"进页面就弹, 关不掉". 实际是误触 + 关闭 bug 叠加.
-
-**bug chain**:
-
-```
-用户进 me 页 → 不小心点到 vip-card (或 stale visible=true)
-  → upgrade.open({ source: 'me_page' }) 把 visible 设 true
-  → modal 弹起
-  → 用户点 X / 稍后再说
-  → mp-weixin hover-class 吃掉 @tap 事件 (基础库 3.5.x bug)
-  → onClose 没触发, visible 还是 true
-  → modal 一直在
-  → 用户切去其他页, modal 仍在 (visible 单例)
-  → 切回来仍弹, 永久锁屏
+```vue
+<view v-show="upgrade.visible.value" class="uv-mask" ...>
 ```
 
-**修复 (3 处都做)**:
+在 mp-weixin 上, ``v-show`` 编译为 ``hidden="{{!visible.value}}"``, 通过 ``wx.setData`` 推送 hidden 属性切换 ``display: none``.
 
-a. **统一的 ``onTap`` 路由**: ``UpgradeVipModal.vue`` 把 mask / close-btn / cancel-btn / upgrade-btn 都绑同一个 ``@tap="onTap"``, 通过 ``data-role`` 区分意图. 即便内层 view 的 ``@tap`` 因 hover-class 没触发, 事件冒泡到外层 mask 仍能被捕获 — 通过 ``e.target.dataset.role`` 路由到正确的 handler.
+但当 ``visible`` 是**模块级 ref 单例** + 跨页面共享 + 有多个 ``<UpgradeVipModal />`` 实例 (me 页 / agent 页各挂一份) 时, vue3 reactivity → mp-weixin setData 桥接路径**部分场景丢失 reactive 通知**. 表现就是:
 
-   ```typescript
-   function onTap(e) {
-     const role = e?.currentTarget?.dataset?.role || e?.target?.dataset?.role
-     if (role === 'close' || role === 'mask') upgrade.close()
-     else if (role === 'upgrade') upgrade.gotoPay()
-     // panel 等 noop
-   }
-   ```
+- vue 数据 (``visible.value``) 变了 ✅
+- ``console.log(visible.value)`` 是 false ✅
+- 但 mp-weixin wxml 上 ``hidden`` 属性**没更新** → modal 节点仍然 ``display`` 着 ❌
 
-   ```vue
-   <view class="uv-mask" data-role="mask" @tap="onTap">
-     <view class="uv-panel" data-role="panel" @touchmove.stop.prevent>
-       <view class="uv-close" data-role="close" hover-class="..." @tap="onTap">×</view>
-       <view class="uv-btn-secondary" data-role="close" hover-class="..." @tap="onTap">稍后再说</view>
-       <view class="uv-btn-primary" data-role="upgrade" hover-class="..." @tap="onTap">立即升级</view>
-     </view>
-   </view>
-   ```
+H5 上没这个问题, 因为 H5 是直接 DOM patch, ref 变化 → 立刻改 ``style.display``, 不走 setData 桥.
 
-b. **agent 页加 ``onShow`` 防御性 close**: ``apps/mp/pages/ipo/agent.vue`` 加 ``onShow(() => upgrade.close())``, ``onUnload`` 同样 close. 与 me 页 onShow close 一起形成"任何挂 modal 的页面切入切出都重置"的双保险.
+### 串联坑 1: vite watch 没启动, 改了代码完全没生效
 
-c. **诊断 console.log 永久保留** (排错用): ``upgradeModal.ts`` open/close + ``UpgradeVipModal.vue`` onTap + me/agent 页面 lifecycle 都打 ``[upgrade-store] / [upgrade-modal] / [me-page] / [agent-page]`` 前缀的日志, 用户在小程序开发者工具 Console 里能直接看到 modal 状态轨迹, 二次出问题秒定位是"事件没触发"还是"reactivity 没传".
+排查时一度以为修了但没效果 — 实际是**根本没起 ``npm run dev:mp-weixin``**, 微信开发者工具读的是**昨晚的 dist 编译产物**. 头一波诊断 ``console.log`` 全打不出来, 不是代码 bug, 是产物老.
+
+**dist 时间检查**: ``ls -la apps/mp/dist/dev/mp-weixin/app.js`` 看 mtime 是不是今天 — 不是就 vite 没在跑.
+
+### 串联坑 2: vite-plugin-uni 期望 ``src/`` 目录, 项目布局是根目录直放
+
+直接 ``npm run dev:mp-weixin`` 报错:
+
+```
+Error: ENOENT: no such file or directory, open 'apps/mp/src/manifest.json'
+```
+
+而项目布局是 ``apps/mp/manifest.json`` (无 src 子目录). 解决方法是用 ``UNI_INPUT_DIR=. `` 环境变量:
+
+```bash
+cd apps/mp && UNI_INPUT_DIR=. npm run dev:mp-weixin
+```
+
+应该把这个写进 package.json 的 scripts 里 (Sprint 3 整理).
+
+**bug chain (用户报错路径完整还原)**:
+
+```
+1. 用户旧 dist (昨晚 22:48 编译) 里的 modal 用 v-show
+   → mp-weixin reactivity 桥某处丢通知, modal hidden 没切回 true
+   → 用户进 me 页看到 modal 弹着
+
+2. 改了代码加诊断 log, 但没起 vite watch
+   → 用户重启微信开发者工具, 还是读旧 dist
+   → console 里看不到任何 [upgrade-store] / [me-page] 日志, 误以为代码没生效
+
+3. 启动 vite watch (UNI_INPUT_DIR=.) → 新 dist 进来
+   → console 看到 [me-page] modal.visible= false + [upgrade-store] close called
+   → 数据层确认 visible=false, 但截图里 modal 还在屏幕上
+   → 锁定为 v-show reactivity bug
+
+4. v-show 改 v-if → wxml 编译为 wx:if="{{visible}}"
+   → wx:if 直接控制 wxml 节点存在性 (不是 hidden 属性切换)
+   → visible=false → 整个 mask + panel 子树**根本不渲染**
+   → 立刻消失 ✅
+```
+
+**修复 (3 层都做)**:
+
+### a. 核心修复: ``v-show`` → ``v-if``
+
+```diff
+- <view v-show="upgrade.visible.value" class="uv-mask" data-role="mask" @tap="onTap">
++ <view v-if="upgrade.visible.value" class="uv-mask" data-role="mask" @tap="onTap">
+```
+
+代价: 失去了原本的 ``slide-up`` 退场动画 (``translateY 100% → 0``, ``v-if`` 会直接卸载 DOM 没法跑 transition). 这是**功能正确性 > 视觉过渡**的取舍 — Sprint 3 想加退场动画时:
+
+- 方案 1: 用 ``<transition name="modal">`` wrapper (vue 原生; mp-weixin 上 transition 也支持, 但需要 ``mode="out-in"`` 配合)
+- 方案 2: 改回 ``v-show`` 但 store 里加 ``await nextTick()`` 强制 setData (脆弱, 不推荐)
+- 方案 3: 改用 Pinia store 替换模块级 ref (Pinia 在 mp-weixin 上 reactivity 推送有专门 patch, 比裸模块级 ref 稳)
+
+### b. 统一的 ``onTap`` 路由 (防 hover-class 吃事件)
+
+```typescript
+type TapEvent = {
+  currentTarget?: { dataset?: { role?: string } }
+  target?: { dataset?: { role?: string } }
+}
+
+function onTap(e: TapEvent) {
+  const role = e?.currentTarget?.dataset?.role || e?.target?.dataset?.role
+  if (role === 'close' || role === 'mask') upgrade.close()
+  else if (role === 'upgrade') upgrade.gotoPay()
+  // panel / panel 内非交互区 → noop
+}
+```
+
+```vue
+<view class="uv-mask" data-role="mask" @tap="onTap">
+  <view class="uv-panel" data-role="panel" @touchmove.stop.prevent>
+    <view class="uv-close" data-role="close" hover-class="..." @tap="onTap">×</view>
+    <view class="uv-btn uv-btn-secondary" data-role="close" hover-class="..." @tap="onTap">稍后再说</view>
+    <view class="uv-btn uv-btn-primary" data-role="upgrade" hover-class="..." @tap="onTap">立即升级</view>
+  </view>
+</view>
+```
+
+为啥统一一个 ``onTap``: mp-weixin 嵌套 ``<view>`` + ``hover-class`` 偶发吃掉子元素 ``@tap`` 事件. 即使内层 view 的 ``@tap`` 没触发, 事件冒泡到外层 mask 仍能被捕获, 通过 ``e.target.dataset.role`` 路由到正确 handler — **双层兜底**.
+
+### c. agent 页加 ``onShow`` 防御性 close
+
+```typescript
+// apps/mp/pages/ipo/agent.vue
+onShow(() => {
+  upgrade.close()
+})
+onUnload(() => {
+  chat.reset()
+  upgrade.close()
+})
+```
+
+与 me 页 onShow close 一起形成"任何挂 modal 的页面切入切出都重置"的双保险, 防止跨页 stale.
 
 **Mini Program 调试 SOP** (后续遇到 mp-only bug 通用):
 
-1. 微信开发者工具 → 工具栏 **"清除缓存" → "全部清除"**, 然后重新编译 (mp-weixin 缓存 wxml + JS 都, 不全清会读旧编译产物)
-2. **打开 Console 面板, 清空, 复现**
-3. 看 ``[upgrade-store] open xxx`` / ``[upgrade-modal] onTap role=...`` 日志:
-   - 如果 ``onTap role=close`` 触发了但 modal 不消失 → vue reactivity 没传到 view (查 ``v-show`` 编译产物 / ``setData`` 时序)
-   - 如果 ``onTap`` 根本没触发 → mp-weixin 事件层吃掉了 (hover-class / catchtap / 嵌套 view 兼容性)
-4. 任何 mp-weixin bug 优先用 **uniapp 官方文档 § Mini Program 部分 + 微信官方组件文档** 对照写法, 不要照搬 H5 / vue3 通用习惯.
+1. **第一步永远是确认 vite watch 在跑 + dist 是新的**:
+   ```bash
+   ps aux | grep "uni.*mp-weixin" | grep -v grep      # 进程在
+   ls -la apps/mp/dist/dev/mp-weixin/app.js           # mtime 是今天
+   ```
+   都不满足 → 启动:
+   ```bash
+   cd apps/mp && UNI_INPUT_DIR=. npm run dev:mp-weixin
+   ```
+2. 等到 ``DONE Build complete. Watching for changes...`` 才算 ready
+3. 微信开发者工具 → 工具栏点"编译"按钮 (强制读 dist), 不需要重启项目
+4. 打开 Console, 清空, 复现
+5. 看诊断日志:
+   - **没任何 ``[xxx]`` 前缀的 log** → vite 没跑或 dist 没更新, 回 1
+   - **数据层 visible=false 但屏幕上有 modal** → reactivity bug, 优先把 ``v-show`` 改 ``v-if``
+   - **onTap role 没触发** → 事件层被 hover-class 或 catchtap 吃了, 改用 dataset 路由
+   - **onTap role 触发了但 close 后视图不变** → 跟数据/视图脱钩同根因, 同样是 reactivity, 改 ``v-if``
 
-**预防**:
+**预防 / 通用策略**:
 
-1. **跨端组件统一事件路由模式**: 所有 modal / drawer / popup 用 "外层 mask 绑唯一 ``@tap`` + dataset 路由" 模板, 不要"每个按钮各自 ``@tap``"散写法 (mp-weixin hover/tap 互斥风险高).
+1. **mp-weixin 模态 / 浮层组件首选 ``v-if``, 不用 ``v-show``**: ``v-if`` 走 ``wx:if`` 编译路径, DOM 存在性可靠; ``v-show`` 走 ``hidden`` 属性 + setData 推送, reactivity 链路上多一个跳, 跨页面 / 模块级 ref 单例时易丢通知. 这是写 mp-weixin 模态的"红线".
 
-2. **任何模态状态都加 onShow 防御性 close**: 单例模式的 modal state 要在每个挂载它的页面 ``onShow`` 时 close, 防止跨页 stale. 加 4 行代码换 0 stale 风险.
+2. **跨端组件**关闭按钮**统一事件路由模式**: 所有 modal / drawer / popup 用"外层 mask 绑唯一 ``@tap="onTap"`` + dataset 路由"模板, 不要"每个按钮各自 ``@tap``"散写法.
 
-3. **mp-weixin 调试基础库版本固定**: 项目根目录 ``project.config.json`` 锁 ``"libVersion": "3.5.6"`` (或更稳的 LTS), 不要让微信开发者工具自动用最新基础库 (新版本可能引入 hover-class / @tap 行为回归).
+3. **任何模态状态都加 onShow 防御性 close**: 单例模式的 modal state 要在每个挂载它的页面 ``onShow`` 时 close, 防止跨页 stale.
 
-4. **Sprint 3 起所有跨端组件加 mp-weixin / H5 双端 manual smoke test list**: 上线前 release checklist 里写明 "modal 关闭按钮 × 4 入口 (X / 取消 / mask / 物理返回) 在 mp / H5 各点一遍". 5 分钟 vs. 用户 1 周后才发现 + 复测一遍工程量, ROI 极高.
+4. **vite watch + dist 时间是 mp 调试第一步**: 排错前先确认产物是新的, 不要直接看代码逻辑找 bug.
+
+5. **Sprint 3 起所有跨端组件加 mp-weixin / H5 双端 manual smoke test list**: release checklist 里写明 "modal 关闭按钮 × 4 入口 (X / 取消 / mask / 物理返回) + 跨页面状态保留 在 mp / H5 各点一遍". 5 分钟 vs. 用户 1 周后报 bug + 复测的工程量, ROI 极高.
+
+6. **整理 ``apps/mp/package.json`` 的 dev 脚本**, 直接把 ``UNI_INPUT_DIR=. `` 写死避免下次重踩串联坑 2:
+
+   ```diff
+   "scripts": {
+   -  "dev:mp-weixin": "uni -p mp-weixin",
+   +  "dev:mp-weixin": "UNI_INPUT_DIR=. uni -p mp-weixin",
+   }
+   ```
 
 ---
 
