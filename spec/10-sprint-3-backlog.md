@@ -77,9 +77,9 @@
 | BE-S3-004 | ai | 文章情感打标（GLM-4-Flash batch，复用 BE-S2-002 facade，三分类 + score + 关键词）| 0.5d | BE-S3-002, BE-S2-002 | P0 | ⬜ |
 | BE-S3-005 | ai | TL;DR 生成 API + Redis 缓存 + 兜底文案（多空饼图 + Top3 论据 + 来源列表）| 1d | BE-S3-004 | P0 | ⬜ |
 | BE-S3-006 | api | 文章列表 / 详情 / 全局搜索 API（PG FTS, 与 0004 同款中文预切策略） | 0.5d | BE-S3-001, BE-S3-004 | P0 | ⬜ |
-| BE-S3-007 | db+api | `brokers` 表 + 6-8 家种子数据 + 横向对比 API（含筛选 / 排序）| 1d | — | P0 | ⬜ |
-| BE-S3-008 | tracking | broker 跳转 redirect 端点 + UTM 落 `conversion_events` + simple stats API | 0.5d | BE-S3-007 | P0 | ⬜ |
-| BE-S3-009 | db | `vip_memberships` + `vip_orders` 表 + Alembic 0007 + 订阅状态机 + 7 天试用机制 | 1d | — | P0 | ⬜ |
+| BE-S3-007 | db+api | `brokers` 表 + 6-8 家种子数据 + 横向对比 API（含筛选 / 排序）| 1d | — | P0 | 🟡 schema 已落 |
+| BE-S3-008 | tracking | broker 跳转 redirect 端点 + UTM 落 `conversion_events` + simple stats API | 0.5d | BE-S3-007 | P0 | 🟡 schema 已落 |
+| BE-S3-009 | db | `vip_memberships` + `vip_orders` 表 + Alembic 0007 + 订阅状态机 + 7 天试用机制 | 1d | — | P0 | 🟡 schema 已落 |
 | BE-S3-010 | payment | 微信支付 v3 集成（小程序下单 + 回调验签 + 订阅状态流转 + 配额 `_resolve_plan` 接真表）| 1.5d | BE-S3-009 | P0 | ⬜ |
 
 **BE 合计**：~9 PR · ~9 工作日
@@ -1043,6 +1043,81 @@ apps/api/tests/test_migrations.py                        # EXPECTED_TABLES + EXP
 | BE-S3-002 (多源 ingest, 1.5d) | 已可起，但与 BE-S3-007/009 的 alembic 并行落表会让 head 频繁漂移；先把 schema 全部沉淀后再开 ingest 业务代码更顺 |
 
 → **建议下一步走 BE-S3-007 + BE-S3-009 同日打包**（两个 0.5d × 2 = 1d，跟今天 BE-S3-001 合计 1.5d 收尾三张表 schema），之后 BE-S3-002/003/004/005/006 + BE-S3-008 + BE-S3-010 / FE-S3-* 三条线完全并行起跑
+
+---
+
+### BE-S3-007 / 008 / 009 🟡 schema 已落（2026-04-27，业务代码留后续 PR）
+
+> **scope 说明**：本次三张表 alembic（0006 + 0007）+ ORM models + schema 集成测试一次性打包，业务侧 PR 留给后续按 spec/10 §详细规格中的 AC 逐条交付。这是 BE-S3-001 实施总结里"下一步推荐"明确建议的"先把三张表 alembic 同日落定"策略 —— **head 漂移问题彻底消除**，之后内容线 / 变现线 / 商业化线全部并行起跑不再被 schema 阻塞。
+
+#### 实施成果
+
+- 4 张表（`brokers` + `conversion_events` + `vip_orders` + `vip_memberships`）+ alembic 0006 + 0007 + 13 个新索引/UNIQUE 约束全部落地
+- `make ci-integration` **597 passed**（前 577 → 净增 20 条：broker schema 10 条 + vip schema 10 条）
+- `make ci-smoke` 全绿、ruff 0 增量、mypy 0 增量、`alembic heads` 单一线性 head=`0007_vip`
+- ORM models 与 spec/03 §模块四 + §模块六 + spec/10 §BE-S3-007/008/009 设计完全对齐 + 7 处工程化偏移已记录（见下文 §"实施偏差"）
+
+#### 实际改动文件
+
+```
+apps/api/alembic/versions/0006_add_broker_tables.py        # 新建（brokers + conversion_events 同 alembic head）
+apps/api/alembic/versions/0007_add_vip_tables.py           # 新建（vip_orders + vip_memberships, FK 顺序: orders 先 / memberships 后）
+apps/api/app/db/models/broker.py                           # 新建（Broker + ConversionEvent 单文件）
+apps/api/app/db/models/vip.py                              # 新建（VipOrder + VipMembership 单文件）
+apps/api/app/db/models/__init__.py                         # +export 4 个新 model
+apps/api/tests/integration/conftest.py                     # truncate_all 加 4 张表（brokers / conversion_events / vip_orders / vip_memberships）
+apps/api/tests/integration/test_broker_tables.py           # 新建（10 条用例：schema + UNIQUE + JSONB + INET + CASCADE + SET NULL + alembic 幂等）
+apps/api/tests/integration/test_vip_tables.py              # 新建（10 条用例：schema + UNIQUE + 一对一 + CASCADE + SET NULL + lifetime 9999 + JSONB raw_callback + alembic 幂等）
+apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 / EXPECTED_INDEXES_SUBSET +13 个新名
+```
+
+#### 关键设计
+
+| 维度 | 决策 |
+|------|------|
+| **alembic 0006 一表两建** | brokers + conversion_events 同 alembic 文件（spec/10 §BE-S3-008 明确 "alembic head 同一版本"）— ConversionEvent 强依赖 brokers FK，分两 alembic 反而引入"先后顺序冲突"；同 alembic 还简化测试 downgrade 路径 |
+| **alembic 0007 FK 创建顺序** | `vip_orders` 先建，`vip_memberships.current_order_id` FK 引用它必须存在；downgrade 反向：先 drop memberships 再 drop orders。`alembic upgrade head / downgrade base` 双向幂等已测 |
+| **brokers 重 JSONB 字段（5 列）** | `market_support` / `licenses` / `fees` / `features` / `promotion` 全 JSONB — 各券商 schema 不一（A/HK/US 费率字段差异大），规范化拆 N 张子表收益小、写入端复杂度激增；FE 渲染走 `model_dump()` 直接 jsonify 极合适 |
+| **`partnership_*` 三字段同表（不拆 broker_partnerships 子表）** | BrokerInternal 仅是 schema 隔离需求（API 层 `BrokerPublic.model_dump(include=...)` 控）；DB 层都存，1:1 子表会多一次 JOIN，收益小 |
+| **`brokers.slug` UNIQUE** | URL 友好：`/api/v1/brokers/{slug}` 比 UUID 路径强（FE-S3-003 详情页），物理保证全局唯一 |
+| **`conversion_events` append-only** | 不带 `updated_at`（与 `chat_messages` / `chat_token_usage` 同），写入即历史；唯一可改字段 `attributed`（CPS 财务对账核销标志）走 raw SQL UPDATE 不通过 ORM session.dirty |
+| **`conversion_events.ip_addr INET`** | 比 `String(45)` 强：PG 校验非法 IP（如 `999.999.999.999` 直接 DBAPIError）+ 支持 subnet 查询能力（后续防刷策略可用）。测试用 `host(ip_addr)` 取纯 IP（去掉 PG INET 默认带的 /32 掩码） |
+| **`conversion_events` 4 个二级索引** | `(broker_id, event_type, created_at DESC)` 券商 30d stats / `(user_id, created_at DESC)` 用户行为 / `(utm_campaign, created_at DESC)` 活动归因 / `(attributed, created_at)` 待核销 CPS 列表 — 完全覆盖 BE-S3-008 + Sprint 4+ 财务对账访问模式 |
+| **vip_memberships 一对一 users（UNIQUE）** | 续费走"覆盖 / 堆叠"（直接 UPDATE start_at / end_at）不开新行，业务读永远 1 行；BE-S3-009 续费状态机的 schema 基础 |
+| **vip_memberships.current_order_id SET NULL** | 软关联 vip_orders 最近成功订单，订单被运营软删时不破主表；主链路依然能通过 `vip_orders WHERE user_id=? ORDER BY created_at DESC` 倒推订单历史 |
+| **试用 = 一笔零元订单** | spec/10 §BE-S3-009 关键设计：`vip_orders(plan='trial', amount_cny=0, status='paid', payment_channel='internal')` —— 避免 service 层试用 / 付费分支，所有用户路径统一 |
+| **out_trade_no UNIQUE NOT NULL** | BE-S3-010 微信支付回调幂等键（同单号二次回调直接返 SUCCESS 不重复流转），物理保证 |
+| **lifetime end_at = 9999-12-31** | 避免业务层 `end_at IS NULL` OR 分支：`_resolve_plan` 走 `end_at > now()` 单条件即可命中所有 active 订阅 |
+
+#### 实施偏差（vs spec/10 原稿）
+
+1. **alembic 0006 FK 命名加 `fk_` 前缀**：spec 没指定 FK 命名规范，沿用 0001 已建立的 `fk_<table>_<col>_<reftable>` 模式（如 `fk_conversion_events_user_id_users`），与 0001-0005 一致；ORM 层 `ForeignKey()` 不带 name 走 SQLAlchemy 自动生成
+2. **`vip_orders` 不带 `updated_at`？错，带**：BE-S3-001 总结时考虑过 append-only 不带 updated_at，但 vip_orders 有"待支付 → 支付成功 → 退款"状态流转必须有 updated_at（与 ipos / users 一致）；最终带 `TimestampMixin` 完整 created_at + updated_at
+3. **`vip_orders.payment_channel` 增加 `'internal'` 取值**：spec/10 仅写 `wechat_mp / wechat_h5 / apple_iap`，但试用零元订单写哪个 channel？新增 `'internal'` 专门标识"非真支付"订单，财务对账 cron 直接 `WHERE payment_channel != 'internal'` 排除掉
+4. **`brokers.partnership_cps_rate` 用 `Numeric(6, 5)` 而非 `Numeric(5, 4)`**：spec 没指定精度。CPS 分成最高 100% (1.00000)，最低 0.00001 = 0.001%，6 位整体 + 5 位小数能表达 0.00000-1.00000 区间，最常见 0.05/0.10/0.20 等也无损存
+5. **`brokers` 走 SoftDeleteMixin，但 alembic 测试用例直接物理 DELETE**：spec/10 §BE-S3-007 没明确该不该软删。决策：业务侧走软删（保留历史 conversion_events 关联），物理 DELETE 路径仅留给运维 / 测试场景；ConversionEvent FK 用 `ON DELETE CASCADE`（物理删时不留孤儿埋点），与软删互不冲突
+6. **`conversion_events.user_id ON DELETE SET NULL` 而非 CASCADE**：spec 没明确。决策：用户注销不丢 CPA / CPS 财务历史（与 `invite_codes.owner_user_id` 同思路）；vip_orders / vip_memberships 反过来用 CASCADE（私密支付数据，注销 = 彻底清）
+7. **`brokers.is_active` 与 `deleted_at` 双字段并存**：`is_active=false` 是"暂时下架"（运营场景，可秒级 toggle），`deleted_at NOT NULL` 是"逻辑删除"（永久下线，一般不再恢复）。两个字段语义正交，列表 API `WHERE is_active=true AND deleted_at IS NULL` 双过滤
+
+#### 待办（业务侧 PR 跟进）
+
+> 本次 schema-only PR 已完成；BE-S3-007 / 008 / 009 三个 issue 的"业务代码"待后续 PR 按 spec/10 §AC 落地：
+
+| Issue | 业务代码内容 | 估时 |
+|-------|--------------|:---:|
+| **BE-S3-007 业务侧** | `seeds/brokers.json` (6-8 家种子) + `seed_brokers.py` 幂等 upsert 脚本 + `BrokerPublic` / `BrokerInternal` schema + `broker_service.py`（横向对比 + 筛选 / 排序）+ `api/v1/brokers.py` 路由 + 缓存（5 min / 30 min）+ ≥ 10 条 e2e 测 | 0.5d |
+| **BE-S3-008 业务侧** | `conversion_service.py` + `/brokers/{slug}/redirect` 端点（utm_campaign + 302）+ `/brokers/{slug}/stats` 端点 + Redis 防刷（同 device 1h 1 行 click）+ 占位 `/brokers/postback` 501 + ≥ 8 条 e2e 测 | 0.5d |
+| **BE-S3-009 业务侧** | `vip_service.py`（grant_trial + 续费状态机 + expire_overdue scheduler）+ `auth_service.register` 钩子调 grant_trial + `agent.quota._resolve_plan` 接真表 + `api/v1/vip.py` 路由 + ≥ 12 条 e2e 测 | 1d |
+
+#### 下一步推荐
+
+| 候选 | 理由 |
+|------|------|
+| **BE-S3-002** (多源 ingest 框架, 1.5d) | 三张 alembic 已沉淀，文章线 / 券商线 / VIP 线现在完全并行起跑；BE-S3-002 是文章线最长串行依赖（→ 003 → 004 → 005 → 006），最值得先开 |
+| BE-S3-007 业务侧 (seeds + 横向对比 API, 0.5d) | 变现线第一步，6-8 家种子数据 + API 完工就能让 FE-S3-003 起跑 |
+| BE-S3-009 业务侧 (grant_trial + quota 接真表, 1d) | 商业化线第一步，但依赖 `_resolve_plan` 接真表会动 agent.quota 测试，建议放 BE-S3-002/007 之后 |
+
+→ **建议下一步走 BE-S3-002**（多源 ingest 框架），文章线是 Sprint 3 最长串行路径（5d），先开能避免成为关键路径瓶颈
 
 ---
 

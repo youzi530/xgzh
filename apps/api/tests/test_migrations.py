@@ -2,7 +2,7 @@
 
 覆盖:
 1. ``alembic upgrade head`` 能在干净库上跑通 (含 pgvector + pgcrypto extension)
-2. 7 张业务表 + 30 个索引 + 必要约束正确创建
+2. 13 张业务表 + 40+ 个索引 + 必要约束正确创建 (0001-0007 全链路)
 3. ``alembic downgrade base`` 能完整反向 (除了 alembic_version 自身)
 4. 再次 ``upgrade head`` 仍可幂等成功
 
@@ -39,6 +39,12 @@ EXPECTED_TABLES = {
     # 0005 BE-S3-001: Article 域两表
     "articles",
     "article_topics",
+    # 0006 BE-S3-007/008: Broker 域两表
+    "brokers",
+    "conversion_events",
+    # 0007 BE-S3-009: VIP 域两表
+    "vip_orders",
+    "vip_memberships",
 }
 
 EXPECTED_INDEXES_SUBSET = {
@@ -67,6 +73,23 @@ EXPECTED_INDEXES_SUBSET = {
     "uq_articles_original_url",
     "uq_article_topics_child_article_id",
     "ix_article_topics_parent_article_id",
+    # 0006 BE-S3-007: Broker 1 个二级索引 + 1 UNIQUE
+    "uq_brokers_slug",
+    "ix_brokers_is_active_display_order",
+    # 0006 BE-S3-008: ConversionEvent 4 个二级索引
+    "ix_conversion_events_broker_event_created",
+    "ix_conversion_events_user_created",
+    "ix_conversion_events_utm_campaign_created",
+    "ix_conversion_events_attributed_created",
+    # 0007 BE-S3-009: VipMembership 2 个二级索引 + 1 UNIQUE
+    "uq_vip_memberships_user_id",
+    "ix_vip_memberships_status_end_at",
+    "ix_vip_memberships_end_at",
+    # 0007 BE-S3-009: VipOrder 3 个二级索引 + 1 UNIQUE
+    "uq_vip_orders_out_trade_no",
+    "ix_vip_orders_user_created",
+    "ix_vip_orders_status_created",
+    "ix_vip_orders_payment_channel_created",
 }
 
 
