@@ -69,14 +69,18 @@ export interface IPOListParams {
  * 前端不需要自己做请求去重 (短期内重复刷新走的是后端缓存, 不打数据库)。
  */
 export function fetchIPOList(market: Market = 'HK', params: IPOListParams = {}) {
-  const qs = new URLSearchParams()
-  qs.set('market', market)
-  if (params.status) qs.set('status', params.status)
-  if (params.industry) qs.set('industry', params.industry)
-  qs.set('page', String(params.page ?? 1))
-  qs.set('size', String(params.size ?? 20))
+  // 不用 URLSearchParams: 微信小程序 JSCore 没暴露这个全局 (H5/App 才有);
+  // uni.request GET + data 会自动序列化为 query string, 跨三端兼容。
+  const data: Record<string, string | number> = {
+    market,
+    page: params.page ?? 1,
+    size: params.size ?? 20,
+  }
+  if (params.status) data.status = params.status
+  if (params.industry) data.industry = params.industry
   return request<IPOListResponse>({
-    url: `/api/v1/ipos?${qs.toString()}`,
+    url: '/api/v1/ipos',
+    data,
   })
 }
 

@@ -87,7 +87,12 @@ function getBaseURL(): string {
 }
 
 function parseSSEBuffer(buffer: string, onEvent: (evt: SSEEvent) => void): string {
-  const blocks = buffer.split('\n\n')
+  // 兼容 ``\r\n\r\n`` (sse_starlette / 严格 SSE 规范) 和 ``\n\n`` (LF only) 两种分隔.
+  // 先把 ``\r\n`` 统一成 ``\n``, 再按 ``\n\n`` 切 block — 否则后端 CRLF 输出
+  // 在这里 split('\n\n') 一片切不出来, 所有数据卡在 buffer 直到 reader done
+  // (历史坑 23: 前端 SSE parser 没兼容 CRLF, fetch 收到 3kB 数据但 0 个 event 触发).
+  const normalized = buffer.replace(/\r\n/g, '\n')
+  const blocks = normalized.split('\n\n')
   const remainder = blocks.pop() ?? ''
   for (const block of blocks) {
     if (!block.trim()) continue

@@ -126,16 +126,30 @@ def _resolve_plan(user: User | None) -> QuotaPlan:
 
     - 没登录 → ``ANONYMOUS``
     - 登录 + UUID 在 ``settings.vip_user_id_whitelist`` → ``VIP``
+    - 登录 + 手机号在 ``settings.vip_user_phone_whitelist`` → ``VIP``  (dev 友好)
     - 否则 → ``FREE``
 
     Sprint 3 接 ``vip_memberships`` 表后改这里读表 + 缓存; 接口签名不变.
+
+    手机号匹配走归一化 bare 形式 (去 +86/+852/+65 前缀); 与 ``vip_user_phone_set``
+    保持一致.
     """
     if user is None:
         return QuotaPlan.ANONYMOUS
     settings = get_settings()
-    vip_set = settings.vip_user_id_set
-    if vip_set and str(user.user_id).lower() in vip_set:
+    if settings.vip_user_id_set and str(user.user_id).lower() in settings.vip_user_id_set:
         return QuotaPlan.VIP
+    phone_set = settings.vip_user_phone_set
+    if phone_set and user.phone:
+        # User.phone 落库时已归一化为 ``+86xxx`` E.164 (见 utils/phone.py),
+        # 这里去掉 + 和国家区号后比较, 保持白名单灵活 (用户可在 .env 直接写 11 位裸号)
+        bare = user.phone.lstrip("+")
+        for prefix in ("86", "852", "65"):
+            if bare.startswith(prefix) and len(bare) > len(prefix):
+                bare = bare[len(prefix):]
+                break
+        if bare in phone_set:
+            return QuotaPlan.VIP
     return QuotaPlan.FREE
 
 

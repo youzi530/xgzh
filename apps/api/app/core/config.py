@@ -88,6 +88,21 @@ class Settings(BaseSettings):
     otp_verify_max_attempts: int = Field(
         default=5, description="同手机号 OTP 校验最大尝试次数 (滑动窗 = otp_ttl)"
     )
+    # ── DEV-only OTP 白名单 ─────────────────────────────────────────
+    # 用途: 本地 / CI 没有真实 SMS 通道时, 让指定手机号始终拿到固定 OTP, 不打外网。
+    # 双重护栏: 仅当 ``app_env != prod`` 且 ``sms_adapter == mock`` 时生效;
+    #           生产配置即便误填也不会跳过短信发送 (见 otp_service.send_otp)。
+    # 配置方式 (.env):
+    #   OTP_DEV_FIXED_PHONES=13007458553,15912345678
+    #   OTP_DEV_FIXED_CODE=888888
+    otp_dev_fixed_phones: str = Field(
+        default="",
+        description="逗号分隔的手机号白名单 (E.164 或 11 位裸号), 命中后跳过短信走固定 OTP",
+    )
+    otp_dev_fixed_code: str = Field(
+        default="888888",
+        description="白名单手机号统一使用的固定 6 位 OTP (仅 dev/mock 生效)",
+    )
 
     jwt_secret: str = Field(
         default="dev-only-do-not-use-in-prod-please-set-JWT_SECRET",
@@ -299,6 +314,20 @@ class Settings(BaseSettings):
             "Sprint 3 引入 vip_memberships 表后此白名单退化为 dev 兜底, 不再承担生产权限."
         ),
     )
+    # ── DEV-only: 基于手机号的 VIP 白名单 ───────────────────────────
+    # 用途: 本地 / 测试账号没法预先知道 user_id (UUID 是注册时才生成), 但手机号
+    # 是用户注册时就确定的; 加一份基于手机号的白名单方便 ops 在 .env 里维护:
+    #   VIP_USER_PHONE_WHITELIST=13007458553,15912345678
+    # 命中规则与 OTP 白名单一致 (E.164 +86 / +852 / +65 前缀, 或 11 位裸号都行)
+    # 双重护栏: 与 ``vip_user_id_whitelist`` 一样, Sprint 3 接 vip_memberships
+    # 表后退化为 dev 兜底; 生产环境填了也只是"测试号免配额", 不会造成线上风险
+    vip_user_phone_whitelist: str = Field(
+        default="",
+        description=(
+            "VIP 白名单手机号, 逗号分隔. 接受 11 位裸号或 E.164 (+86 / +852 / +65). "
+            "命中即算 VIP, 走 ``agent_quota_vip_per_window`` (默认 -1 无限)."
+        ),
+    )
 
     @property
     def vip_user_id_set(self) -> frozenset[str]:
@@ -306,6 +335,23 @@ class Settings(BaseSettings):
         return frozenset(
             s.strip().lower()
             for s in self.vip_user_id_whitelist.split(",")
+            if s.strip()
+        )
+
+    @property
+    def vip_user_phone_set(self) -> frozenset[str]:
+        """白名单手机号 set, 已归一化 (去 +86/+852/+65 前缀, 留 11 位/8 位裸号)."""
+
+        def _bare(p: str) -> str:
+            s = p.strip().lstrip("+")
+            for prefix in ("86", "852", "65"):
+                if s.startswith(prefix) and len(s) > len(prefix):
+                    return s[len(prefix):]
+            return s
+
+        return frozenset(
+            _bare(s)
+            for s in self.vip_user_phone_whitelist.split(",")
             if s.strip()
         )
 

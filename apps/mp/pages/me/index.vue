@@ -70,6 +70,12 @@ function refreshAuthGate() {
     uni.reLaunch({ url: '/pages/auth/login' })
     return
   }
+  // 防御性: me 页本身不应该自动弹升级 modal (gotoVip 是 user-initiated 才弹).
+  // 但 modal 是模块级单例 visible, 上一页 (例如 agent 页 quota 错) 没成功 close
+  // 时切回 me 页会 stale 显示. 这里 onShow 强制 close — 与 auth setSession 的
+  // reset 是双保险: 即便用户没经历 setSession (例如冷启动已经登录), me 页 onShow
+  // 时把 modal 复位.
+  upgrade.close()
   const cached = uni.getStorageSync(KEY_BOUND_REFERRER) as string | ''
   boundReferrer.value = cached || null
   // 预热自选列表; 失败不阻塞页面渲染, FE-006 列表页内还会再 ensure 一次

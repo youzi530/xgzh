@@ -191,7 +191,7 @@ onPullDownRefresh(async () => {
         class="list-row"
         @longpress="onLongPress(f)"
       >
-        <IPOCard :item="toIPOItem(f)" @tap="openDetail" />
+        <IPOCard :item="toIPOItem(f)" @select="openDetail" />
       </view>
 
       <view class="list-footer">

@@ -67,6 +67,29 @@ export function useUpgradeModal() {
   }
 
   /**
+   * 完全 reset 单例状态: visible / source / quota 全清.
+   *
+   * 与 ``close`` 区别:
+   * - ``close``  仅 visible=false, 保留 source / quota — 让退场动画期间 UI 不闪
+   *               (例如 banner 来源关弹后, source='quota_banner' 留着等下次 open 复用)
+   * - ``reset``  source 回 'manual', quota 回 null — 用于"语义边界变化"场景:
+   *               1) 用户登录 / 登出 (auth setSession / clearSession): 旧 quota 已经
+   *                  跟新身份无关, 留着会让下次 open 显错套餐
+   *               2) Pinia store 主动 reset: chat store reset 时配额上下文也作废
+   *
+   * 加这个的真实原因: visible 是模块级 ref, 跨页面跨 setup 都共享一份. 在 agent
+   * 页 quota 触发 open 后没成功 close (例如旧 catchtap noop bug 把按钮事件吃掉),
+   * 用户切到 me 页, ``<UpgradeVipModal />`` 挂载时读到 visible=true → 立即显示,
+   * 用户体验是"我刚进 me 页就弹了升级 VIP". 即便修了 modal 关闭按钮, 也应该在
+   * "登录态变化"这种语义边界把状态清干净, 不依赖用户必须点 X.
+   */
+  function reset() {
+    visible.value = false
+    source.value = 'manual'
+    quota.value = null
+  }
+
+  /**
    * 用户点"立即升级"; 当前支付通道未上线, 走占位 modal.
    *
    * Sprint 3 落实支付时, 这里改成:
@@ -91,6 +114,7 @@ export function useUpgradeModal() {
     quota: readonly(quota),
     open,
     close,
+    reset,
     gotoPay,
   }
 }

@@ -24,10 +24,36 @@ from loguru import logger
 from app.adapters.sms import SMSDeliveryError, get_sms_adapter
 from app.adapters.sms.base import SMSSendResult
 from app.cache import get_redis_client
+from app.core.config import get_settings
 from app.utils.phone import mask_phone
 
 OTP_REDIS_NAMESPACE = "otp"
 OTP_CODE_LENGTH = 6
+
+
+def _is_dev_whitelisted(phone: str) -> tuple[bool, str | None]:
+    """白名单命中判定. 双重护栏:
+    1. ``app_env != prod`` (生产无论如何不走白名单)
+    2. ``sms_adapter == mock`` (走真实通道时也不允许白名单, 避免遗忘后线上短信跳过)
+
+    Returns:
+        (hit, fixed_code): 命中时返回 ``(True, "888888")``, 否则 ``(False, None)``。
+    """
+    settings = get_settings()
+    if settings.app_env == "prod":
+        return False, None
+    if settings.sms_adapter != "mock":
+        return False, None
+    raw = settings.otp_dev_fixed_phones.strip()
+    if not raw:
+        return False, None
+    whitelist = {p.strip() for p in raw.split(",") if p.strip()}
+    if phone not in whitelist:
+        # 也允许去掉 +86 / +852 这类前缀直接匹配 11 位裸号
+        bare = phone.lstrip("+").removeprefix("86").removeprefix("852").removeprefix("65")
+        if bare not in whitelist:
+            return False, None
+    return True, settings.otp_dev_fixed_code
 
 
 def _otp_key(phone: str) -> str:
@@ -61,12 +87,31 @@ async def consume_otp(phone: str) -> None:
 async def send_otp(phone: str, ttl_seconds: int) -> SMSSendResult:
     """生成 + 存储 + 发送. 仅做这三件事, 限流由路由装饰器负责.
 
+    DEV 白名单短路: 命中 ``otp_dev_fixed_phones`` (且 env 非 prod + adapter=mock)
+    时跳过 SMS adapter, 直接把固定 OTP 写 Redis. 客户端调 ``/auth/login/phone``
+    用 ``otp_dev_fixed_code`` (默认 ``888888``) 即可登录, 完全无外网依赖。
+
     Returns:
-        SMSSendResult: 不包含原始 OTP 码
+        SMSSendResult: 不包含原始 OTP 码; 白名单分支返回伪造的 ``provider="dev-whitelist"``
 
     Raises:
         SMSDeliveryError: 通道发送失败 (上层应 502 或 retry)
     """
+    hit, fixed = _is_dev_whitelisted(phone)
+    if hit and fixed is not None:
+        await store_otp(phone, fixed, ttl_seconds=ttl_seconds)
+        logger.warning(
+            f"[DEV-WHITELIST] otp.short_circuit phone={mask_phone(phone)} "
+            f"code={fixed} ttl={ttl_seconds}s (no SMS sent)"
+        )
+        # 用 phone 后 6 位 + ts 占位填一个 request_id, 跟真实通道 schema 对齐
+        import secrets as _s
+        return SMSSendResult(
+            request_id=f"dev-{_s.token_hex(6)}",
+            provider="dev-whitelist",
+            success=True,
+        )
+
     code = generate_otp_code()
     await store_otp(phone, code, ttl_seconds=ttl_seconds)
     logger.info(f"otp.generated phone={mask_phone(phone)} ttl={ttl_seconds}s")

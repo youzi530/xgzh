@@ -30,6 +30,7 @@ import {
   logout as logoutAPI,
   refreshToken as refreshTokenAPI,
 } from '@/api/auth'
+import { useUpgradeModal } from '@/composables/upgradeModal'
 import {
   clearAuth,
   getAccessToken,
@@ -80,6 +81,43 @@ export const useAuthStore = defineStore('auth', () => {
    */
   const loggedIn = computed(() => isAccessFresh.value || isRefreshFresh.value)
 
+  /**
+   * 跨 store 副作用: 登录态变化时清掉别的 store / composable 里的 stale state.
+   *
+   * 为什么写这里而不是订阅:
+   * - chat store 的 ``globalError`` (常见的 quota 错残留) + UpgradeModal 单例
+   *   ``visible`` 都是"上一次会话"的副作用, 与新身份无关;
+   * - 不清的话症状是: A 没登录撞 quota → modal 弹 → 切去登录 → 回来 modal 还在
+   *   (而且即便后端识别到新身份是 VIP, 前端 globalError 也不会自动消)
+   * - 用 watch 监听 user 变化也能做, 但要在 chat store 里定义 watch, 反过来依赖
+   *   auth store, 形成 chat ⇄ auth 双向引用. 这里 auth → upgrade / chat 单向更清晰.
+   *
+   * 不直接 import chat store 的原因: chat store 在 sendQuestion 里 import 了一堆
+   * SSE / typewriter 重模块, hydrate 路径会拉它们进 main bundle 导致首屏尾巴胖.
+   * 用 ``import('@/stores/chat')`` 动态 import 让它真正走在 lazy 路径; 副作用是
+   * 清错的瞬间 chat store 还没被实例化, 那时也没什么要清的, 直接 noop 即可.
+   */
+  function _onSessionChanged() {
+    try {
+      // upgrade modal 是模块级 ref 单例, 直接同步 reset 不需要 dynamic import
+      useUpgradeModal().reset()
+    } catch (e) {
+      console.warn('[auth] reset upgrade modal failed', e)
+    }
+    // chat store 用 dynamic import 防 bundle 体积污染 + 防循环 import
+    void import('@/stores/chat')
+      .then((mod) => {
+        try {
+          mod.useChatStore().dismissGlobalError()
+        } catch (e) {
+          console.warn('[auth] dismiss chat globalError failed', e)
+        }
+      })
+      .catch(() => {
+        // chat 模块还没载入 → 没 store 可清, noop
+      })
+  }
+
   // ─── actions ───────────────────────────────────────────
   function setSession(resp: LoginResponse) {
     saveAuth(resp)
@@ -88,6 +126,7 @@ export const useAuthStore = defineStore('auth', () => {
     accessExpiresAt.value = Date.now() + resp.tokens.expires_in * 1000
     refreshExpiresAt.value = Date.now() + resp.tokens.refresh_expires_in * 1000
     user.value = resp.user
+    _onSessionChanged()
   }
 
   function setTokens(t: TokenPair) {
@@ -96,6 +135,8 @@ export const useAuthStore = defineStore('auth', () => {
     refreshTokenRef.value = t.refresh_token
     accessExpiresAt.value = Date.now() + t.expires_in * 1000
     refreshExpiresAt.value = Date.now() + t.refresh_expires_in * 1000
+    // setTokens 是 silent refresh, 身份不变 → 不需要 reset modal/chat
+    // (refresh token rotation 不影响 user_id, 配额上下文继续有效)
   }
 
   function clearSession() {
@@ -105,6 +146,7 @@ export const useAuthStore = defineStore('auth', () => {
     accessExpiresAt.value = 0
     refreshExpiresAt.value = 0
     user.value = null
+    _onSessionChanged()
   }
 
   /**

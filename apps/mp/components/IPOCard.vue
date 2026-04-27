@@ -31,8 +31,11 @@ const props = withDefaults(
   },
 )
 
+// 不能用 'tap' 作为 emit 名: 小程序里 @tap 是 view 元素原生事件关键字, 外层
+// `<IPOCard @tap="cb">` 会被 mp-weixin 编译器解析成监听根 view 的原生 tap 事件
+// (回调收到 TouchEvent 而不是 emit 的 item) → 用 'select' 避开冲突。
 defineEmits<{
-  (e: 'tap', item: IPOItem): void
+  (e: 'select', item: IPOItem): void
 }>()
 
 const palette = computed(() => statusPalette(props.item.status))
@@ -100,7 +103,7 @@ function fmtMD(s: string): string {
       '--status-fg': palette.fg,
       '--status-border': palette.border,
     }"
-    @tap="$emit('tap', item)"
+    @tap="$emit('select', item)"
   >
     <view class="ipo-status">
       <text class="ipo-status-text">{{ label }}</text>

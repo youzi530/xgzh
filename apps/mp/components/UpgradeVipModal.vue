@@ -131,12 +131,24 @@ const perks: Perk[] = [
   },
 ]
 
-function onMaskTap() {
-  upgrade.close()
+/**
+ * mask 点击关弹.
+ *
+ * 不再用 panel 的 ``@tap.stop`` 阻止冒泡 (在 mp-weixin 上配空 noop catchtap
+ * 会偶发吃掉子按钮的 bindtap 事件, 表现就是 "稍后再说 / X 没反应"). 改为 mask
+ * 自己用 ``e.target.dataset.role === 'mask'`` 判断 ── 只在用户真正点到 mask
+ * 那一层时关弹, 点 panel 内任意子节点 dataset 都不是 mask, 自然不关。
+ *
+ * 跨端兼容:
+ * - H5  : e.target 是 DOM, ``dataset.role`` 走 attribute 读
+ * - MP  : e.target 是 ``{id, dataset, offsetLeft,...}``, dataset 同名
+ * - App : 同 MP (uni-app 走 weex / nvue 都遵循 spec)
+ */
+function onMaskTap(e: { target?: { dataset?: { role?: string } } }) {
+  if (e?.target?.dataset?.role === 'mask') {
+    upgrade.close()
+  }
 }
-
-/** 阻止 panel 内点击穿透到 mask (否则点 panel 内任意位置都关弹) */
-function noop() {}
 
 function onClose() {
   upgrade.close()
@@ -148,11 +160,26 @@ function onUpgrade() {
 </script>
 
 <template>
-  <view v-show="upgrade.visible.value" class="uv-mask" @tap="onMaskTap">
-    <view class="uv-panel" @tap.stop="noop">
+  <view
+    v-show="upgrade.visible.value"
+    class="uv-mask"
+    data-role="mask"
+    @tap="onMaskTap"
+  >
+    <!--
+      panel 不再绑 @tap.stop="noop"; 见 onMaskTap 注释.
+      catchtouchmove: 防止 mask 滚动时穿透到底层 scroll-view (mp-weixin 必加,
+      否则 modal 打开时背后页面还能跟手滚)
+    -->
+    <view class="uv-panel" @touchmove.stop.prevent="">
       <!-- 顶部装饰条 + 关闭按钮 -->
       <view class="uv-handle" />
-      <view class="uv-close" @tap="onClose">
+      <view
+        class="uv-close"
+        hover-class="uv-close-hover"
+        :hover-stay-time="80"
+        @tap="onClose"
+      >
         <text class="uv-close-x">×</text>
       </view>
 
@@ -209,12 +236,22 @@ function onUpgrade() {
         </text>
       </scroll-view>
 
-      <!-- 底部双 CTA -->
+      <!-- 底部双 CTA: hover-class 给视觉点击反馈, mp-weixin 上比 :active 伪类更稳 -->
       <view class="uv-actions">
-        <view class="uv-btn uv-btn-secondary" @tap="onClose">
+        <view
+          class="uv-btn uv-btn-secondary"
+          hover-class="uv-btn-secondary-hover"
+          :hover-stay-time="80"
+          @tap="onClose"
+        >
           <text class="uv-btn-text-ghost">稍后再说</text>
         </view>
-        <view class="uv-btn uv-btn-primary" @tap="onUpgrade">
+        <view
+          class="uv-btn uv-btn-primary"
+          hover-class="uv-btn-primary-hover"
+          :hover-stay-time="80"
+          @tap="onUpgrade"
+        >
           <text class="uv-btn-text">立即升级</text>
         </view>
       </view>
@@ -288,9 +325,14 @@ function onUpgrade() {
   z-index: 1;
 }
 
+.uv-close-hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
 .uv-close-x {
   font-size: 36rpx;
-  color: var(--color-text-muted, #94a3b8);
+  /* 不用 var: 避免 mp-weixin 在 :root 没生效时回 fallback 黑色看不见 */
+  color: #94a3b8;
   line-height: 1;
 }
 
@@ -483,10 +525,20 @@ function onUpgrade() {
   border: 1rpx solid rgba(255, 255, 255, 0.12);
 }
 
+.uv-btn-secondary-hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
 .uv-btn-primary {
   background: linear-gradient(135deg, #f6c453, #d97706);
   /* 微金属感: 内层高光 */
   box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.32);
+}
+
+.uv-btn-primary-hover {
+  background: linear-gradient(135deg, #d97706, #b45309);
+  box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.16);
 }
 
 .uv-btn-text {

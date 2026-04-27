@@ -36,6 +36,7 @@ LiteLLM 1.51 对 cohere-style rerank 的路由要求 ``COHERE_API_KEY`` env, 路
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -452,6 +453,8 @@ async def stream_chat(
             "stream": True,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            # 与 astream_chat_with_meta 对齐 — 流式调用必须显式 timeout 防 hang
+            "timeout": s.llm_request_timeout_seconds,
         }
         response = await acompletion(**call_kwargs)
         async for chunk in response:
@@ -512,13 +515,19 @@ async def astream_chat_with_meta(
         "stream_options": {"include_usage": True},  # OpenAI / 硅基均支持
         "temperature": use_temp,
         "max_tokens": max_tokens,
+        # 流式必须显式 timeout — LiteLLM 把它落到 httpx transport, 既覆盖
+        # connect, 也覆盖 chunk 间 read. 不设的话 provider 卡住不返回 chunk
+        # (实测 GLM-4-Flash 第二轮 tool_result 调用时偶发) 会让 SSE 永远 hang,
+        # 前端只能看见"加载中"无尽转圈. 60s 是兜底, 单步 LLM 正常流应远低于它.
+        "timeout": s.llm_request_timeout_seconds,
     }
     if tools:
         call_kwargs["tools"] = tools
 
     logger.info(
         f"llm.stream_chat_meta model={use_model} provider={provider} "
-        f"msgs={len(messages)} tools={len(tools) if tools else 0}"
+        f"msgs={len(messages)} tools={len(tools) if tools else 0} "
+        f"timeout={s.llm_request_timeout_seconds}s"
     )
 
     final_finish: str | None = None
@@ -526,9 +535,37 @@ async def astream_chat_with_meta(
     final_tool_calls: list[dict[str, Any]] | None = None
     tool_call_acc: dict[int, dict[str, Any]] = {}
 
+    # 双层 timeout 防御:
+    #
+    # 1) ``call_kwargs["timeout"]`` 走 LiteLLM → httpx transport, 是"应该"工作的总
+    #    timeout, 但实测 LiteLLM 1.51 在 stream=True + 智谱 paas-v4 OpenAI 兼容路径
+    #    下不会把它真正落到 httpx 的 read timeout, provider 卡住不发 chunk 时
+    #    ``async for chunk in response`` 会永远等下去 (踩坑 21 第二次复现).
+    #
+    # 2) 这里加 ``asyncio.wait_for`` per-chunk 超时, 是不依赖 LiteLLM 的硬兜底:
+    #    每次等 chunk 超过 ``llm_chunk_idle_timeout_seconds`` (默认 ~30s) 就抛
+    #    ``asyncio.TimeoutError`` → 转成 ``LLMProviderError``. 即便 LiteLLM /
+    #    httpx / provider 任意一层不遵守 timeout 协议, 这里也兜得住.
+    #
+    # 取舍: per-chunk 而不是总 timeout 是因为 LLM 流可能正常持续 1-3 分钟 (长答),
+    # 总 timeout 60s 会把成功的长流也误杀; 而单 chunk 间 30s 没新字必定是 hang.
+    chunk_idle_timeout = float(s.llm_request_timeout_seconds) / 2  # 60s/2 = 30s
+
     try:
-        response = await acompletion(**call_kwargs)
-        async for chunk in response:
+        response = await asyncio.wait_for(
+            acompletion(**call_kwargs),
+            timeout=s.llm_request_timeout_seconds,
+        )
+        # response 拿到后, 流的迭代每次最多等 chunk_idle_timeout 没新内容就放弃
+        response_iter = response.__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    response_iter.__anext__(),
+                    timeout=chunk_idle_timeout,
+                )
+            except StopAsyncIteration:
+                break
             delta_text = ""
             try:
                 choice = chunk.choices[0]
@@ -568,6 +605,18 @@ async def astream_chat_with_meta(
 
             if delta_text:
                 yield ChatStreamChunk(delta=delta_text)
+    except asyncio.TimeoutError as e:
+        logger.error(
+            f"llm.stream_chat_meta TIMEOUT model={use_model} "
+            f"chunk_idle={chunk_idle_timeout}s — provider 没在限时内返回新 chunk, "
+            f"可能是 GLM-4-Flash tool_result 路径偶发卡死 (踩坑 21)"
+        )
+        raise LLMProviderError(
+            f"stream_chat 超时 ({chunk_idle_timeout}s 内无新 chunk)",
+            provider=provider,
+            model=use_model,
+            cause=e,
+        ) from e
     except LLMError:
         raise
     except Exception as e:

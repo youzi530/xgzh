@@ -202,7 +202,7 @@ onReachBottom(() => {
           :key="`hero-${item.code}`"
           :item="item"
           variant="hero"
-          @tap="openDetail"
+          @select="openDetail"
         />
       </view>
     </view>
@@ -227,7 +227,7 @@ onReachBottom(() => {
           v-for="item in list"
           :key="item.code"
           :item="item"
-          @tap="openDetail"
+          @select="openDetail"
         />
         <view v-if="hasMore && loading" class="more-state">
           <text>加载更多...</text>
@@ -240,7 +240,7 @@ onReachBottom(() => {
       <IPOCalendar
         v-else
         :items="list"
-        @tap="openDetail"
+        @select="openDetail"
       />
     </template>
 

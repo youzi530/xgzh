@@ -25,8 +25,9 @@ const props = defineProps<{
   items: IPOItem[]
 }>()
 
+// 见 IPOCard.vue: emit 名避开小程序原生 'tap'
 defineEmits<{
-  (e: 'tap', item: IPOItem): void
+  (e: 'select', item: IPOItem): void
 }>()
 
 interface DateGroup {
@@ -117,7 +118,7 @@ function focus(key: string) {
               v-for="item in g.items"
               :key="item.code"
               :item="item"
-              @tap="(i) => $emit('tap', i)"
+              @select="(i) => $emit('select', i)"
             />
           </view>
         </view>
