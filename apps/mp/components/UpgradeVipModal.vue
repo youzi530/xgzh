@@ -28,9 +28,14 @@
  * - **模板嵌套不超过 4 层**: MP-WEIXIN 嵌套层数有性能上限, 实测 5 层以上 setData
  *   时延爆炸; 这里 mask > panel > content > section / actions, 4 层封顶
  *
- * - **不 v-if visible 而是 v-show**: 关弹时退场动画 (``opacity 0 + translateY 100%``)
- *   要求 DOM 仍存在; v-if 直接卸载, 退场无动画. v-show 保留 DOM, 退场用 CSS transition
- *   能跑完. 代价: 首屏多渲染一次 panel (但 ``display: none`` 不参与布局, 实际成本极低)
+ * - **改回 v-if visible (原来是 v-show)**: mp-weixin 上 ``v-show`` 编译为
+ *   ``hidden="{{!visible.value}}"`` 时, 模块级 ref 跨页面共享, 部分场景下 setData
+ *   推送时序错乱, 导致"数据层 visible=false 但 wxml 仍渲染 modal" 的视觉残留 ──
+ *   用户体验是"modal 关不掉/进 me 页就弹". v-if 直接控制 wx:if (DOM 存在性),
+ *   visible=false → 整个节点不渲染, 不存在缓存问题. 代价是退场无 CSS transition
+ *   (translateY 100% → 0 的 slide-up 动画失效, 但**功能正确性 > 视觉过渡** —
+ *   Sprint 3 加 ``<transition>`` wrapper 或者用 ``uni.createSelectorQuery`` 手动
+ *   做退场再考虑)
  *
  * Props
  * =====
@@ -132,53 +137,62 @@ const perks: Perk[] = [
 ]
 
 /**
- * mask 点击关弹.
+ * 统一的 tap 路由: 通过 ``currentTarget.dataset.role`` 区分意图.
  *
- * 不再用 panel 的 ``@tap.stop`` 阻止冒泡 (在 mp-weixin 上配空 noop catchtap
- * 会偶发吃掉子按钮的 bindtap 事件, 表现就是 "稍后再说 / X 没反应"). 改为 mask
- * 自己用 ``e.target.dataset.role === 'mask'`` 判断 ── 只在用户真正点到 mask
- * 那一层时关弹, 点 panel 内任意子节点 dataset 都不是 mask, 自然不关。
+ * 为什么不每个按钮一个 handler:
+ * - mp-weixin 上嵌套 ``<view>`` + ``hover-class`` + ``@tap`` 组合时,
+ *   内层 view 的 ``@tap`` 偶发触发不到 (实测: 用户在小程序里点 "X / 稍后再说"
+ *   修了又坏, 见 RUNBOOK 坑 20). 根因是 hover-class 状态机吃掉了部分 tap.
  *
- * 跨端兼容:
- * - H5  : e.target 是 DOM, ``dataset.role`` 走 attribute 读
- * - MP  : e.target 是 ``{id, dataset, offsetLeft,...}``, dataset 同名
- * - App : 同 MP (uni-app 走 weex / nvue 都遵循 spec)
+ * - 改为只在三个交互元素 (mask / close / upgrade) 上挂同一个 ``@tap="onTap"``,
+ *   每个元素 ``data-role`` 标语义. 即使内层 view 的 tap 没触发, 事件冒泡到
+ *   外层 mask 的 ``@tap`` 也会被捕获 — 此时 ``e.target.dataset.role`` 是真实
+ *   被点的元素 role, 仍然能正确路由 close / upgrade.
+ *
+ * - 用 ``currentTarget`` 优先 (即绑定 listener 的元素自己), 没有再 fallback
+ *   到 ``target`` (冒泡上来时是真实点击源). 跨端 (H5 / mp-weixin / App):
+ *   currentTarget.dataset 都遵循 W3C / wx spec, 兼容性最好.
+ *
+ * - panel 自身 ``data-role="panel"``, 点到 panel 空白处 (头部/权益清单)
+ *   走"既不 close 也不 upgrade"的 noop 分支, 不会误关弹.
  */
-function onMaskTap(e: { target?: { dataset?: { role?: string } } }) {
-  if (e?.target?.dataset?.role === 'mask') {
+type TapEvent = {
+  currentTarget?: { dataset?: { role?: string } }
+  target?: { dataset?: { role?: string } }
+}
+
+function onTap(e: TapEvent) {
+  const role = e?.currentTarget?.dataset?.role || e?.target?.dataset?.role
+  if (role === 'close' || role === 'mask') {
     upgrade.close()
+  } else if (role === 'upgrade') {
+    upgrade.gotoPay()
   }
-}
-
-function onClose() {
-  upgrade.close()
-}
-
-function onUpgrade() {
-  upgrade.gotoPay()
+  // 点到 panel / panel 内非交互区 (header / perks) → noop, 不动 modal
 }
 </script>
 
 <template>
   <view
-    v-show="upgrade.visible.value"
+    v-if="upgrade.visible.value"
     class="uv-mask"
     data-role="mask"
-    @tap="onMaskTap"
+    @tap="onTap"
   >
     <!--
-      panel 不再绑 @tap.stop="noop"; 见 onMaskTap 注释.
+      panel 自己 data-role="panel"; 点到 panel 空白处 onTap 走 noop 分支.
       catchtouchmove: 防止 mask 滚动时穿透到底层 scroll-view (mp-weixin 必加,
       否则 modal 打开时背后页面还能跟手滚)
     -->
-    <view class="uv-panel" @touchmove.stop.prevent="">
+    <view class="uv-panel" data-role="panel" @touchmove.stop.prevent="">
       <!-- 顶部装饰条 + 关闭按钮 -->
       <view class="uv-handle" />
       <view
         class="uv-close"
+        data-role="close"
         hover-class="uv-close-hover"
         :hover-stay-time="80"
-        @tap="onClose"
+        @tap="onTap"
       >
         <text class="uv-close-x">×</text>
       </view>
@@ -240,17 +254,19 @@ function onUpgrade() {
       <view class="uv-actions">
         <view
           class="uv-btn uv-btn-secondary"
+          data-role="close"
           hover-class="uv-btn-secondary-hover"
           :hover-stay-time="80"
-          @tap="onClose"
+          @tap="onTap"
         >
           <text class="uv-btn-text-ghost">稍后再说</text>
         </view>
         <view
           class="uv-btn uv-btn-primary"
+          data-role="upgrade"
           hover-class="uv-btn-primary-hover"
           :hover-stay-time="80"
-          @tap="onUpgrade"
+          @tap="onTap"
         >
           <text class="uv-btn-text">立即升级</text>
         </view>

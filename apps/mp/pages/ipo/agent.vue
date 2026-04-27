@@ -46,7 +46,7 @@
  * - 不带 query 也能直接进 (通用对话; chat store ``setIpoContext(null)``)
  */
 
-import { onLoad, onUnload } from '@dcloudio/uni-app'
+import { onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
@@ -173,10 +173,29 @@ onLoad((query) => {
   chat.setIpoContext(code || null, name)
 })
 
+/**
+ * 防御性: agent 页每次显时 close 升级 modal.
+ *
+ * 原因 / 触发场景:
+ * - 用户在 agent 页点 quota banner 弹 modal → 没关就 navigateBack 回 ipo 详情
+ *   → 再 navigateTo 进新的 agent 页 (mp-weixin 是 push 新实例, onLoad 重跑)
+ *   → 新页面 ``<UpgradeVipModal />`` 挂载时读到模块级 visible=true → 立即显示
+ * - 同一页 onShow (从后台切回前台) 时也防御性关一下, 避免 stale 残留
+ *
+ * 与 me 页 onShow close 是同一组防御 (双保险): modal 是模块级单例 visible,
+ * 任何"页面切换"都视作语义边界, 默认关闭旧 modal; 如需 modal 跨页保持可见,
+ * 应该让 modal 持有 ``persistAcrossPages`` 标志 (目前业务上不需要).
+ */
+onShow(() => {
+  upgrade.close()
+})
+
 onUnload(() => {
   // 离页清空: 后续重进默认起新会话; 多轮历史靠后端 session_id 续聊, 不在前端持久化
   // (Sprint 3 加历史列表页时再改成持久化)
   chat.reset()
+  // modal 也清干净, 防止下个挂 modal 的页面读到 stale visible
+  upgrade.close()
 })
 
 async function send() {
