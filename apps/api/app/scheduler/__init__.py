@@ -29,6 +29,7 @@ from apscheduler.triggers.date import DateTrigger
 from app.core.config import Settings, get_settings
 from app.core.logging import logger
 from app.services import ipo_ingest_service
+from app.services.article_ingest import run_ingest_articles_job
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -58,12 +59,15 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
     注册的 job:
     - ``ipo_ingest_a_initial`` / ``ipo_ingest_a_cron``: BE-007 A 股 IPO
     - ``ipo_ingest_hk_initial`` / ``ipo_ingest_hk_cron``: BE-S2-000 HK IPO
+    - ``article_ingest_initial`` / ``article_ingest_cron``: BE-S3-002 多源文章 ingest
     """
     for job_id in (
         "ipo_ingest_a_initial",
         "ipo_ingest_a_cron",
         "ipo_ingest_hk_initial",
         "ipo_ingest_hk_cron",
+        "article_ingest_initial",
+        "article_ingest_cron",
     ):
         with contextlib.suppress(Exception):
             scheduler.remove_job(job_id)
@@ -117,10 +121,36 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         name=f"IPO Ingest (HK) — cron {hk_hours}:00 {settings.ipo_ingest_hk_timezone}",
     )
 
+    # ─── 文章多源 ingest (BE-S3-002) ───────────────────────────────
+    # 启动延迟 > A/HK ingest 的两个延迟, 让 IPO 表先有数据再跑文章 (依赖 IPO
+    # 关键词反查; 否则 keyword_index 空文章全丢). cron 走分钟表达式 (默认 */60)
+    # 而非 hour, 让"每 1h 跑一次"或"每 30min 跑一次"切换更细粒度.
+    art_delay = settings.article_ingest_initial_delay_seconds
+    if art_delay > 0:
+        run_date_art = datetime.now(scheduler.timezone) + timedelta(seconds=art_delay)
+        scheduler.add_job(
+            run_ingest_articles_job,
+            trigger=DateTrigger(run_date=run_date_art, timezone=scheduler.timezone),
+            id="article_ingest_initial",
+            name="Article Ingest — initial after startup",
+        )
+
+    art_minute = settings.article_ingest_cron_expr.strip() or "0"
+    scheduler.add_job(
+        run_ingest_articles_job,
+        trigger=CronTrigger(
+            minute=art_minute,
+            timezone=settings.ipo_ingest_timezone,
+        ),
+        id="article_ingest_cron",
+        name=f"Article Ingest — cron minute={art_minute} tz={settings.ipo_ingest_timezone}",
+    )
+
     logger.info(
         f"scheduler.jobs_registered "
         f"a:initial_delay={delay}s cron={hours} tz={settings.ipo_ingest_timezone} | "
-        f"hk:initial_delay={hk_delay}s cron={hk_hours} tz={settings.ipo_ingest_hk_timezone}"
+        f"hk:initial_delay={hk_delay}s cron={hk_hours} tz={settings.ipo_ingest_hk_timezone} | "
+        f"article:initial_delay={art_delay}s cron_minute={art_minute}"
     )
 
 

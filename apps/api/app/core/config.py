@@ -378,6 +378,65 @@ class Settings(BaseSettings):
         description="评测报告输出目录 (gitignored).",
     )
 
+    # ─── BE-S3-002 文章 ingest 框架 ────────────────────────────────────
+    article_ingest_initial_delay_seconds: int = Field(
+        default=15,
+        description=(
+            "文章 ingest 启动后延迟秒数. 比 IPO ingest (5/10s) 多, 让 IPO 表先填好 "
+            "再跑文章 (依赖 IPO 关键词反查). 0 = 关闭立即跑, 仅依赖 cron."
+        ),
+    )
+    article_ingest_cron_expr: str = Field(
+        default="0",
+        description=(
+            "文章 ingest cron 分钟表达式 (Asia/Shanghai). 默认 ``0`` = 每小时第 0 分钟跑一次. "
+            "也可写 ``0,30`` (每 30 分一次) / ``*/15`` (每 15 分一次). 格式与 APScheduler "
+            "CronTrigger.minute 兼容 (0-59 范围)."
+        ),
+    )
+    article_ingest_request_concurrency: int = Field(
+        default=3,
+        description=(
+            "文章 ingest 各 source 并发抓取上限. ``asyncio.Semaphore(N)``. "
+            "雪球反爬阈值实测约 5 req/s, 默认 3 已够友好."
+        ),
+        ge=1,
+        le=16,
+    )
+    article_ingest_request_timeout_seconds: float = Field(
+        default=10.0,
+        description="单次 HTTP 请求超时. 雪球 / 智通 RSS 上游 P99 < 2s, 留 5x buffer.",
+    )
+    xueqiu_base_url: str = Field(
+        default="https://xueqiu.com",
+        description=(
+            "雪球域名根. status 搜索 endpoint: ``/query/v1/symbol/search/status.json``. "
+            "测试时通过 respx mock 该 host."
+        ),
+    )
+    article_ingest_xueqiu_count_per_query: int = Field(
+        default=20,
+        description="雪球单次关键词搜索拉取的最大条数 (上游 ``count`` 参数).",
+        ge=1,
+        le=50,
+    )
+    article_ingest_xueqiu_max_queries: int = Field(
+        default=20,
+        description=(
+            "单次 ingest 最多跑多少个关键词查询雪球. 上限防止活跃 IPO 100+ 时 "
+            "把雪球 API 打爆 (100 query × 20 count = 2000 req). 默认 20 配合 1h cron "
+            "每天 480 query 在反爬阈值内."
+        ),
+        ge=1,
+        le=100,
+    )
+    zhitong_rss_url: str = Field(
+        default="https://www.zhitongcaijing.com/rss/news.xml",
+        description=(
+            "智通财经 RSS feed URL. 留空则跳过该 source. 测试时通过 respx mock 该 URL."
+        ),
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

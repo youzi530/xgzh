@@ -639,3 +639,58 @@ def test_register_jobs_hk_zero_delay_only_cron() -> None:
     ids = {j.id for j in scheduler.get_jobs()}
     assert "ipo_ingest_hk_cron" in ids
     assert "ipo_ingest_hk_initial" not in ids
+
+
+# =====================================================================
+# E. BE-S3-002: 文章 ingest scheduler 注册
+# =====================================================================
+
+
+def test_register_jobs_includes_article_ingest_initial_and_cron() -> None:
+    """BE-S3-002: register_jobs 必须挂 article_ingest_initial + article_ingest_cron."""
+    from app.scheduler import _build_scheduler  # type: ignore[attr-defined]
+
+    settings = Settings(
+        scheduler_enabled=True,
+        ipo_ingest_initial_delay_seconds=5,
+        ipo_ingest_cron_hours="8,20",
+        ipo_ingest_timezone="Asia/Shanghai",
+        ipo_ingest_a_limit=200,
+        ipo_ingest_hk_initial_delay_seconds=10,
+        ipo_ingest_hk_cron_hours="9,17",
+        ipo_ingest_hk_timezone="Asia/Hong_Kong",
+        ipo_ingest_hk_limit=100,
+        article_ingest_initial_delay_seconds=15,
+        article_ingest_cron_expr="0",
+    )
+    scheduler = _build_scheduler(settings)
+    register_jobs(scheduler, settings)
+
+    ids = {j.id for j in scheduler.get_jobs()}
+    assert "article_ingest_initial" in ids
+    assert "article_ingest_cron" in ids
+
+
+def test_register_jobs_article_zero_delay_only_cron() -> None:
+    """``article_ingest_initial_delay_seconds=0`` 时仅挂 cron, 不挂 initial."""
+    from app.scheduler import _build_scheduler  # type: ignore[attr-defined]
+
+    settings = Settings(
+        scheduler_enabled=True,
+        ipo_ingest_initial_delay_seconds=5,
+        ipo_ingest_cron_hours="8,20",
+        ipo_ingest_timezone="Asia/Shanghai",
+        ipo_ingest_a_limit=200,
+        ipo_ingest_hk_initial_delay_seconds=10,
+        ipo_ingest_hk_cron_hours="9,17",
+        ipo_ingest_hk_timezone="Asia/Hong_Kong",
+        ipo_ingest_hk_limit=100,
+        article_ingest_initial_delay_seconds=0,
+        article_ingest_cron_expr="0",
+    )
+    scheduler = _build_scheduler(settings)
+    register_jobs(scheduler, settings)
+
+    ids = {j.id for j in scheduler.get_jobs()}
+    assert "article_ingest_cron" in ids
+    assert "article_ingest_initial" not in ids

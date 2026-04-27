@@ -178,6 +178,7 @@ async def patch_session_factory(
     import app.services.agent.tools.historical as agent_historical_mod
     import app.services.agent.tools.hybrid_search as agent_hybrid_search_mod
     import app.services.agent.tools.peers as agent_peers_mod
+    import app.services.article_ingest.dispatcher as article_ingest_mod
     import app.services.ipo_ingest_service as ingest_mod
     import app.services.ipo_service as ipo_service_mod
 
@@ -194,6 +195,7 @@ async def patch_session_factory(
         agent_peers_mod,
         agent_historical_mod,
         agent_hybrid_search_mod,
+        article_ingest_mod,
     ]
     originals: list[object] = [
         getattr(mod, "get_session_factory") for mod in targets  # noqa: B009

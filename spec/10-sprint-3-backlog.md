@@ -72,7 +72,7 @@
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
 | BE-S3-001 | db | `articles` + `article_topics` 表 + Alembic 0005（含 simhash / sentiment / market / related_ipos / tsvector）| 0.5d | — | P0 | ✅ |
-| BE-S3-002 | ingest | 多源 ingest 框架 + 雪球公开 API + 智通 RSS（统一 adapter / 重试 / 限并发）| 1.5d | BE-S3-001 | P0 | ⬜ |
+| BE-S3-002 | ingest | 多源 ingest 框架 + 雪球公开 API + 智通 RSS（统一 adapter / 重试 / 限并发）| 1.5d | BE-S3-001 | P0 | ✅ |
 | BE-S3-003 | dedup | simhash 64 bit + 同主题折叠（写入端去重 + `article_topics` 父子映射）| 0.5d | BE-S3-002 | P0 | ⬜ |
 | BE-S3-004 | ai | 文章情感打标（GLM-4-Flash batch，复用 BE-S2-002 facade，三分类 + score + 关键词）| 0.5d | BE-S3-002, BE-S2-002 | P0 | ⬜ |
 | BE-S3-005 | ai | TL;DR 生成 API + Redis 缓存 + 兜底文案（多空饼图 + Top3 论据 + 来源列表）| 1d | BE-S3-004 | P0 | ⬜ |
@@ -1121,7 +1121,97 @@ apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 
 
 ---
 
-### BE-S3-002 ⬜ 待落地
+### BE-S3-002 ✅ 已完成 (2026-04-27)
+
+#### 实施成果
+
+- **新增 4 个 module + 1 个测试 module**：`app/services/article_ingest/{__init__, dispatcher, sources/{base, xueqiu_client, zhitong_rss_client}}.py`，框架 ~600 行业务代码
+- **scheduler 双 job 注册**：`article_ingest_initial`（启动后 15s 兜底跑一次）+ `article_ingest_cron`（默认每小时第 0 分跑一次，cron 表达式可配）
+- **数据源覆盖**：雪球公开 status JSON API（按 IPO 关键词 N-query 搜索）+ 智通财经 RSS（feedparser 解析 RSS 2.0 / Atom）；新增 source 只要实现 `ArticleSource` 协议 + dispatcher 注册一行，遵循开闭原则
+- **关键词反查索引（`IPOKeywordIndex`）**：从 `ipos` 表查活跃 IPO（90 天内 listed / upcoming / subscribing / pricing / pending / 申请阶段 AP-占位）派生 4 类关键词（code 全名 + 不带后缀 + name 全名 + 短名去 -W/-B/-SW/股份有限公司），inverted index 单次匹配 O(总文章字符)
+- **写库幂等**：`articles.original_url UNIQUE` + `INSERT ... ON CONFLICT DO NOTHING RETURNING article_id` 一条 SQL 跑批，`inserted` 计数走 RETURNING 行数；分批 200 行一次 INSERT 避免 SQL > 1MB
+- **Cache 失效**：写完调 `invalidate_namespace("articles:list", "articles:detail")` 让 BE-S3-006 读端立即回源
+- **测试覆盖 +31 条（spec/AC ≥ 15 条，超额 2x）**：
+  - `tests/test_xueqiu_client.py` — 10 条单测（parse 纯函数 6 条 + HTTP layer 4 条）
+  - `tests/test_zhitong_rss_client.py` — 8 条单测（feedparser 5 条 + HTTP layer 3 条）
+  - `tests/test_article_ingest_base.py` — 6 条单测（IPOKeywordIndex 派生 / 反查 / 多 IPO / 单字过滤 / 去重）
+  - `tests/integration/test_article_ingest_e2e.py` — 5 条 PG 集成测（happy / 幂等 / 无命中丢弃 / 单源失败不影响 / 空 IPO 表早退）
+  - `tests/test_ipo_ingest.py` — 2 条 scheduler 注册测试补丁（含 article_ingest job 双 id 检验）
+- `make ci-smoke` ✅ + `make ci-integration` ✅（**628 passed**, 597 → 628 净增 31 条）
+- ruff / mypy 0 增量错误
+
+#### 实际改动文件
+
+| 类别 | 文件 | 改动 |
+|------|------|------|
+| **新建** | `apps/api/app/services/article_ingest/__init__.py` | 包入口，仅导出 `run_ingest_articles_job` |
+| **新建** | `apps/api/app/services/article_ingest/dispatcher.py` | 调度器 + `upsert_articles` + `_load_ipo_keyword_index` + `register_sources` + fail-soft 单源 wrapper |
+| **新建** | `apps/api/app/services/article_ingest/sources/__init__.py` | 子包入口 |
+| **新建** | `apps/api/app/services/article_ingest/sources/base.py` | `ArticleRaw` dataclass（frozen + slots）+ `ArticleSource` Protocol + `IPOKeywordIndex` |
+| **新建** | `apps/api/app/services/article_ingest/sources/xueqiu_client.py` | 雪球 status.json 搜索 + parse_status_list_json 纯函数 + httpx + Semaphore + fail-soft |
+| **新建** | `apps/api/app/services/article_ingest/sources/zhitong_rss_client.py` | 智通 RSS + feedparser 走 `asyncio.to_thread` + parse_rss_feed 纯函数 |
+| **修改** | `apps/api/app/scheduler/__init__.py` | 注册 `article_ingest_initial` + `article_ingest_cron`，cron 走 minute 表达式 |
+| **修改** | `apps/api/app/core/config.py` | +9 个 `article_ingest_*` / `xueqiu_base_url` / `zhitong_rss_url` Field |
+| **修改** | `apps/api/.env.example` | +Article Ingest 配置块（initial_delay / cron_expr / concurrency / timeout / urls / xueqiu_count_per_query / max_queries） |
+| **修改** | `apps/api/pyproject.toml` | +`feedparser>=6.0.11` 依赖 |
+| **修改** | `apps/api/tests/integration/conftest.py` | `patch_session_factory` 把 `article_ingest_mod` 加进 targets，让集成测能拿到测试 session factory |
+| **新建** | `apps/api/tests/test_xueqiu_client.py` | 10 条单测（含 respx mock httpx） |
+| **新建** | `apps/api/tests/test_zhitong_rss_client.py` | 8 条单测（含 RSS / Atom fixture） |
+| **新建** | `apps/api/tests/test_article_ingest_base.py` | 6 条 IPOKeywordIndex 单测 |
+| **新建** | `apps/api/tests/integration/test_article_ingest_e2e.py` | 5 条 PG 端到端集成测 |
+| **修改** | `apps/api/tests/test_ipo_ingest.py` | +2 条 scheduler 注册测（覆盖 article_ingest 双 job） |
+
+#### 关键设计
+
+1. **`ArticleSource` 走 `typing.Protocol`（非 ABC）**：duck typing 让 source 实现完全独立，不必 `import ArticleSource`，源间隔离更彻底
+2. **`ArticleRaw` 用 `frozen=True, slots=True` dataclass（非 Pydantic）**：ingest 热路径 ~5x 快于 Pydantic（不做运行期 schema 校验，DB 写入时 PG 类型 + NOT NULL 兜底）；`frozen` 保证 dispatcher 用 `dataclasses.replace()` 写 `related_ipos` 不污染 source 返回的对象
+3. **MVP 不存"无关 IPO 的财经新闻"**：dispatcher 关键词反查命中 0 → 文章丢弃。理由：数据池被宏观经济 / 美股 / 黄金等无关新闻淹没会让 BE-S3-006 列表失去价值（用户期望"我关注的 IPO 相关消息"）；Sprint 4 引入用户兴趣点 / 行业 tag 后再放宽
+4. **关键词派生 4 档（code 全名 + 不带后缀 + name 全名 + 短名去 -W/-B/-SW/股份有限公司）**：财经文章习惯只写 `09660` 不写 `09660.HK`，习惯写 `地平线机器人` 不写 `地平线机器人-W`；4 档覆盖让命中率最大化。单字 / 短于 2 字符关键词不进索引（防 `A` 误匹配通用词）
+5. **dispatcher fail-soft 三层防御**：
+   - 各 source 内部 try/except 单条解析（`logger.debug` skip）
+   - source `fetch()` 整源 try/except（`logger.warning` 返 `[]`）
+   - dispatcher 主循环 `_fetch_one_source` 再包一层（任意 source 异常都不影响其它 source）
+6. **`feedparser` 走 `asyncio.to_thread`**：feedparser 是同步纯 Python（~12k 行），单 feed 解析 5-50ms 在 event loop 直接跑会卡 hot path；丢线程池是 sync 操作 < 100ms 的事实标准做法
+7. **雪球 API 限流策略**：
+   - `Semaphore(N)` 限并发（默认 3，反爬阈值实测 ~5 req/s）
+   - 单次 ingest 最多跑 `article_ingest_xueqiu_max_queries`（默认 20）个关键词查询，防活跃 IPO 100+ 时把雪球 API 打爆（100 query × 20 count = 2000 req/h）
+   - User-Agent 显式 `xgzh-api/0.1 (+...)` 让对端识别我们，反爬投诉时易追溯
+   - code（纯数字）不进雪球查询关键词，name 命中率更高
+8. **批量写入用 `INSERT ... ON CONFLICT DO NOTHING RETURNING article_id`**：
+   - 比"先 SELECT 现有 keys 再算 inserted"（`ipo_ingest_service.upsert_ipos` 做法）省一次 round trip
+   - `articles.original_url` 是 Text 列，IN 子句包 100+ URL 的 SQL 会爆 8KB 单 query 长度限制，必须走 RETURNING
+   - 分批 `_INSERT_BATCH_SIZE=200` 一次 INSERT 避免单 SQL > 1MB
+9. **scheduler cron 走 minute 表达式（非 hour 列表）**：
+   - "每 1 小时一次"在 APScheduler 是 `minute=0`（每小时第 0 分跑），不是 `*/60`（minute 字段范围 0-59，不合法）
+   - 切到 `*/30`（每 30 分一次）/ `0,30`（每整点和半点跑）等更细粒度配置只改一行 .env，不动代码
+10. **启动延迟 15s（vs IPO ingest 5/10s）**：让 IPO 表先有数据再跑文章 ingest（依赖 IPO 关键词反查；否则 keyword index 空，文章全丢）
+
+#### 实施偏差（vs spec/10 §BE-S3-002 §AC）
+
+| spec 锁定 | 实际落地 | 理由 |
+|-----------|---------|------|
+| `since: datetime` 增量抓取 | source 接受 `since` 参数但**不做过滤**（写库 ON CONFLICT 兜底） | RSS 不支持 since 过滤；雪球搜索 API 也没 since 参数；写库幂等已保证不重复 |
+| `tests/integration/test_article_ingest_e2e.py` ≥ 4 条 | 5 条 | 多覆盖一条"空 IPO 表早退"边界 |
+| `make test-all` 净增 ≥ 15 条 | **+31 条**（10+8+6+5+2） | 单测细分了"parse 纯函数 / HTTP layer / IPOKeywordIndex 派生"3 档，覆盖率更密 |
+| spec 写 ARTICLE_INGEST_CRON_HOURS（小时表达式） | 改用 `ARTICLE_INGEST_CRON_EXPR` 走 minute 字段 | spec 默认每 1h，hour 表达式无法表达；minute 表达式更灵活（30min / 15min 切换不动代码） |
+| 雪球 source 抓"全 IPO 关键词" | 限 `xueqiu_max_queries=20` | 防活跃 IPO 100+ 时打爆雪球 API（100 query × 20 count = 2000 req/h，反爬阈值 ~5 req/s）|
+
+#### 待办（业务侧 PR 跟进）
+
+- 文章 BE-S3-003 / 004 / 005 / 006 的串行实现（simhash → sentiment → TL;DR → 列表/详情/搜索 API）
+- 数据源扩展：财联社快讯 / 新浪财经 / 信报（参考 `sources/<name>.py` 模式新增）
+- 雪球反爬 cookie / token 配置（生产部署时若被风控可补 .env 字段）
+- 监控埋点：dispatcher.run 的 `inserted / matched / fetched` 拉到 Prometheus（Sprint 4 一起做）
+
+#### 下一步推荐
+
+| 候选 | 理由 |
+|------|------|
+| **BE-S3-003** (simhash 64 bit 去重 + 同主题折叠, 0.5d) | 文章线下一节点，BE-S3-002 已留 `simhash` 字段 NULL；implements `dedup.py` + scheduler `article_topic_recluster_job` |
+| BE-S3-007 业务侧 (seeds + 横向对比 API, 0.5d) | 变现线第一步，6-8 家券商种子 + API 完工就能让 FE-S3-003 起跑 |
+| BE-S3-009 业务侧 (grant_trial + quota 接真表, 1d) | 商业化线第一步，依赖 `_resolve_plan` 接真表会动 agent.quota 测试 |
+
+→ **建议下一步走 BE-S3-003**（simhash 同主题折叠），文章线串行依赖最长（→ 004 → 005 → 006），继续推进可让 FE-S3-001 / 002 提早启动
 
 ### BE-S3-003 ⬜ 待落地
 
