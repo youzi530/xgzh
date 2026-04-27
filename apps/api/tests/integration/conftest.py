@@ -184,6 +184,7 @@ async def patch_session_factory(
     import app.services.article_service as article_service_mod
     import app.services.article_tldr_service as article_tldr_mod
     import app.services.broker_service as broker_service_mod
+    import app.services.conversion_service as conversion_service_mod
     import app.services.ipo_ingest_service as ingest_mod
     import app.services.ipo_service as ipo_service_mod
     import scripts.seed_brokers as seed_brokers_mod
@@ -207,6 +208,7 @@ async def patch_session_factory(
         article_tldr_mod,
         article_service_mod,
         broker_service_mod,
+        conversion_service_mod,
         seed_brokers_mod,
     ]
     originals: list[object] = [

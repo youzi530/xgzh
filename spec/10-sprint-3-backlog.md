@@ -78,7 +78,7 @@
 | BE-S3-005 | ai | TL;DR 生成 API + Redis 缓存 + 兜底文案（多空饼图 + Top3 论据 + 来源列表）| 1d | BE-S3-004 | P0 | ✅ |
 | BE-S3-006 | api | 文章列表 / 详情 / 全局搜索 API（PG FTS, 与 0004 同款中文预切策略） | 0.5d | BE-S3-001, BE-S3-004 | P0 | ✅ |
 | BE-S3-007 | db+api | `brokers` 表 + 6-8 家种子数据 + 横向对比 API（含筛选 / 排序）| 1d | — | P0 | ✅ |
-| BE-S3-008 | tracking | broker 跳转 redirect 端点 + UTM 落 `conversion_events` + simple stats API | 0.5d | BE-S3-007 | P0 | 🟡 schema 已落 |
+| BE-S3-008 | tracking | broker 跳转 redirect + UTM 落 `conversion_events` + 30d stats API + Postback 占位 | 1d | BE-S3-007 | P0 | ✅ |
 | BE-S3-009 | db | `vip_memberships` + `vip_orders` 表 + Alembic 0007 + 订阅状态机 + 7 天试用机制 | 1d | — | P0 | 🟡 schema 已落 |
 | BE-S3-010 | payment | 微信支付 v3 集成（小程序下单 + 回调验签 + 订阅状态流转 + 配额 `_resolve_plan` 接真表）| 1.5d | BE-S3-009 | P0 | ⬜ |
 
@@ -871,51 +871,61 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 
 ---
 
-### BE-S3-008 · broker 跳转 + UTM + ConversionEvent 落表 ⬜
+### BE-S3-008 · broker 跳转 + UTM + ConversionEvent 落表 ✅
 
-**目标**：`GET /api/v1/brokers/{slug}/redirect?utm_campaign=xxx` 端点 — 落 `conversion_events` + 302 到券商带参 URL。
+**目标**：`GET /api/v1/brokers/{slug}/redirect?utm_campaign=xxx&device_id=xxx` 端点 — 落 `conversion_events` + 302 到券商带参 URL；配套 30d stats API + Postback 端点占位。
 
-**改动文件**（预期）
+**实施日期**：2026-04-27（Sprint 3 第 8 张卡，1d，与估时一致）
 
-- `apps/api/alembic/versions/0006_add_broker_tables.py`（同 BE-S3-007 一并写入 conversion_events 表 — alembic head 同一版本）
-- `apps/api/app/db/models/broker.py`（+ `ConversionEvent`）
-- `apps/api/app/services/conversion_service.py`（新建）
-- `apps/api/app/api/v1/brokers.py`（追加 `/redirect` 端点 + `/stats` 端点）
-- `apps/api/tests/integration/test_broker_redirect.py`（≥ 8 条 e2e）
+**改动文件 / 实施成果**
 
-**Schema (`conversion_events`)**
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `apps/api/app/schemas/conversion.py` | 新增 | `BrokerStats30d` / `PostbackRequest` / `PostbackResponse` Pydantic v2 模型, `extra="forbid"` 防字段污染 |
+| `apps/api/app/services/conversion_service.py` | 新增 | 4 大职能：`log_click_with_dedup`（Redis 1h 防刷）/ `build_redirect_url`（urlencode 防注入）/ `get_broker_stats_30d`（GROUP BY event_type）/ `get_active_broker_by_slug`（活跃 broker 拉取）|
+| `apps/api/app/api/v1/brokers.py` | 增量 | `/redirect`（302 + log click）+ `/stats`（auth 必需）+ `/postback`（501 占位）三端点；新增 `_resolve_client_ip` / `_resolve_actor_key` helper |
+| `apps/api/tests/integration/conftest.py` | 增量 | 把 `conversion_service_mod` 加入 `patch_session_factory` 的 targets 列表 |
+| `apps/api/tests/integration/test_broker_redirect.py` | 新增 13 条 e2e | 覆盖 happy / 防刷 / 匿名 / 登录 / utm 隔离 / referral_url 现存 query 不覆盖 / inactive / soft-delete / stats auth / stats GROUP BY / postback 501 |
 
-- `event_id` UUID PK
-- `user_id` UUID NULL FK → users（匿名时为 NULL）
-- `device_id` TEXT NOT NULL（前端拦截器自动注入，与 push_tokens.device_id 同语义）
-- `broker_id` UUID NOT NULL FK
-- `event_type` VARCHAR(16) `click` / `signup` / `kyc_pass` / `deposit` / `first_trade`
-- `utm_source` VARCHAR(32) DEFAULT 'xgzh'
-- `utm_campaign` VARCHAR(64)
-- `utm_medium` VARCHAR(32)
-- `referer` TEXT NULL
-- `ip_addr` INET NULL
-- `user_agent` TEXT NULL
-- `amount_cny` NUMERIC NULL（入金 / 交易额）
-- `attributed` BOOLEAN DEFAULT FALSE（CPS 分成时人工核销）
-- `created_at` TIMESTAMPTZ DEFAULT now()
+**关键设计决策（与 spec 偏差）**
 
-**关键设计**
+| # | 决策点 | 选择 / 理由 |
+|---|--------|-------------|
+| 1 | 防刷 actor key 优先级 | `user_id` > `device_id` > IP（`_resolve_actor_key`）— 登录用户跨设备点击仍去重；匿名兜底 IP 防"匿名 + 没 device_id"完全不防刷；同 actor 不同 utm_campaign 各落 1 行（让运营做渠道归因）|
+| 2 | 防刷实现：`incr_with_expire` 不用 DB UNIQUE | click 流水高频；DB UNIQUE(broker_id, user/device, utm_campaign) 在写入端有锁竞争 + 影响其它 event_type；Redis Lua 原子 INCR 成本 < 1ms |
+| 3 | 防刷命中**仍 302** | 用户体验 > 数据完整 — 同一用户一天内点 N 次同一活动按钮，redirect 必须每次都通；只是后续不再落 click 行 |
+| 4 | Redis 抖动 fail-open | `incr_with_expire` 失败时直接落库（warning 日志），数据可能多 1-2 行但不丢点击；与 `article_ingest dispatcher` 同款 fail-soft |
+| 5 | URL 拼接走 `urlencode + urlparse + urlunparse` | 防 `utm_campaign=&malicious=evil` 注入既有参数；同时**保留 referral_url 自带的 utm_source 不被覆盖**（券商方对 XGZH 渠道有专门 source 标记时尊重 BD 设置）|
+| 6 | `/stats` auth-only（暂未加 VIP 闸门）| spec 写"仅运营 / VIP"，但 BE-S3-009 VIP 表才落库 + 闸门；本 PR 用 `Depends(get_current_user)` 拦匿名爬刷即可，BE-S3-009 上线后再加 `Depends(require_vip)` 一行 |
+| 7 | `/stats.total_amount_cny` 仅算 `attributed=True` | 防未核销的 signup amount（券商方暂未确认入金）污染统计；财务对账隔离 |
+| 8 | `/postback` 端点占位返 501 | Sprint 4+ 才接券商回调（HMAC 签名校验 + 幂等 + 写入 signup/deposit/first_trade）；本 PR 提前**锁定 PostbackRequest schema** 让券商 BD 提前对接调试 URL，Sprint 4+ 实装时只改 handler 不改契约 |
+| 9 | 路由层不直接调 `get_session_factory()` | 全部下沉 service；conftest patch 只需 patch service module，路由层零改动 |
 
-- 端点 `/brokers/{slug}/redirect`：`get_optional_user`（匿名也可调）→ 解析 utm_campaign → 落 `conversion_events`（event_type='click'）→ 拼 final_url（`broker.referral_url + utm_source=xgzh + utm_campaign=...`）→ 302
-- 端点 `/brokers/{slug}/stats`（仅运营 / VIP）：返回 30d clicks / signups / funded（spec/03 §模块四 `stats_30d`）
-- 防刷：同 (user_id / device_id, broker_id, utm_campaign) 1 小时窗口内仅落 1 行 click 事件（用 Redis key + EXPIRE 1h 实现）
-- Postback API（券商回调）— Sprint 4+ 接，本 PR 占位 `/brokers/postback` 端点签名 + 返回 501
+**踩过的坑（"实战已修"）**
 
-**AC**
+| # | 坑 | 修法 |
+|---|----|------|
+| 1 | 初版把 `factory` 作为参数传进 service，路由层调 `get_session_factory()`；conftest 需要额外 patch 路由模块 | 重构成 service 内部 `factory = get_session_factory()`；路由层零改动；与 broker_service / article_service 一致 |
+| 2 | mypy `conversion_service.py:207 Returning Any from function declared to return "str \| None"` | `urlunparse` 返回类型不精确，加显式注解 `final_url: str = urlunparse(...)` 后 return |
+| 3 | 测试库初次启动报 `must be owner of table alembic_version` | 历史遗留：alembic_version owner 是 postgres 不是 xgzh；用 `psql -U postgres -d xgzh_test -c "REASSIGN OWNED BY postgres TO xgzh"` 修；与本 PR 代码无关，但回填到 RUNBOOK 防下次踩 |
 
-- [ ] redirect 端点 302 + Location 正确
-- [ ] 同设备 1 小时内重复点击 → conversion_events 仅落 1 行
-- [ ] 不同设备同 utm_campaign 同时打 → 各落各的
-- [ ] 匿名 + 登录两态都通
-- [ ] `make test-all` 净增 ≥ 10 条测
+**质量门禁（实测）**
 
-**依赖**：BE-S3-007
+- 全量回归 ✅ **761 passed**（748 → 761，**净增 13 条** e2e）
+- ruff `app scripts tests` ✅ All checks passed
+- mypy `app scripts` ✅ Success: no issues found in 106 source files
+- 增量耗时 ~143s（与 BE-S3-007 同水平）
+
+**AC 全勾**
+
+- [x] redirect 端点 302 + Location 正确（utm_source=xgzh / utm_campaign / utm_medium / invite_code 全拼上）
+- [x] 同 device_id + utm_campaign 1 小时内重复点击 → conversion_events 仅落 1 行（Redis 防刷）
+- [x] 不同 device_id 同 utm_campaign 同时打 → 各落各（验证 dedup key 隔离粒度）
+- [x] 匿名（user_id IS NULL）+ 登录（user_id 非空）两态都通
+- [x] `make test-all` 净增 13 条 ≥ 10
+- [x] 额外加的 5 个反向测试：`unknown slug → 404`/ `promotion inactive → 404` / `broker inactive → 404` / `referral 已带 utm_source 不被覆盖` / `不同 utm_campaign 各落各（运营归因隔离）` / `stats 401`
+
+**依赖**：BE-S3-007（已 ✅）
 
 ---
 
@@ -1548,7 +1558,7 @@ apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 
 详见本文档 §BE-S3-007 → "实施成果"小节。
 
 
-### BE-S3-008 ⬜ 待落地
+### BE-S3-008 ✅ 2026-04-27（实施成果详见上方主体段）
 
 ### BE-S3-009 ⬜ 待落地
 
