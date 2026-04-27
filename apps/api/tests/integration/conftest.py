@@ -183,8 +183,10 @@ async def patch_session_factory(
     import app.services.article_ingest.sentiment_tagger as article_sentiment_mod
     import app.services.article_service as article_service_mod
     import app.services.article_tldr_service as article_tldr_mod
+    import app.services.broker_service as broker_service_mod
     import app.services.ipo_ingest_service as ingest_mod
     import app.services.ipo_service as ipo_service_mod
+    import scripts.seed_brokers as seed_brokers_mod
 
     # 多处都要 patch: 各 module 在 import 时把 ``get_session_factory`` 拷到自己
     # namespace, 改 ``app.db`` 不会影响 service module 的 local 引用. 漏 patch
@@ -204,6 +206,8 @@ async def patch_session_factory(
         article_sentiment_mod,
         article_tldr_mod,
         article_service_mod,
+        broker_service_mod,
+        seed_brokers_mod,
     ]
     originals: list[object] = [
         getattr(mod, "get_session_factory") for mod in targets  # noqa: B009

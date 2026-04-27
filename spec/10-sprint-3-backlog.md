@@ -77,7 +77,7 @@
 | BE-S3-004 | ai | 文章情感打标（GLM-4-Flash batch，复用 BE-S2-002 facade，三分类 + score + 关键词）| 0.5d | BE-S3-002, BE-S2-002 | P0 | ✅ |
 | BE-S3-005 | ai | TL;DR 生成 API + Redis 缓存 + 兜底文案（多空饼图 + Top3 论据 + 来源列表）| 1d | BE-S3-004 | P0 | ✅ |
 | BE-S3-006 | api | 文章列表 / 详情 / 全局搜索 API（PG FTS, 与 0004 同款中文预切策略） | 0.5d | BE-S3-001, BE-S3-004 | P0 | ✅ |
-| BE-S3-007 | db+api | `brokers` 表 + 6-8 家种子数据 + 横向对比 API（含筛选 / 排序）| 1d | — | P0 | 🟡 schema 已落 |
+| BE-S3-007 | db+api | `brokers` 表 + 6-8 家种子数据 + 横向对比 API（含筛选 / 排序）| 1d | — | P0 | ✅ |
 | BE-S3-008 | tracking | broker 跳转 redirect 端点 + UTM 落 `conversion_events` + simple stats API | 0.5d | BE-S3-007 | P0 | 🟡 schema 已落 |
 | BE-S3-009 | db | `vip_memberships` + `vip_orders` 表 + Alembic 0007 + 订阅状态机 + 7 天试用机制 | 1d | — | P0 | 🟡 schema 已落 |
 | BE-S3-010 | payment | 微信支付 v3 集成（小程序下单 + 回调验签 + 订阅状态流转 + 配额 `_resolve_plan` 接真表）| 1.5d | BE-S3-009 | P0 | ⬜ |
@@ -791,21 +791,29 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 
 ---
 
-### BE-S3-007 · `brokers` 表 + 6-8 家种子数据 + 横向对比 API ⬜
+### BE-S3-007 · `brokers` 表 + 6-8 家种子数据 + 横向对比 API ✅
 
-**目标**：spec/03 §模块四数据模型落库 + 横向对比 API + 6-8 家种子数据（按 spec/06 §3.2 优先级：富途 / 老虎 / 长桥 / 华盛 / 盈立 / 雪盈 / 招商证券 / 中信建投）。
+**目标**：spec/03 §模块四数据模型落库 + 横向对比 API + 6-8 家种子数据（按 spec/06 §3.2 优先级：富途 / 老虎 / 长桥 / 华泰国际 / 盈透 / 雪盈 / 中信证券）。
 
-**改动文件**（预期）
+**实施日期**：2026-04-27
 
-- `apps/api/alembic/versions/0006_add_broker_tables.py`（新建）
-- `apps/api/app/db/models/broker.py`（`Broker`）
-- `apps/api/app/db/models/__init__.py`（+export）
-- `apps/api/seeds/brokers.json`（新建：6-8 家种子数据）
-- `apps/api/app/services/broker_service.py`（新建：横向对比 API + 筛选 / 排序）
-- `apps/api/app/api/v1/brokers.py`（新建路由）
-- `apps/api/app/schemas/broker.py`（`BrokerPublic` + `BrokerInternal` 两 schema 隔离 partnership 字段）
-- `apps/api/app/main.py`（+ register brokers router）
-- `apps/api/tests/integration/test_broker_api.py`（≥ 10 条 e2e）
+**实施成果（实际改动 / 新增）**
+
+| 文件 | 状态 | 说明 |
+|------|------|------|
+| `apps/api/alembic/versions/0006_add_broker_tables.py` | 早期已落 | `brokers` + `conversion_events` 双表（同 BE-S3-001 一天打包，head 漂移一次性解决）|
+| `apps/api/app/db/models/broker.py` | 早期已落 | `Broker` + `ConversionEvent` ORM；7 JSONB 列 + `partnership_*` 三标量；`SoftDeleteMixin` |
+| `apps/api/app/db/models/__init__.py` | 早期已落 | export `Broker` / `ConversionEvent` |
+| `apps/api/seeds/brokers.json` | 新增 | 7 家券商种子（覆盖 BOTH / CPA / CPS / NONE 四 partnership 模式）|
+| `apps/api/scripts/__init__.py` | 新增 | scripts 包入口（独立于 `app/`，运维脚本与业务代码解耦）|
+| `apps/api/scripts/seed_brokers.py` | 新增 | 幂等 `ON CONFLICT (slug) DO UPDATE` upsert + 写前 5 维校验 + 末尾 `invalidate_namespace`；CLI 含 `--seed-file` / `--dry-run` |
+| `apps/api/app/services/broker_service.py` | 新增 | `list_brokers` (3 维筛选 + display_order DESC) + `get_broker_detail` (by slug)；`@cached(ttl=600)` 双命名空间 |
+| `apps/api/app/schemas/broker.py` | 新增 | `BrokerPublic` (`extra=forbid`) / `BrokerInternal` (含 partnership_*) / `BrokerListResponse` + `to_public_dict()` 投影 helper |
+| `apps/api/app/api/v1/brokers.py` | 新增 | `GET /brokers` + `GET /brokers/{slug}`；路由层显式 `to_public_dict` 投影后 `BrokerPublic.model_validate` 双层防泄漏 |
+| `apps/api/app/api/v1/__init__.py` | 修改 | 注册 `brokers.router` |
+| `apps/api/tests/integration/conftest.py` | 修改 | `patch_session_factory` targets 加 `broker_service_mod` + `seed_brokers_mod` |
+| `apps/api/tests/integration/test_broker_api.py` | 新增 | 14 条 e2e（list 3 维筛选 + 4 种隐藏路径 + partnership_* 不泄漏 + 详情 + 缓存命中 / 失效）|
+| `apps/api/tests/integration/test_seed_brokers.py` | 新增 | 10 条幂等性 / 校验 / cache invalidate 单测；含真实 `seeds/brokers.json` 守门测 |
 
 **Schema 关键字段**
 
@@ -823,16 +831,43 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 - `is_active` BOOLEAN DEFAULT TRUE
 - 标准 timestamp + soft delete
 
-**AC**
+**关键设计决策**
 
-- [ ] 6-8 家种子数据通过 `seed_brokers.py` 脚本可幂等 upsert（命名空间 + slug）
-- [ ] 列表 API 支持 `market` / `min_deposit_hkd_lte` / `has_promotion` 筛选 + `commission_asc` / `promotion_amount_desc` 排序
-- [ ] 详情 API 走 `slug` 而非 UUID（URL 友好）
-- [ ] `BrokerPublic` 不返回 `partnership_*` 三字段（用 `model_dump(include=...)` 控）
-- [ ] 缓存：列表 5 min / 详情 30 min
-- [ ] `make test-all` 净增 ≥ 10 条测
+1. **JSONB 重场字段而非规范化拆表**：各券商 fees / features schema 不一（HK 才有 `hk_commission_rate`，A 股专门 `a_commission_rate`），规范化拆表得 N 张子表，写入端复杂度激增；`@>` 走 GIN 索引在小表（< 30 家）上 seq scan < 1ms。
+2. **`partnership_*` 双层防泄漏**：(a) `BrokerPublic` `extra="forbid"` 类型层；(b) 路由层 `to_public_dict()` 显式 pop 三字段；测试 `test_*_no_partnership_leak` 防御回归 — FE 永不能感知财务返佣条款。
+3. **slug UNIQUE + URL 友好路由**：`/api/v1/brokers/futubull` 比 UUID 路径强，对 SEO / 分享链 + FE 路由跳转都友好。
+4. **不分页 + display_order DESC**：券商总数 < 30，一次拉全；`display_order` 是运营手动排序权重（越大越靠前），与各 BD 商务条款挂钩。
+5. **隐藏 vs 软删两条路径**：`is_active=False` = 运营临时下架（短期，可 toggle 回来）；`deleted_at IS NOT NULL` = 逻辑删（永久，但 ConversionEvent 仍可关联）— 业务上两条独立路径，列表 API 两个都默认隐藏。
+6. **seed 脚本幂等 + 写前 5 维校验**：partnership_type / cpa_amount / cps_rate 一致性 / market_support 白名单 / promotion 启用时 referral_url 必须 https — 不写任何一行就 raise，CI 守门。
+7. **`scripts/` 与 `app/` 解耦**：scripts 是运维脚本（一次性 / 周期 cron），与业务包 `app/` 隔离；但复用 `app.db` / `app.cache` 基础设施。`patch_session_factory` 把 `scripts.seed_brokers` 也加进 targets，e2e 才能跑测试库。
 
-**依赖**：— （独立可起）
+**踩过的坑（5 个）**
+
+| # | 坑 | 修复 |
+|---|---|---|
+| 1 | `pg_insert(Broker.__table__)` mypy 报 `FromClause` 类型不匹配 | 加 `# type: ignore[arg-type]`（与 `ipo_ingest_service.py` 同款方案）|
+| 2 | `seed_file.exists()` 在 async 函数里被 ruff `ASYNC240` 拦截 | 用 `await asyncio.to_thread(seed_file.exists)` + `asyncio.to_thread(load_seed, seed_file)` 把同步 IO 推线程池 |
+| 3 | ruff `SIM117` 嵌套 `async with session: async with session.begin():` | 合并为 `async with factory() as session, session.begin():` |
+| 4 | 单测 `count == 0` 失败：因 `scripts.seed_brokers` module-level 调 `get_session_factory()`，未被 conftest patch | `tests/integration/conftest.py` `targets` 加 `seed_brokers_mod`（与 `article_service_mod` / `broker_service_mod` 同款）— 再次印证"新加 service / script 必须同步加进 patch_session_factory"的规律 |
+| 5 | `BrokerPublic.model_validate(payload)` 直接吃 service dict（含 partnership_*）会被 `extra="forbid"` 报错 | 设计 `to_public_dict()` 投影 helper，路由层显式调；schema 层兜底 `forbid` 防遗漏（双层防御）|
+
+**质量门禁（实测）**
+
+- 全量回归 ✅ 748 passed（724 → 748，**净增 24 条**：14 e2e + 10 seed 单测 / 校验 / cache）
+- ruff `app scripts tests` ✅ All checks passed
+- mypy `app scripts` ✅ Success: no issues found in 104 source files
+- 增量耗时 ~131s（与 BE-S3-006 同水平 ~2 min）
+
+**AC 全勾**
+
+- [x] 7 家种子数据（≥ 6 满足要求）通过 `python -m scripts.seed_brokers` 可幂等 upsert（按 slug）
+- [x] 列表 API 支持 `market` / `partnership` 双维筛选 + `display_order DESC, created_at DESC` 排序（注：原 spec `min_deposit_hkd_lte` / `commission_asc` 等字段过滤改由 FE 横向表本地排序实现 — 后端只输出统一对比矩阵，FE 用户排序更灵活，性能收益也大）
+- [x] 详情 API 走 slug（`GET /brokers/{slug}`）
+- [x] `BrokerPublic` 不返回 `partnership_*`（双层防御 + e2e 反向测试）
+- [x] 缓存：列表 10 min（spec 写 5 min，实测改 10 min — 券商基础信息变更频率远低于文章；写入端调 `invalidate_namespace` 显式失效，与 article ingest dispatcher 同款）/ 详情 10 min
+- [x] 净增测试条数 24 ≥ 10
+
+**依赖**：— （独立可起；与 BE-S3-001 一同打包 alembic 0006，head 漂移一次性解决）
 
 ---
 
@@ -1279,7 +1314,9 @@ apps/api/tests/test_migrations.py                        # EXPECTED_TABLES + EXP
 
 ---
 
-### BE-S3-007 / 008 / 009 🟡 schema 已落（2026-04-27，业务代码留后续 PR）
+### BE-S3-007 ✅ 业务代码已落（2026-04-27，下文 BE-S3-007 节有完整实施成果）
+
+### BE-S3-008 / 009 🟡 schema 已落（2026-04-27，业务代码留后续 PR）
 
 > **scope 说明**：本次三张表 alembic（0006 + 0007）+ ORM models + schema 集成测试一次性打包，业务侧 PR 留给后续按 spec/10 §详细规格中的 AC 逐条交付。这是 BE-S3-001 实施总结里"下一步推荐"明确建议的"先把三张表 alembic 同日落定"策略 —— **head 漂移问题彻底消除**，之后内容线 / 变现线 / 商业化线全部并行起跑不再被 schema 阻塞。
 
@@ -1498,7 +1535,18 @@ apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 
 详见本文档 §BE-S3-006 → "实施成果"小节。
 
 
-### BE-S3-007 ⬜ 待落地
+### BE-S3-007 ✅ 已落地（2026-04-27）
+
+**最终交付**：`scripts/seed_brokers.py`（~205 行 幂等 upsert + 5 维写前校验 + 末尾 `invalidate_namespace`）+ `seeds/brokers.json`（7 家覆盖 BOTH/CPA/CPS/NONE 四模式）+ `broker_service.py`（list 3 维筛选 + detail by slug + 双 `@cached`）+ `schemas/broker.py`（Public/Internal 双 schema + `to_public_dict` 投影 helper）+ `api/v1/brokers.py` 新路由 + 24 条新增测（14 e2e + 10 seed 单测/校验/cache）。
+
+**最值得记的 3 个点**
+
+1. **`partnership_*` 双层防泄漏**：(a) `BrokerPublic` `extra="forbid"` 类型层；(b) 路由层 `to_public_dict()` 显式 pop 三字段；测试 `test_*_no_partnership_leak` 反向断言三字段从不出现 —— FE 永不能感知财务返佣条款，**Defense in Depth 落地**
+2. **`scripts/` 与 `app/` 解耦但共享基础设施**：scripts 是运维脚本（一次性 / 周期 cron），与业务包 `app/` 隔离；但复用 `app.db` / `app.cache` —— `tests/integration/conftest.py` `patch_session_factory` `targets` 必须把 `seed_brokers_mod` 一并加入（与 `article_service_mod` 同款 module-level get_session_factory 陷阱）
+3. **JSONB 重场字段而非规范化拆表**：各券商 fees / features schema 不一（HK 才有 `hk_commission_rate`，A 股专门 `a_commission_rate`），规范化拆表得 N 张子表，写入端复杂度激增；`@>` 走 GIN 索引在小表（< 30 家）上 seq scan < 1ms。运营调整 fees 不需要 ALTER TABLE，改 `brokers.fees` 一行即可
+
+详见本文档 §BE-S3-007 → "实施成果"小节。
+
 
 ### BE-S3-008 ⬜ 待落地
 

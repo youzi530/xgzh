@@ -4,6 +4,7 @@ from app.api.v1 import (
     agent,
     articles,
     auth,
+    brokers,
     chat,
     favorites,
     invite,
@@ -23,5 +24,6 @@ router.include_router(favorites.router)
 router.include_router(push.router)
 router.include_router(articles.router)
 router.include_router(articles.search_router)
+router.include_router(brokers.router)
 
 __all__ = ["router"]

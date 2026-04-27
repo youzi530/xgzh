@@ -1,0 +1,253 @@
+[
+  {
+    "slug": "futubull",
+    "name_zh": "富途牛牛",
+    "name_en": "Futu / Moomoo",
+    "logo_url": "https://cdn.xgzh.app/brokers/futu.png",
+    "market_support": ["HK", "US", "SG"],
+    "licenses": ["SFC-1", "SFC-2", "SFC-4", "SFC-5", "SFC-9", "MAS-CMS"],
+    "fees": {
+      "hk_commission_rate": 0.0003,
+      "hk_min_commission": 0,
+      "platform_fee": 15.0,
+      "platform_fee_currency": "HKD",
+      "margin_rate_hkd": 0.0688,
+      "cancel_fee": 0
+    },
+    "features": {
+      "ipo_subscription": true,
+      "dark_pool_trading": true,
+      "margin_trading": true,
+      "chinese_service": true,
+      "min_deposit_hkd": 0
+    },
+    "promotion": {
+      "is_active": true,
+      "title": "新客开户送 6 个月免佣 + 终身免存管",
+      "description": "经 XGZH 邀请开户, 送港股美股 6 个月免佣 + 终身免港美股存管费; 入金 1 万港币即享.",
+      "end_at": "2026-12-31",
+      "invite_code": "XGZH-FUTU",
+      "referral_url": "https://www.futunn.com/i18n/sg/account-open?utm_source=xgzh"
+    },
+    "partnership_type": "BOTH",
+    "partnership_cpa_amount": 1500.0,
+    "partnership_cps_rate": 0.025,
+    "display_order": 100,
+    "is_active": true
+  },
+  {
+    "slug": "tigerbrokers",
+    "name_zh": "老虎国际",
+    "name_en": "Tiger Brokers",
+    "logo_url": "https://cdn.xgzh.app/brokers/tiger.png",
+    "market_support": ["HK", "US", "SG"],
+    "licenses": ["SFC-1", "SFC-2", "SFC-4", "SFC-5", "MAS-CMS", "FINRA"],
+    "fees": {
+      "hk_commission_rate": 0.0003,
+      "hk_min_commission": 0,
+      "platform_fee": 15.0,
+      "platform_fee_currency": "HKD",
+      "margin_rate_hkd": 0.0688,
+      "cancel_fee": 0
+    },
+    "features": {
+      "ipo_subscription": true,
+      "dark_pool_trading": true,
+      "margin_trading": true,
+      "chinese_service": true,
+      "min_deposit_hkd": 0
+    },
+    "promotion": {
+      "is_active": true,
+      "title": "新客开户即享美股 100 美元免佣",
+      "description": "经 XGZH 邀请开户成功 + 入金 1000 美元等值, 享美股 100 美元免佣 + 港股打新免手续费.",
+      "end_at": "2026-12-31",
+      "invite_code": "XGZH-TIGER",
+      "referral_url": "https://www.itigerup.com/i/account-open?utm_source=xgzh"
+    },
+    "partnership_type": "BOTH",
+    "partnership_cpa_amount": 1200.0,
+    "partnership_cps_rate": 0.025,
+    "display_order": 95,
+    "is_active": true
+  },
+  {
+    "slug": "longbridge",
+    "name_zh": "长桥证券",
+    "name_en": "Longbridge",
+    "logo_url": "https://cdn.xgzh.app/brokers/longbridge.png",
+    "market_support": ["HK", "US", "SG"],
+    "licenses": ["SFC-1", "SFC-4", "SFC-9", "MAS-CMS"],
+    "fees": {
+      "hk_commission_rate": 0.00029,
+      "hk_min_commission": 0,
+      "platform_fee": 12.0,
+      "platform_fee_currency": "HKD",
+      "margin_rate_hkd": 0.0588,
+      "cancel_fee": 0
+    },
+    "features": {
+      "ipo_subscription": true,
+      "dark_pool_trading": false,
+      "margin_trading": true,
+      "chinese_service": true,
+      "min_deposit_hkd": 0
+    },
+    "promotion": {
+      "is_active": true,
+      "title": "新客 0 佣金 + IPO 现金回扣",
+      "description": "新客开户首 30 天港美股交易 0 佣金, 港股打新现金回扣最高 200 港币.",
+      "end_at": "2026-12-31",
+      "invite_code": "XGZH-LB",
+      "referral_url": "https://longbridgehk.com/account?utm_source=xgzh"
+    },
+    "partnership_type": "BOTH",
+    "partnership_cpa_amount": 1000.0,
+    "partnership_cps_rate": 0.02,
+    "display_order": 90,
+    "is_active": true
+  },
+  {
+    "slug": "huatai-international",
+    "name_zh": "华泰国际",
+    "name_en": "HTSC International",
+    "logo_url": "https://cdn.xgzh.app/brokers/huatai.png",
+    "market_support": ["HK", "US"],
+    "licenses": ["SFC-1", "SFC-4", "SFC-6", "SFC-9"],
+    "fees": {
+      "hk_commission_rate": 0.0003,
+      "hk_min_commission": 5.0,
+      "platform_fee": 15.0,
+      "platform_fee_currency": "HKD",
+      "margin_rate_hkd": 0.0588,
+      "cancel_fee": 0
+    },
+    "features": {
+      "ipo_subscription": true,
+      "dark_pool_trading": true,
+      "margin_trading": true,
+      "chinese_service": true,
+      "min_deposit_hkd": 0
+    },
+    "promotion": {
+      "is_active": true,
+      "title": "港股佣金低至万分之 3",
+      "description": "新客经 XGZH 渠道开户, 享港股佣金低至万分之 3 + 美股 0 佣金 90 天.",
+      "end_at": "2026-12-31",
+      "invite_code": "XGZH-HTI",
+      "referral_url": "https://www.htisec.com/account-open?utm_source=xgzh"
+    },
+    "partnership_type": "CPA",
+    "partnership_cpa_amount": 800.0,
+    "partnership_cps_rate": null,
+    "display_order": 80,
+    "is_active": true
+  },
+  {
+    "slug": "ibkr",
+    "name_zh": "盈透证券",
+    "name_en": "Interactive Brokers",
+    "logo_url": "https://cdn.xgzh.app/brokers/ibkr.png",
+    "market_support": ["HK", "US", "SG"],
+    "licenses": ["SFC-1", "SFC-4", "FINRA", "SEC", "MAS-CMS"],
+    "fees": {
+      "hk_commission_rate": 0.0008,
+      "hk_min_commission": 18.0,
+      "platform_fee": 0,
+      "platform_fee_currency": "HKD",
+      "margin_rate_hkd": 0.0588,
+      "cancel_fee": 0
+    },
+    "features": {
+      "ipo_subscription": true,
+      "dark_pool_trading": true,
+      "margin_trading": true,
+      "chinese_service": false,
+      "min_deposit_hkd": 0
+    },
+    "promotion": {
+      "is_active": true,
+      "title": "全球市场最广 + 机构级利率",
+      "description": "覆盖 33 个国家 / 150 个市场, 适合专业用户; 经 XGZH 邀请开户享首年活动月费减免.",
+      "end_at": "2026-12-31",
+      "invite_code": "XGZH-IBKR",
+      "referral_url": "https://www.interactivebrokers.com.hk/referral?utm_source=xgzh"
+    },
+    "partnership_type": "CPA",
+    "partnership_cpa_amount": 600.0,
+    "partnership_cps_rate": null,
+    "display_order": 70,
+    "is_active": true
+  },
+  {
+    "slug": "snowbull",
+    "name_zh": "雪盈证券",
+    "name_en": "Snowbull",
+    "logo_url": "https://cdn.xgzh.app/brokers/snowbull.png",
+    "market_support": ["HK", "US"],
+    "licenses": ["SFC-1", "SFC-4", "FINRA"],
+    "fees": {
+      "hk_commission_rate": 0.0004,
+      "hk_min_commission": 8.0,
+      "platform_fee": 12.0,
+      "platform_fee_currency": "HKD",
+      "margin_rate_hkd": 0.0688,
+      "cancel_fee": 0
+    },
+    "features": {
+      "ipo_subscription": true,
+      "dark_pool_trading": false,
+      "margin_trading": true,
+      "chinese_service": true,
+      "min_deposit_hkd": 0
+    },
+    "promotion": {
+      "is_active": true,
+      "title": "雪球生态深度集成",
+      "description": "雪球账号一键注册 + 美股 / 港股 0 门槛入金, 经 XGZH 邀请送 100 美元 IPO 打新基金.",
+      "end_at": "2026-12-31",
+      "invite_code": "XGZH-SNOW",
+      "referral_url": "https://account.snowbull.com/register?utm_source=xgzh"
+    },
+    "partnership_type": "CPS",
+    "partnership_cpa_amount": null,
+    "partnership_cps_rate": 0.018,
+    "display_order": 65,
+    "is_active": true
+  },
+  {
+    "slug": "citic-securities",
+    "name_zh": "中信证券",
+    "name_en": "CITIC Securities",
+    "logo_url": "https://cdn.xgzh.app/brokers/citic.png",
+    "market_support": ["A"],
+    "licenses": ["CSRC-1", "CSRC-2", "CSRC-3"],
+    "fees": {
+      "a_commission_rate": 0.00025,
+      "a_min_commission": 5.0,
+      "platform_fee": 0,
+      "platform_fee_currency": "CNY",
+      "cancel_fee": 0
+    },
+    "features": {
+      "ipo_subscription": true,
+      "dark_pool_trading": false,
+      "margin_trading": true,
+      "chinese_service": true,
+      "min_deposit_cny": 0
+    },
+    "promotion": {
+      "is_active": false,
+      "title": "",
+      "description": "A 股头部券商, 暂无 BD 合作; 仅作信息陈列, 不引流",
+      "end_at": null,
+      "invite_code": null,
+      "referral_url": null
+    },
+    "partnership_type": "NONE",
+    "partnership_cpa_amount": null,
+    "partnership_cps_rate": null,
+    "display_order": 50,
+    "is_active": true
+  }
+]
