@@ -472,6 +472,59 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── BE-S3-004 文章情感打标配置 ──────────────────────────────────────
+    article_sentiment_model: str = Field(
+        default="zhipu/glm-4-flash",
+        description=(
+            "文章情感打标使用的 LLM model slug. 默认 ``zhipu/glm-4-flash`` (免费); "
+            "可切 ``deepseek/deepseek-chat`` (cheap+稳) / ``openai/deepseek-ai/DeepSeek-V3``. "
+            "走 BE-S2-002 ``llm_client.chat`` 路由."
+        ),
+    )
+    article_sentiment_batch_size: int = Field(
+        default=10,
+        description=(
+            "单次 LLM 调用打标的文章数. 10 篇 ~2K input + 1.5K output token 适配 "
+            "GLM-4-Flash 8K 上限; 调大省钱但失败影响面广 (整批失败走单条降级)."
+        ),
+        ge=1,
+        le=50,
+    )
+    article_sentiment_cron_minutes: str = Field(
+        default="*/30",
+        description=(
+            "情感打标兜底 job cron 分钟表达式 (Asia/Shanghai). 默认 ``*/30`` = "
+            "每 30 min 跑一次, 兜底 dispatcher inline 打标失败 / 历史回填. "
+            "APScheduler CronTrigger.minute 兼容."
+        ),
+    )
+    article_sentiment_initial_delay_seconds: int = Field(
+        default=45,
+        description=(
+            "情感打标兜底 job 启动后延迟秒数. 默认 45s (晚于 article_ingest 15s + "
+            "dedup 30s, 让首批文章 ingest + simhash 完成再触发首次打标). "
+            "0 = 关闭启动跑, 仅依赖 cron."
+        ),
+    )
+    article_sentiment_backfill_window_hours: int = Field(
+        default=24,
+        description=(
+            "兜底 job 扫 ``sentiment IS NULL`` 文章的回看窗口 (小时). "
+            "默认 24h: 24 小时之前的没打标文章作存量历史数据处理, 避开 cron 持续雪崩."
+        ),
+        ge=1,
+        le=168,
+    )
+    article_sentiment_backfill_limit: int = Field(
+        default=200,
+        description=(
+            "兜底 job 单次最多打标的文章数, 防雪崩 + 防 LLM rate limit. "
+            "存量超出会被下一次 cron 吃掉 (每 30 min 跑一次, 半天自然消化)."
+        ),
+        ge=1,
+        le=1000,
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

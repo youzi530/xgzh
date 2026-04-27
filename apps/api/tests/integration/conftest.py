@@ -180,6 +180,7 @@ async def patch_session_factory(
     import app.services.agent.tools.peers as agent_peers_mod
     import app.services.article_ingest.dedup as article_dedup_mod
     import app.services.article_ingest.dispatcher as article_ingest_mod
+    import app.services.article_ingest.sentiment_tagger as article_sentiment_mod
     import app.services.ipo_ingest_service as ingest_mod
     import app.services.ipo_service as ipo_service_mod
 
@@ -198,6 +199,7 @@ async def patch_session_factory(
         agent_hybrid_search_mod,
         article_ingest_mod,
         article_dedup_mod,
+        article_sentiment_mod,
     ]
     originals: list[object] = [
         getattr(mod, "get_session_factory") for mod in targets  # noqa: B009

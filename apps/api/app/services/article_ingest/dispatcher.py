@@ -1,4 +1,4 @@
-"""文章 ingest 调度器 (BE-S3-002 + BE-S3-003 同步 dedup hook).
+"""文章 ingest 调度器 (BE-S3-002 + BE-S3-003 同步 dedup + BE-S3-004 同步打标 hook).
 
 总入口 ``run_ingest_articles_job`` 由 APScheduler 调用; 不抛异常, 失败一律
 ``logger.exception`` 后返 stats (与 ``ipo_ingest_service.run_ingest_a_job``
@@ -16,6 +16,9 @@
 6. **(BE-S3-003)** 对本批新插入的每篇文章: 算 simhash + 在近 24h 同 source
    候选池找 parent + 命中即写 ``article_topics``. 单条失败 ``logger.warning``
    skip, 不抛异常 (per-article 失败别影响 batch).
+7. **(BE-S3-004)** 对本批新插入的文章批量调 LLM 打 sentiment / score / keywords.
+   失败兜底由 ``sentiment_tagger`` 内部消化 (整批失败 → 单条降级 → fallback
+   neutral); 永不抛, 永不阻塞主流程. 失败的 article 由 scheduler 兜底 job 兜底.
 
 为什么 source 注册在 ``register_sources`` 而非 module-level
 ==========================================================
@@ -53,6 +56,7 @@ from app.services.article_ingest.dedup import (
     find_topic_parent,
     link_topic,
 )
+from app.services.article_ingest.sentiment_tagger import tag_articles_by_id
 from app.services.article_ingest.sources.base import (
     ArticleRaw,
     ArticleSource,
@@ -224,6 +228,7 @@ async def run_ingest_articles_job(
         "skipped": 0,
         "simhash_filled": 0,  # BE-S3-003: 同步给本批新文算 simhash 的数量
         "topics_linked": 0,  # BE-S3-003: 找到 parent + 写 article_topics 行数
+        "sentiment_tagged": 0,  # BE-S3-004: 同步打标成功的 article 数
         "errors": 0,
         "cache_invalidated": 0,
     }
@@ -312,6 +317,24 @@ async def run_ingest_articles_job(
                 f"article_ingest.dedup_batch_failed inserted={stats['inserted']}: {e}"
             )
 
+    # ─── BE-S3-004: 同步给本批新文调 LLM 批量打 sentiment / keywords ─────
+    # 独立 session/事务 隔离: 即使 LLM 全失败, simhash + topic 已 commit,
+    # sentiment 留 NULL 等下一次 sentiment_tag_job 兜底
+    if inserted_pairs:
+        new_article_ids = [pair[0] for pair in inserted_pairs]
+        try:
+            async with factory() as session:
+                tag_stats = await tag_articles_by_id(
+                    session, article_ids=new_article_ids
+                )
+                await session.commit()
+            stats["sentiment_tagged"] = tag_stats["tagged"]
+        except Exception as e:
+            # 整批打标失败不影响主流程; scheduler 兜底 job 会再扫一遍
+            logger.exception(
+                f"article_ingest.sentiment_tag_failed inserted={stats['inserted']}: {e}"
+            )
+
     # 失效 BE-S3-006 文章列表 / 详情缓存; 失败已被 invalidate_namespace 内部 catch
     stats["cache_invalidated"] = await invalidate_namespace(
         "articles:list", "articles:detail"
@@ -322,6 +345,7 @@ async def run_ingest_articles_job(
         f"matched={stats['matched']} inserted={stats['inserted']} "
         f"skipped={stats['skipped']} simhash_filled={stats['simhash_filled']} "
         f"topics_linked={stats['topics_linked']} "
+        f"sentiment_tagged={stats['sentiment_tagged']} "
         f"cache_invalidated={stats['cache_invalidated']}"
     )
     return stats

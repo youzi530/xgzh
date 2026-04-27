@@ -31,6 +31,7 @@ from app.core.logging import logger
 from app.services import ipo_ingest_service
 from app.services.article_ingest import run_ingest_articles_job
 from app.services.article_ingest.dedup import run_recluster_job
+from app.services.article_ingest.sentiment_tagger import run_sentiment_tag_job
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -63,6 +64,8 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
     - ``article_ingest_initial`` / ``article_ingest_cron``: BE-S3-002 多源文章 ingest
     - ``article_topic_recluster_initial`` / ``article_topic_recluster_cron``:
       BE-S3-003 同主题折叠兜底
+    - ``article_sentiment_tag_initial`` / ``article_sentiment_tag_cron``:
+      BE-S3-004 文章情感打标兜底
     """
     for job_id in (
         "ipo_ingest_a_initial",
@@ -73,6 +76,8 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         "article_ingest_cron",
         "article_topic_recluster_initial",
         "article_topic_recluster_cron",
+        "article_sentiment_tag_initial",
+        "article_sentiment_tag_cron",
     ):
         with contextlib.suppress(Exception):
             scheduler.remove_job(job_id)
@@ -180,12 +185,41 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         ),
     )
 
+    # ─── 文章情感打标兜底 (BE-S3-004) ──────────────────────────
+    # 兜底处理: dispatcher inline 打标失败 / 历史数据回填 / 测试.
+    # 启动延迟比 article_ingest 多 (默认 45s vs 15s + dedup 30s),
+    # 让 ingest + dedup 完成再扫 sentiment IS NULL.
+    st_delay = settings.article_sentiment_initial_delay_seconds
+    if st_delay > 0:
+        run_date_st = datetime.now(scheduler.timezone) + timedelta(seconds=st_delay)
+        scheduler.add_job(
+            run_sentiment_tag_job,
+            trigger=DateTrigger(run_date=run_date_st, timezone=scheduler.timezone),
+            id="article_sentiment_tag_initial",
+            name="Article Sentiment Tag — initial after startup",
+        )
+
+    st_minute = settings.article_sentiment_cron_minutes.strip() or "*/30"
+    scheduler.add_job(
+        run_sentiment_tag_job,
+        trigger=CronTrigger(
+            minute=st_minute,
+            timezone=settings.ipo_ingest_timezone,
+        ),
+        id="article_sentiment_tag_cron",
+        name=(
+            f"Article Sentiment Tag — cron minute={st_minute} "
+            f"tz={settings.ipo_ingest_timezone}"
+        ),
+    )
+
     logger.info(
         f"scheduler.jobs_registered "
         f"a:initial_delay={delay}s cron={hours} tz={settings.ipo_ingest_timezone} | "
         f"hk:initial_delay={hk_delay}s cron={hk_hours} tz={settings.ipo_ingest_hk_timezone} | "
         f"article:initial_delay={art_delay}s cron_minute={art_minute} | "
-        f"article_recluster:initial_delay={re_delay}s cron_hour={re_hours}"
+        f"article_recluster:initial_delay={re_delay}s cron_hour={re_hours} | "
+        f"article_sentiment:initial_delay={st_delay}s cron_minute={st_minute}"
     )
 
 
