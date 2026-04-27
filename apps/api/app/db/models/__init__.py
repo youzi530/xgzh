@@ -4,6 +4,7 @@
    alembic autogenerate 会漏掉新表。
 """
 
+from app.db.models.article import Article, ArticleTopic
 from app.db.models.auth import AuthSession
 from app.db.models.chat import (
     ChatMessage,
@@ -17,6 +18,8 @@ from app.db.models.push import PushToken
 from app.db.models.user import User, UserFavorite
 
 __all__ = [
+    "Article",
+    "ArticleTopic",
     "AuthSession",
     "ChatMessage",
     "ChatSession",

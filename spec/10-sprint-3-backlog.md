@@ -71,7 +71,7 @@
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
-| BE-S3-001 | db | `articles` + `article_topics` 表 + Alembic 0005（含 simhash / sentiment / market / related_ipos / tsvector）| 0.5d | — | P0 | ⬜ |
+| BE-S3-001 | db | `articles` + `article_topics` 表 + Alembic 0005（含 simhash / sentiment / market / related_ipos / tsvector）| 0.5d | — | P0 | ✅ |
 | BE-S3-002 | ingest | 多源 ingest 框架 + 雪球公开 API + 智通 RSS（统一 adapter / 重试 / 限并发）| 1.5d | BE-S3-001 | P0 | ⬜ |
 | BE-S3-003 | dedup | simhash 64 bit + 同主题折叠（写入端去重 + `article_topics` 父子映射）| 0.5d | BE-S3-002 | P0 | ⬜ |
 | BE-S3-004 | ai | 文章情感打标（GLM-4-Flash batch，复用 BE-S2-002 facade，三分类 + score + 关键词）| 0.5d | BE-S3-002, BE-S2-002 | P0 | ⬜ |
@@ -309,7 +309,7 @@
 
 ---
 
-### BE-S3-001 · `articles` + `article_topics` 表 + Alembic 0005 ⬜
+### BE-S3-001 · `articles` + `article_topics` 表 + Alembic 0005 ✅ 已完成
 
 **目标**：把 spec/03 §模块二的 `Article` 数据模型落到 PG，建好 simhash / sentiment / market / related_ipos / tsvector 五个核心维度的索引。
 
@@ -345,13 +345,13 @@
 | `fetched_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | 入库时间 |
 | `tsv` | tsvector GENERATED ALWAYS AS (...) STORED | 全文搜索, 同 BE-S2-005 中文预切 |
 
-**索引**
+**索引**（落地版统一前缀 `ix_*`，与 0001-0004 全项目对齐）
 
-- `idx_articles_market_published_at_desc` on `(market, published_at DESC)` — 列表分页主索引
-- `idx_articles_sentiment_published_at_desc` on `(sentiment, published_at DESC)` — 情感筛选
-- `idx_articles_source_published_at_desc` on `(source_name, published_at DESC)` — 来源筛选
-- `idx_articles_related_ipos_gin` GIN on `related_ipos` — `related_ipos @> '[{"code":"00700.HK"}]'` 查
-- `idx_articles_tsv_gin` GIN on `tsv` — 全文搜索
+- `ix_articles_market_published_at_desc` on `(market, published_at DESC)` — 列表分页主索引
+- `ix_articles_sentiment_published_at_desc` on `(sentiment, published_at DESC)` — 情感筛选
+- `ix_articles_source_published_at_desc` on `(source_name, published_at DESC)` — 来源筛选
+- `ix_articles_related_ipos_gin` GIN on `related_ipos` — `related_ipos @> '[{"code":"00700.HK"}]'` 查
+- `ix_articles_tsv_gin` GIN on `tsv` — 全文搜索
 
 **`article_topics` 表**
 
@@ -365,18 +365,23 @@
 
 **AC**
 
-- [ ] `make alembic-up` 跑通 head=0005
-- [ ] 13+1 张表（11 + articles + article_topics + indexes）就位
-- [ ] `tsv` GENERATED 列与 BE-S2-005 同款（PG `simple` config + 中文字符级预切正则 `[\u4e00-\u9fff]`）
-- [ ] `tests/integration/test_article_tables.py` ≥ 8 条用例全绿（schema 形状 / unique 约束 / FK 级联 / GIN 索引 / tsv generated 列 / downgrade idempotent）
-- [ ] `test_migrations.py::test_downgrade_to_base` 仍能从 head=0005 退回 base
+- [x] `make alembic-up` 跑通 head=0005_articles
+- [x] 11 → 13 张表（+articles +article_topics）就位
+- [x] `tsv` GENERATED 列与 BE-S2-005 同款（PG `simple` config + 中文字符级预切正则 `[\u4e00-\u9fff]`）
+- [x] `tests/integration/test_article_tables.py` ✅ **10 条用例全绿**（schema 形状 / unique 约束 / FK 双 CASCADE / GIN 索引 plainto_tsquery + @> 命中 / tsv generated 列 / CHECK simhash 8 字节 / downgrade idempotent）
+- [x] `test_migrations.py::test_migration_downgrade_drops_business_tables` 仍能从 head=0005_articles 退回 base
+- [x] `make ci-integration` 全绿 **577 passed**（前 567 → 净增 10 条），ruff / mypy 0 增量
 
 **依赖**：— （独立可起，无前置）
 
 **Cursor Prompt**（落地时填）
 
 ```
-（落地后从 commit message 反推填回）
+[落地复盘] BE-S3-001 = articles + article_topics + alembic 0005:
+- 文件清单见 §"实际改动文件"
+- 关键命名偏移: spec 的 idx_* → 项目统一 ix_* (回填修订)
+- 关键 ORM 偏移: tsv 列 ORM 不声明（与 IPODocument 同方案，避免 SQLAlchemy 写 NULL ::VARCHAR 触发 PG DatatypeMismatchError）
+- 测试: 10 条 (≥ 8 AC) 全绿，单测样例可复用 0004 BE-S2-005 plainto_tsquery 风格
 ```
 
 ---
@@ -991,7 +996,55 @@
 
 > 每个 PR 落地后，在本段补"实施成果 / 实际改动文件 / 关键设计 / 实施偏差 / 下一步推荐"五段式总结（参考 spec/09 BE-S2-001~009 的 PR summary 风格）。
 
-### BE-S3-001 ⬜ 待落地
+### BE-S3-001 ✅ 已完成（2026-04-27）
+
+#### 实施成果
+
+- 2 张表（`articles` + `article_topics`）+ alembic 0005 + 8 个新索引/UNIQUE 约束 + tsv generated 列全部落地
+- `make ci-integration` **577 passed**（前 567 → 净增 10 条 BE-S3-001 集成测试）
+- `make ci-smoke` 全绿、ruff 0 增量、mypy 0 增量、`alembic heads` 单一线性 head=`0005_articles`
+- ORM models 与 spec 设计对齐 + 5 处工程化偏移已记录（见下文 §"实施偏差"）
+
+#### 实际改动文件
+
+```
+apps/api/alembic/versions/0005_add_article_tables.py     # 新建（手写, up + downgrade）
+apps/api/app/db/models/article.py                        # 新建（Article + ArticleTopic 双 model 单文件）
+apps/api/app/db/models/__init__.py                       # +export Article / ArticleTopic
+apps/api/tests/integration/conftest.py                   # truncate_all 列表 +articles（CASCADE 顺带清 article_topics）
+apps/api/tests/integration/test_article_tables.py        # 新建（10 条用例）
+apps/api/tests/test_migrations.py                        # EXPECTED_TABLES + EXPECTED_INDEXES_SUBSET +8 个新名
+```
+
+#### 关键设计
+
+| 维度 | 决策 |
+|------|------|
+| **tsv 生成列** | `GENERATED ALWAYS AS (to_tsvector('simple', regexp_replace(title \|\| ' ' \|\| summary, E'([\\u4e00-\\u9fff])', E'\\\\1 ', 'g'))) STORED` — 与 BE-S2-005 同款 CJK 字符级预切策略，全项目中文搜索单一路径 |
+| **simhash 存储** | `BYTEA(8)` + `CHECK octet_length=8 OR NULL` — PG `bytea` 不限长度，加 CHECK 兜底防 ingest 写错长度 |
+| **`original_url` UNIQUE** | 写入端去重核心约束，BE-S3-002 dispatcher 走 `INSERT ... ON CONFLICT (original_url) DO NOTHING` 实现幂等抓取 |
+| **`article_topics` 双 CASCADE** | parent / child 任一删，topic 行立即失效；UNIQUE(`child_article_id`) 保证子文唯一归属一个主题 |
+| **5 个二级索引** | 列表分页（market+published_at DESC）+ 情感筛选 + 来源筛选 + GIN(related_ipos) + GIN(tsv) — 完全对齐 spec/10 |
+
+#### 实施偏差（vs spec/10 原稿）
+
+1. **索引前缀 `idx_*` → `ix_*`**：spec/10 写的是 `idx_articles_*`，但全项目其它表（0001-0004）都用 `ix_*`，保持索引前缀一致比对齐 spec 字面值更重要；spec 已内联回填修订过
+2. **ORM 不声明 `tsv` 列**：与 `IPODocument` (BE-S2-005) 同方案 — SQLAlchemy 没内置 TSVECTOR，用 Text 占位会让 INSERT 误带 `NULL ::VARCHAR` 触发 `DatatypeMismatchError`；`Computed()` 也不行（PG GENERATED 表达式含 `regexp_replace + to_tsvector` 复合函数）。索引也由 alembic raw SQL 直接 `CREATE INDEX USING GIN (tsv)` 创建，不在 ORM `__table_args__` 声明
+3. **CHECK constraint `octet_length=8 OR NULL`**：spec 写 `BYTEA(8)`，但 PG bytea 不限长度，仅 SQLAlchemy schema 提示；显式 CHECK 兜底，让"未来 simhash 算法升级到 128 bit 时一眼能看到约束需要改"
+4. **`article_topics.topic_id` 加独立 PK 而非 (parent, child) 复合 PK**：spec 写 `topic_id UUID PK`，沿用；额外补 UNIQUE(`child_article_id`) 保证子文唯一归属（spec 也写了），父子映射的 ON CASCADE 双向覆盖
+5. **`hot_score` / `keywords` / `related_ipos` 全部 NOT NULL 带 default**：spec 写"DEFAULT '[]'::jsonb"但没明确 NOT NULL；改 NOT NULL 让 BE-S3-002 ingest 端写入 0 字段也能直接 `INSERT ... DEFAULT VALUES`，业务代码省掉 N 处 `or []` 兜底
+
+#### 下一步推荐
+
+| 候选 | 理由 |
+|------|------|
+| **BE-S3-007** (brokers 表 + alembic 0006, 1d) | 与 BE-S3-001 同性质（纯 schema），同一天打包做完三张表 alembic（0005/0006/0007）一次性解决 head 漂移；之后三条线（文章 / 券商 / VIP）进入并行模式 |
+| BE-S3-009 (vip_memberships + 0007, 1d) | 同上，第三张 alembic |
+| BE-S3-002 (多源 ingest, 1.5d) | 已可起，但与 BE-S3-007/009 的 alembic 并行落表会让 head 频繁漂移；先把 schema 全部沉淀后再开 ingest 业务代码更顺 |
+
+→ **建议下一步走 BE-S3-007 + BE-S3-009 同日打包**（两个 0.5d × 2 = 1d，跟今天 BE-S3-001 合计 1.5d 收尾三张表 schema），之后 BE-S3-002/003/004/005/006 + BE-S3-008 + BE-S3-010 / FE-S3-* 三条线完全并行起跑
+
+---
 
 ### BE-S3-002 ⬜ 待落地
 

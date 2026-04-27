@@ -36,6 +36,9 @@ EXPECTED_TABLES = {
     "user_favorites",
     "push_tokens",
     "invite_codes",
+    # 0005 BE-S3-001: Article 域两表
+    "articles",
+    "article_topics",
 }
 
 EXPECTED_INDEXES_SUBSET = {
@@ -55,6 +58,15 @@ EXPECTED_INDEXES_SUBSET = {
     "ix_user_favorites_ipo_code_market",
     "uq_push_tokens_user_platform_device",
     "ix_invite_codes_owner_user_id",
+    # 0005 BE-S3-001: Article 5 个二级索引 + 2 个约束 + 1 个父子映射索引
+    "ix_articles_market_published_at_desc",
+    "ix_articles_sentiment_published_at_desc",
+    "ix_articles_source_published_at_desc",
+    "ix_articles_related_ipos_gin",
+    "ix_articles_tsv_gin",
+    "uq_articles_original_url",
+    "uq_article_topics_child_article_id",
+    "ix_article_topics_parent_article_id",
 }
 
 

@@ -120,7 +120,8 @@ async def truncate_all(db_engine: AsyncEngine) -> AsyncIterator[None]:
         await conn.execute(
             text(
                 "TRUNCATE users, auth_sessions, user_favorites, ipos, "
-                "ipo_documents, invite_codes, push_tokens, chat_sessions "
+                "ipo_documents, invite_codes, push_tokens, chat_sessions, "
+                "articles "  # article_topics 由 articles CASCADE 顺带清
                 "RESTART IDENTITY CASCADE"
             )
         )
