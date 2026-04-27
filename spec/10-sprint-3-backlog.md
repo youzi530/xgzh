@@ -73,7 +73,7 @@
 |----|------|------|:----:|:----:|:------:|:----:|
 | BE-S3-001 | db | `articles` + `article_topics` 表 + Alembic 0005（含 simhash / sentiment / market / related_ipos / tsvector）| 0.5d | — | P0 | ✅ |
 | BE-S3-002 | ingest | 多源 ingest 框架 + 雪球公开 API + 智通 RSS（统一 adapter / 重试 / 限并发）| 1.5d | BE-S3-001 | P0 | ✅ |
-| BE-S3-003 | dedup | simhash 64 bit + 同主题折叠（写入端去重 + `article_topics` 父子映射）| 0.5d | BE-S3-002 | P0 | ⬜ |
+| BE-S3-003 | dedup | simhash 64 bit + 同主题折叠（写入端去重 + `article_topics` 父子映射）| 0.5d | BE-S3-002 | P0 | ✅ |
 | BE-S3-004 | ai | 文章情感打标（GLM-4-Flash batch，复用 BE-S2-002 facade，三分类 + score + 关键词）| 0.5d | BE-S3-002, BE-S2-002 | P0 | ⬜ |
 | BE-S3-005 | ai | TL;DR 生成 API + Redis 缓存 + 兜底文案（多空饼图 + Top3 论据 + 来源列表）| 1d | BE-S3-004 | P0 | ⬜ |
 | BE-S3-006 | api | 文章列表 / 详情 / 全局搜索 API（PG FTS, 与 0004 同款中文预切策略） | 0.5d | BE-S3-001, BE-S3-004 | P0 | ⬜ |
@@ -425,7 +425,9 @@
 
 ---
 
-### BE-S3-003 · simhash 64 bit 去重 + 同主题折叠 ⬜
+### BE-S3-003 · simhash 64 bit 去重 + 同主题折叠 ✅
+
+> 实施日期：2026-04-27 ｜ 状态：✅ 完成 ｜ 实施总结：见本节末"实施成果"
 
 **目标**：写入端在 BE-S3-002 后置补 simhash 字段；查询端 / 入库后置任务跑同主题折叠（海明距离 ≤ 3 视为同主题）。
 
@@ -448,11 +450,58 @@
 
 **AC**
 
-- [ ] simhash 单测覆盖 4 个边界 case
-- [ ] 集成测：写 3 篇相似文章 → article_topics 落 2 行（parent=最早一篇, 2 个 child）
-- [ ] `make test-all` 净增 ≥ 12 条测
+- [x] simhash 单测覆盖 4 个边界 case
+- [x] 集成测：写 3 篇相似文章 → article_topics 落 2 行（parent=最早一篇, 2 个 child）
+- [x] `make test-all` 净增 ≥ 12 条测（单测 16 + 集成 6 = **22 条**）
 
 **依赖**：BE-S3-002
+
+#### 实施成果（2026-04-27）
+
+**最终交付文件**
+
+| 类型 | 文件 | 说明 |
+|------|------|------|
+| 新增 | `apps/api/app/services/article_ingest/dedup.py` (~480 行) | simhash 64 bit + 海明距离 + topic 折叠 + recluster job 入口 |
+| 修改 | `apps/api/app/services/article_ingest/dispatcher.py` | upsert 改回 `(article_id, original_url)`，写入后同步走 dedup（compute simhash + link_topic）；`stats` +`simhash_filled` / `topics_linked` |
+| 修改 | `apps/api/app/scheduler/__init__.py` | 注册 `article_topic_recluster_initial`（启动 30s 后跑一次）+ `article_topic_recluster_cron`（cron `*/4` 小时，分 15 错峰避开 ingest）|
+| 修改 | `apps/api/app/core/config.py` + `.env.example` | `ARTICLE_DEDUP_SIMHASH_THRESHOLD=3` / `_WINDOW_HOURS=24` / `_RECLUSTER_CRON_HOURS=*/4` / `_RECLUSTER_INITIAL_DELAY_SECONDS=30` |
+| 新增 | `apps/api/tests/test_simhash.py` | **16 条**单测（分词 / simhash / 海明 / bytes 互转 / 中英文混合 / 确定性）|
+| 新增 | `apps/api/tests/integration/test_article_dedup_e2e.py` | **6 条** PG 集成测（同主题折叠 / 跨源不折叠 / 跨市场不折叠 / 不相关不折叠 / recluster 兜底乱序 / simhash 持久化为 8 字节 BYTEA）|
+| 修改 | `apps/api/tests/integration/conftest.py` | `patch_session_factory` targets +`article_dedup_mod`（dedup.py 模块级 import 必须显式 patch，不然吃不到测试库 session）|
+
+**关键设计落地**
+
+1. **simhash 算法**：自实现（避免引第三方 lib），`re.findall(r'[\u4e00-\u9fff]\|[A-Za-z0-9]+', text)` 分词 → 中文按字符 / 英数按词；token-level SHA256 取低 64 bit → token frequency 加权累加 → 符号转 0/1 binary；空文本返回 0；`int.bit_count()` 算 popcount 距离
+2. **持久化**：`articles.simhash` 列定义为 `LargeBinary(length=8)`（PG `BYTEA(8)`），辅 helper `simhash_to_bytes / from_bytes` 走 big-endian 8 字节
+3. **写入端 inline dedup**（`dispatcher._dedup_inserted_batch`）：upsert commit 后立即对这批新插入文章按 `(market, source_name, published_at asc)` 排序循环：先 `compute_and_persist_simhash`，再 `find_topic_parent`（窗口 24h、同 market+source、`simhash IS NOT NULL`、且 candidate 未当 child）→ 命中 → `link_topic` 写 `article_topics`
+4. **scheduler 兜底 recluster**（`dedup.dedup_recent_articles`）：阶段 1 扫近 24h `simhash IS NULL` 的文章批量补；阶段 2 扫还没当 child 的文章，按 `published_at asc` 顺序找 parent，补 link
+5. **parent 选择**：候选池里选**最早 published_at**（同 ts 用 `article_id asc` 决定性兜底）作 parent
+6. **跨源 / 跨市场守卫**：`find_topic_parent` 严格 `Article.market == 当前 market AND Article.source_name == 当前 source_name`，杜绝跨源 / 跨市场误折叠（集成测专测）
+7. **fail-soft**：单条 simhash 计算 / link 失败 → `try/except` 内 warning 日志，不阻塞 batch；`stats["errors"]++`
+8. **idempotency**：`article_topics` 走 `ON CONFLICT DO NOTHING`（基于 `(parent_article_id, child_article_id)` 唯一约束），可重入
+
+**关键 trace（踩过的坑）**
+
+1. **数据库 session factory 没 patch**：`dedup.py` 用 `get_session_factory()` 取 module-level factory，但 `tests/integration/conftest.py::patch_session_factory` fixture 没把 `dedup` 列进 targets，导致 recluster job 跑去查生产 DB 而不是测试 DB，`simhash_filled=0` / `topics_linked=0`。**修复**：targets 显式追加 `article_dedup_mod`。后续新加 service 走 module-level session factory 都得记得加进来。
+2. **短文本 simhash 距离不稳**：单 token 替换在短标题（≤ 10 token）距离能跳到 7-9，超过阈值 3。**对策**：
+   - 集成测改用"长 title + 长 summary"提高 token 密度
+   - 跨源 / 跨市场严格守卫场景直接用**完全相同**的 title + summary（distance=0），把测试焦点收紧到"市场 / 源边界"而不是"模糊距离"
+   - 文档化结论：simhash 适合 200+ 字的正文级判定，短标题转发场景仍需依赖 `original_url` 唯一约束兜底
+3. **`Article.__table__.update()` mypy 报 `FromClause has no attribute update`**：换成 `from sqlalchemy import update; update(Article).where(...).values(...)` 函数式写法
+
+**测试 / 质量门禁**
+
+- 单测 + 集成测全绿：`tests/test_simhash.py` 16/16，`tests/integration/test_article_dedup_e2e.py` 6/6
+- 全量回归：`tests/integration/ + tests/test_simhash.py + tests/test_ipo_ingest.py + tests/test_article_ingest_base.py` **149/149 passed**
+- ruff: `All checks passed!`（dedup / dispatcher / scheduler / config / 测试文件）
+- mypy: `Success: no issues found in 4 source files`（dedup / dispatcher / scheduler / config）
+
+**对下游（BE-S3-005 / 006）的对接点**
+
+- 列表 API（BE-S3-006）：`LEFT JOIN article_topics ON articles.article_id = article_topics.child_article_id WHERE article_topics.child_article_id IS NULL` 只展示 parent
+- 详情 API（BE-S3-006）：`SELECT child_article_id FROM article_topics WHERE parent_article_id = ?` 取折叠 child 列表，前端展"主文 + N 篇相关"
+- TL;DR API（BE-S3-005）：候选池过滤同上（仅 parent），避免重复文章干扰多空比例统计
 
 ---
 
@@ -1213,7 +1262,18 @@ apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 
 
 → **建议下一步走 BE-S3-003**（simhash 同主题折叠），文章线串行依赖最长（→ 004 → 005 → 006），继续推进可让 FE-S3-001 / 002 提早启动
 
-### BE-S3-003 ⬜ 待落地
+### BE-S3-003 ✅ 已落地（2026-04-27）
+
+**最终交付**：`dedup.py`（~480 行 simhash + 海明 + topic 折叠 + recluster 入口）+ `dispatcher.py` 同步走 dedup + scheduler 兜底 cron `*/4` 小时 + 22 条新增测（16 单测 / 6 集成）。
+
+**最值得记的 3 个坑**
+
+1. **新加 service 的 module-level `get_session_factory` 必须显式 patch 进 `tests/integration/conftest.py::patch_session_factory.targets`**，不然集成测会偷偷连到生产 DB
+2. **simhash 在短标题（≤ 10 token）距离不稳**：单 token 替换距离能跳到 7-9。集成测对策 = 长 title + 长 summary 提密度；跨源 / 跨市场守卫场景直接用完全相同文本（distance=0）专测边界
+3. **mypy 不认 `Article.__table__.update()`**：换 `from sqlalchemy import update; update(Article).where(...).values(...)` 函数式写法
+
+详见本文档 §BE-S3-003 → "实施成果"小节。
+
 
 ### BE-S3-004 ⬜ 待落地
 

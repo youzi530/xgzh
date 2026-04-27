@@ -437,6 +437,41 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── BE-S3-003 simhash 同主题折叠 ─────────────────────────────────
+    article_dedup_simhash_threshold: int = Field(
+        default=3,
+        description=(
+            "海明距离 ≤ 此值视为同主题. 64 bit simhash, 3 = 99% 同主题召回率, "
+            "5 召回 ~70% 噪音上升 5%. 默认 3 是 Charikar 论文 + 行业经验."
+        ),
+        ge=0,
+        le=16,
+    )
+    article_dedup_window_hours: int = Field(
+        default=24,
+        description=(
+            "候选池查询窗口 (近 N 小时). 复刊 / 转发几乎都在 24h 内, 跨天不视为同主题. "
+            "调大可召回更多 (但噪音 / 性能下降); 调小召回率下降"
+        ),
+        ge=1,
+        le=168,
+    )
+    article_dedup_recluster_cron_hours: str = Field(
+        default="*/4",
+        description=(
+            "全局重 cluster job cron 小时表达式 (Asia/Shanghai). 默认 ``*/4`` = 每 4h "
+            "兜底跑一次. 兜底处理: 入库时 simhash 算失败 / 跨批兄弟文乱序入库 / "
+            "测试 / 历史回填. APScheduler CronTrigger.hour 兼容."
+        ),
+    )
+    article_dedup_recluster_initial_delay_seconds: int = Field(
+        default=30,
+        description=(
+            "全局重 cluster job 启动后延迟秒数. 比 article_ingest_initial 晚 (15s + 15s), "
+            "让首次 ingest 写完 + simhash 落库再跑兜底. 0 = 关闭立即跑, 仅依赖 cron."
+        ),
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

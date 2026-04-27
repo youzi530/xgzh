@@ -30,6 +30,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import logger
 from app.services import ipo_ingest_service
 from app.services.article_ingest import run_ingest_articles_job
+from app.services.article_ingest.dedup import run_recluster_job
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -60,6 +61,8 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
     - ``ipo_ingest_a_initial`` / ``ipo_ingest_a_cron``: BE-007 A 股 IPO
     - ``ipo_ingest_hk_initial`` / ``ipo_ingest_hk_cron``: BE-S2-000 HK IPO
     - ``article_ingest_initial`` / ``article_ingest_cron``: BE-S3-002 多源文章 ingest
+    - ``article_topic_recluster_initial`` / ``article_topic_recluster_cron``:
+      BE-S3-003 同主题折叠兜底
     """
     for job_id in (
         "ipo_ingest_a_initial",
@@ -68,6 +71,8 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         "ipo_ingest_hk_cron",
         "article_ingest_initial",
         "article_ingest_cron",
+        "article_topic_recluster_initial",
+        "article_topic_recluster_cron",
     ):
         with contextlib.suppress(Exception):
             scheduler.remove_job(job_id)
@@ -146,11 +151,41 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         name=f"Article Ingest — cron minute={art_minute} tz={settings.ipo_ingest_timezone}",
     )
 
+    # ─── 同主题 recluster (BE-S3-003) ───────────────────────────────
+    # 兜底处理: 入库时 simhash 失败 / 跨批兄弟文乱序入库 / 测试 / 历史回填.
+    # 启动延迟比 article_ingest 多 (默认 30s vs 15s), 让首批 ingest 写完 +
+    # simhash 落库再跑兜底, 这样初次启动也能形成第一批 article_topics 行.
+    re_delay = settings.article_dedup_recluster_initial_delay_seconds
+    if re_delay > 0:
+        run_date_re = datetime.now(scheduler.timezone) + timedelta(seconds=re_delay)
+        scheduler.add_job(
+            run_recluster_job,
+            trigger=DateTrigger(run_date=run_date_re, timezone=scheduler.timezone),
+            id="article_topic_recluster_initial",
+            name="Article Topic Recluster — initial after startup",
+        )
+
+    re_hours = settings.article_dedup_recluster_cron_hours.strip() or "*/4"
+    scheduler.add_job(
+        run_recluster_job,
+        trigger=CronTrigger(
+            hour=re_hours,
+            minute=15,  # 错开整点高峰 (article_ingest 多在整点跑)
+            timezone=settings.ipo_ingest_timezone,
+        ),
+        id="article_topic_recluster_cron",
+        name=(
+            f"Article Topic Recluster — cron hour={re_hours} minute=15 "
+            f"tz={settings.ipo_ingest_timezone}"
+        ),
+    )
+
     logger.info(
         f"scheduler.jobs_registered "
         f"a:initial_delay={delay}s cron={hours} tz={settings.ipo_ingest_timezone} | "
         f"hk:initial_delay={hk_delay}s cron={hk_hours} tz={settings.ipo_ingest_hk_timezone} | "
-        f"article:initial_delay={art_delay}s cron_minute={art_minute}"
+        f"article:initial_delay={art_delay}s cron_minute={art_minute} | "
+        f"article_recluster:initial_delay={re_delay}s cron_hour={re_hours}"
     )
 
 
