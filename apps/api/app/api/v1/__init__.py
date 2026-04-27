@@ -22,5 +22,6 @@ router.include_router(invite.router)
 router.include_router(favorites.router)
 router.include_router(push.router)
 router.include_router(articles.router)
+router.include_router(articles.search_router)
 
 __all__ = ["router"]

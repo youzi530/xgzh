@@ -76,7 +76,7 @@
 | BE-S3-003 | dedup | simhash 64 bit + 同主题折叠（写入端去重 + `article_topics` 父子映射）| 0.5d | BE-S3-002 | P0 | ✅ |
 | BE-S3-004 | ai | 文章情感打标（GLM-4-Flash batch，复用 BE-S2-002 facade，三分类 + score + 关键词）| 0.5d | BE-S3-002, BE-S2-002 | P0 | ✅ |
 | BE-S3-005 | ai | TL;DR 生成 API + Redis 缓存 + 兜底文案（多空饼图 + Top3 论据 + 来源列表）| 1d | BE-S3-004 | P0 | ✅ |
-| BE-S3-006 | api | 文章列表 / 详情 / 全局搜索 API（PG FTS, 与 0004 同款中文预切策略） | 0.5d | BE-S3-001, BE-S3-004 | P0 | ⬜ |
+| BE-S3-006 | api | 文章列表 / 详情 / 全局搜索 API（PG FTS, 与 0004 同款中文预切策略） | 0.5d | BE-S3-001, BE-S3-004 | P0 | ✅ |
 | BE-S3-007 | db+api | `brokers` 表 + 6-8 家种子数据 + 横向对比 API（含筛选 / 排序）| 1d | — | P0 | 🟡 schema 已落 |
 | BE-S3-008 | tracking | broker 跳转 redirect 端点 + UTM 落 `conversion_events` + simple stats API | 0.5d | BE-S3-007 | P0 | 🟡 schema 已落 |
 | BE-S3-009 | db | `vip_memberships` + `vip_orders` 表 + Alembic 0007 + 订阅状态机 + 7 天试用机制 | 1d | — | P0 | 🟡 schema 已落 |
@@ -708,7 +708,7 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 
 ---
 
-### BE-S3-006 · 文章列表 / 详情 / 全局搜索 API ⬜
+### BE-S3-006 · 文章列表 / 详情 / 全局搜索 API ✅
 
 **目标**：3 个端点闭合 — `GET /api/v1/articles`（列表 + 筛选 + 分页）/ `GET /api/v1/articles/{article_id}`（详情）/ `GET /api/v1/search/articles`（全文搜索）。
 
@@ -731,13 +731,63 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 
 **AC**
 
-- [ ] 列表 API 5 维筛选 / 分页 / 排序全跑通
-- [ ] 详情 API + related_articles 同 topic 折叠展示
-- [ ] 全文搜索中英文混合 query 命中
-- [ ] 缓存 TTL + invalidate_namespace 行为正确（写入后立即失效）
-- [ ] `make test-all` 净增 ≥ 15 条测
+- [x] 列表 API 5 维筛选 / 分页 / 排序全跑通
+- [x] 详情 API + related_articles 同 topic 折叠展示
+- [x] 全文搜索中英文混合 query 命中
+- [x] 缓存 TTL + invalidate_namespace 行为正确（写入后立即失效）
+- [x] `make test-all` 净增 18 条测（远超 ≥ 15 要求）
 
 **依赖**：BE-S3-001, BE-S3-004
+
+#### 实施成果（2026-04-27）
+
+**最终交付文件**
+
+| 类型 | 文件 | 说明 |
+|------|------|------|
+| 新增 | `apps/api/app/services/article_service.py` (~330 行) | `list_articles` / `get_article_detail` / `search_articles` 三主入口 + `_cjk_presplit` 中文预切 + child→parent 重定向 + topic 折叠 SQL |
+| 修改 | `apps/api/app/schemas/article.py` | +`ArticleListItem` / `ArticleListResponse` / `ArticleDetail` / `ArticleSearchHit` / `ArticleSearchResponse` |
+| 修改 | `apps/api/app/api/v1/articles.py` | +`GET /articles` / +`GET /articles/{article_id}` 接到主 router; +`GET /search/articles` 接独立 `search_router`（避开 `articles/{id}` 路由抢占） |
+| 修改 | `apps/api/app/api/v1/__init__.py` | +注册 `articles.search_router` |
+| 已就位 | `apps/api/app/services/article_ingest/dispatcher.py` | 写入后调 `invalidate_namespace("articles:list", "articles:detail")` 在 BE-S3-002 已落 |
+| 修改 | `apps/api/tests/integration/conftest.py` | `patch_session_factory` targets +`article_service_mod` |
+| 新增 | `apps/api/tests/integration/test_article_api.py` | **18 条** PG 集成测（列表 default / market / sentiment / source / ipo_code / sort / 分页 / 折叠 / 详情 + related_articles / child 重定向 / 404 not_found / 404 invalid_uuid / 中文搜索 / 英文搜索 / 空 query 422 / 全标点 → empty / 缓存命中 / invalidate_namespace 清缓存） |
+
+**关键设计落地**
+
+1. **路由 path 设计避坑**：`/search/articles` 而不是 `/articles/search` —— 后者会被 `GET /articles/{article_id}` 当 `article_id="search"` 抢路由。FastAPI 没有自动 specificity 排序的能力，遵循"特定 path 在通配 path 之前 mount" 反而心智负担大；改 path 一了百了。`articles.search_router = APIRouter(prefix="/search")` 与主 router 同级注册
+2. **topic 折叠（核心）**：列表 / 搜索查询都走 `WHERE article_id NOT IN (SELECT child_article_id FROM article_topics)`，只展示 parent。NOT IN 子查询走 `uq_article_topics_child_article_id` UNIQUE 索引，子查询小（typically 几百行）+ PG 优化器自动转 anti-join，性能与 LEFT JOIN ... IS NULL 等价
+3. **child → parent 重定向（用户体验亮点）**：`get_article_detail` 先 `_resolve_to_parent_id`，如果传入是 child 则查 `article_topics.parent_article_id` 重定向。**实际效果**：用户分享了某转发文链接 → 详情页展主文 + 全部转发列表，类似各社交平台"评论置顶到原贴"。前端无感知，URL 不变（响应里 `article_id` 是 parent 的 id，前端可选择是否 history.replaceState）
+4. **CJK 字符级预切**：`_cjk_presplit` 把 "招股说明书" → "招 股 说 明 书"，与 alembic 0005 写入端 `regexp_replace(text, E'([\\u4e00-\\u9fff])', E'\\\\1 ', 'g')` 完全等价。**为什么不直接 import `hybrid_search._cjk_presplit`**：article 域 vs RAG 域逻辑分离 —— 未来 RAG 那侧可能加 stop-word 过滤（保留搜索精度），文章列表搜索不该跟随。复制粘贴 + 双边覆盖单测，是受控冗余
+5. **强稳定排序 tie-breaker**：列表 `ORDER BY published_at DESC, article_id ASC`（hot_score 排序时多加一层 `hot_score DESC`）。UUID v4 单调随机做 tie-breaker，防 page=2 跳页时同一秒发布的文章顺序漂移（这种 race condition 在分页里特别隐蔽，e2e 难复现）
+6. **`Article` 模型不声明 `tsv` 列**：搜索 SQL 走 raw text 表达式 `tsv @@ plainto_tsquery('simple', :q)` + `ts_rank_cd(tsv, plainto_tsquery(...))`。原因详见 `app/db/models/article.py` 注释（PG GENERATED + `simple` config + `regexp_replace` 复合表达式 → `Computed()` autogenerate 错配 + `Text` 占位 INSERT 误带 `NULL::VARCHAR` 触发 `DatatypeMismatchError`）
+7. **service 层 dict 边界**：`@cached` 用 `json.dumps` 写缓存 + `json.loads` 读，Pydantic 实例无法直接走；service 层始终在 `dict[str, Any]` 边界上，路由层 `model_validate` 重构成 schema —— 与 `ipo_service` 统一方案
+8. **JSON 注入防护**：`ipo_code` JSONB 查询用 `json.dumps([{"code": ipo_code}])` 而非 f-string 拼接；防 `ipo_code='", evil:"'` 这种攻击 payload。bound parameter 已有 SQL 注入兜底，但 JSON 内部拼接需独立兜底
+9. **缓存策略分层**：列表 5 min（新鲜度敏感）/ 详情 10 min（detail 访问稀疏）/ 搜索不缓存（query 千变万化命中率低 + GIN 索引性能足够）。dispatcher 写入新文章后调 `invalidate_namespace("articles:list", "articles:detail")` 主动清，与 Sprint 1.5 ipo cache 同款
+10. **非法 UUID 字符串 → 404 而非 500**：`get_article_detail("not-a-uuid")` 内部 try `uuid.UUID(...)` catch `ValueError / AttributeError / TypeError` 返 None，路由层 → 404。**这是 BE-S2-002 防御性编程经验复用** —— 用户随手输错 ID 不该是服务侧错
+
+**为什么列表用 ORM、搜索用 raw SQL**
+
+- 列表的 5 维筛选 + 排序 + 分页全部用 SQLAlchemy ORM（类型安全 + IDE 提示 + 索引使用清晰）
+- 搜索 SQL 涉及 PG GENERATED 列 `tsv`（ORM 不感知）+ `ts_rank_cd` 函数返回 + `plainto_tsquery` —— 用 ORM 写 `func.ts_rank_cd(...)` 也能跑但表达式可读性差，raw SQL 直接对齐 alembic 0005 的写入端表达式更明显
+
+**测试 / 质量门禁**
+
+- 集成测：`tests/integration/test_article_api.py` ✅ 18/18
+- 全量回归（724 测，含历史 706 + 新增 18）：✅ 724/724 passed in 127s
+- ruff（99 源文件 + 测试）：✅ All checks passed
+- mypy（99 源文件）：✅ Success: no issues found
+
+**踩过的 1 个坑**
+
+1. **`Select.order_by(*list[object])` mypy 报 incompatible type**：原本写法 `order_cols: list = [...]; if hot_score: order_cols += ...; stmt.order_by(*order_cols)` mypy 严格模式不接受动态 list unpack 进 order_by(*args)。**修复**：改成 `if/else` 两个完整分支 + 内联 order_by 调用（"啰嗦但类型安全"路线）。教训：`order_by(*list)` 在 SQLAlchemy 类型 stub 下是反模式，分支完整调用更顺。
+
+**对下游的对接点**
+
+- 前端 `FE-S3-001` 文章卡片列表：直接消费 `ArticleListItem` 字段，sentiment 标签 / hot_score 排序按钮 / source_logo 都齐全
+- 前端 `FE-S3-002` 文章详情页：`ArticleDetail.related_articles` 展开"主文 + N 篇相关报道"折叠区
+- 前端 `FE-S3-003` 全局搜索：`/search/articles?q=...&market=...` 直连
+- BE-S3-005 TLDR：详情页底部抽屉可直接调 `POST /articles/tldr scope=ipo scope_value=<related_ipos[0].code>`，与详情联动
 
 ---
 
@@ -1435,7 +1485,18 @@ apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 
 详见本文档 §BE-S3-005 → "实施成果"小节。
 
 
-### BE-S3-006 ⬜ 待落地
+### BE-S3-006 ✅ 已落地（2026-04-27）
+
+**最终交付**：`article_service.py`（~330 行 列表 + 详情 + 搜索 + child→parent 重定向）+ `articles.py` 主 router 加 list/detail + `search_router` 独立 + `schemas/article.py` 5 个 schema + 18 条新增 e2e。
+
+**最值得记的 3 个点**
+
+1. **路由 path 避坑**：用 `/search/articles`（独立 search_router）而不是 `/articles/search` —— 后者会被 `GET /articles/{article_id}` 当 `article_id="search"` 抢走路由。改 path 比改 mount 顺序心智负担小
+2. **child → parent 重定向（用户体验亮点）**：详情页拿到 child 链接自动重定向 + 反查全部 child 列表，前端无感知 —— 类似各社交平台"评论置顶到原贴"
+3. **`order_by(*list)` mypy 类型陷阱**：动态 list unpack 进 `select(...).order_by(*order_cols)` 不通过严格 mypy；改 if/else 两个完整分支 + 内联 order_by 调用更顺
+
+详见本文档 §BE-S3-006 → "实施成果"小节。
+
 
 ### BE-S3-007 ⬜ 待落地
 
