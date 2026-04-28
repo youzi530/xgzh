@@ -38,6 +38,7 @@ import UpgradeVipModal from '@/components/UpgradeVipModal.vue'
 import { useUpgradeModal } from '@/composables/upgradeModal'
 import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'
+import { type ThemeMode, useThemeStore } from '@/stores/theme'
 
 const KEY_BOUND_REFERRER = 'xgzh.invite.bound_referrer'
 /** 试用 / 订阅倒计时刷新间隔; 1 分钟 — 比"剩余天数"刻度细一档, 给视觉"在跑" */
@@ -46,6 +47,26 @@ const COUNTDOWN_TICK_MS = 60_000
 const authStore = useAuthStore()
 const { user, loggedIn, vipMembership, vipMembershipLoading } = storeToRefs(authStore)
 const upgrade = useUpgradeModal()
+
+// FE-S4-004: 主题切换器 — 读 mode 给 segment 高亮, 写 mode 立即生效 + 持久化
+const themeStore = useThemeStore()
+const { mode: themeMode } = storeToRefs(themeStore)
+
+interface ThemeOption {
+  key: ThemeMode
+  label: string
+  emoji: string
+}
+
+const THEME_OPTIONS: ThemeOption[] = [
+  { key: 'auto', label: '跟随系统', emoji: '🌗' },
+  { key: 'dark', label: '深色', emoji: '🌙' },
+  { key: 'light', label: '浅色', emoji: '☀️' },
+]
+
+function selectTheme(t: ThemeMode) {
+  themeStore.setMode(t)
+}
 
 // 自选数量徽标; 进个人中心时若已登录顺手 loadOnce, 列表入口立刻能看到 N
 const favStore = useFavoritesStore()
@@ -484,6 +505,26 @@ onUnmounted(() => {
       </view>
     </view>
 
+    <!-- FE-S4-004: 主题切换 (在 mp-weixin 端 v1 仅 navbar 染色; H5 全量) -->
+    <view class="section">
+      <view class="section-header">
+        <text class="section-title">外观主题</text>
+      </view>
+      <view class="theme-seg">
+        <view
+          v-for="t in THEME_OPTIONS"
+          :key="t.key"
+          :class="['theme-seg-item', themeMode === t.key && 'theme-seg-item-active']"
+          hover-class="theme-seg-item-hover"
+          :hover-stay-time="80"
+          @tap="selectTheme(t.key)"
+        >
+          <text class="theme-seg-emoji">{{ t.emoji }}</text>
+          <text class="theme-seg-label">{{ t.label }}</text>
+        </view>
+      </view>
+    </view>
+
     <view class="section">
       <view class="section-header">
         <text class="section-title">设置 / 关于</text>
@@ -906,5 +947,41 @@ onUnmounted(() => {
 }
 .logout-btn-disabled {
   opacity: 0.6;
+}
+
+/* FE-S4-004: 主题切换 segment (3 列等宽; 选中态 = primary 边框 + accent 文字) */
+.theme-seg {
+  display: flex;
+  gap: 12rpx;
+}
+.theme-seg-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+  padding: 20rpx 0;
+  border-radius: 16rpx;
+  background: var(--color-surface, #131a2c);
+  border: 1rpx solid var(--color-border, rgba(255, 255, 255, 0.06));
+}
+.theme-seg-item-active {
+  background: rgba(79, 139, 255, 0.12);
+  border-color: var(--color-primary, #4f8bff);
+}
+.theme-seg-item-hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.theme-seg-emoji {
+  font-size: 36rpx;
+  line-height: 1;
+}
+.theme-seg-label {
+  font-size: 22rpx;
+  color: var(--color-text-muted, #94a3b8);
+}
+.theme-seg-item-active .theme-seg-label {
+  color: var(--color-primary, #4f8bff);
+  font-weight: 600;
 }
 </style>
