@@ -27,14 +27,34 @@ from app.services.compliance.forbidden_patterns import (
     is_tier1_clean,
     scan,
 )
+from app.services.compliance.pii_inventory import (
+    CONSENT_MECHANISM,
+    DATA_EXPORT_JURISDICTIONS,
+    PII_INVENTORY,
+    THIRD_PARTY_SDKS,
+    PIIItem,
+    get_consent_mechanism,
+    get_inventory,
+    get_jurisdictions,
+    get_third_party_sdks,
+)
 
 __all__ = [
+    "CONSENT_MECHANISM",
+    "DATA_EXPORT_JURISDICTIONS",
+    "PII_INVENTORY",
+    "THIRD_PARTY_SDKS",
     "TIER1_PATTERNS",
     "TIER2_PATTERNS",
     "ForbiddenPatternError",
+    "PIIItem",
     "ScanResult",
     "find_first_tier1_hit",
     "forbidden_pattern_filter",
+    "get_consent_mechanism",
+    "get_inventory",
+    "get_jurisdictions",
+    "get_third_party_sdks",
     "is_tier1_clean",
     "scan",
 ]

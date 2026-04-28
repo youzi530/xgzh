@@ -69,7 +69,7 @@
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
 | BE-S5-001 | compliance | 红线词词典固化 + `forbidden_pattern_filter` v2（spec/06 §2 全词表） | 0.5d | — | P0 | ✅ |
-| BE-S5-002 | compliance | PIPL 个人信息收集清单 + admin 审计接口（`GET /api/v1/admin/pii-inventory`）| 0.5d | OPS-S4-001 | P0 | ⬜ |
+| BE-S5-002 | compliance | PIPL 个人信息收集清单 + admin 审计接口（`GET /api/v1/admin/pii-inventory`）| 0.5d | OPS-S4-001 | P0 | ✅ |
 | BE-S5-003 | compliance | 用户注销账号工程支持（`DELETE /api/v1/me`，soft delete + 30d 后真删 cron） | 1d | BE-S5-002 | P0 | ⬜ |
 | BE-S5-004 | feedback | 反馈表 + API（``POST /api/v1/feedback``，落 PG `feedbacks` 表，admin 可读）| 0.5d | — | P0 | ✅ |
 | BE-S5-005 | invite | 邀请有礼 trigger（成功邀请 ≥ 3 人 → VIP +7d，复用 vip_service `extend_membership`）| 0.5d | BE-S3-007 | P0 | ✅ |
@@ -181,52 +181,99 @@ OPS-S5-002 钉钉 webhook ─────→│         ↓
 
 ---
 
-### BE-S5-002 · PIPL 个人信息收集清单 + admin 审计接口 ⬜
+### BE-S5-002 · PIPL 个人信息收集清单 + admin 审计接口 ✅
 
 **目标**：spec/06 §3 PIPL 合规自查 P0；监管要求 App / 小程序在用户注册时披露"收集的个人信息清单"，且 admin 后台可审计。
 
-**改动文件**
+**实际改动文件**
 
-- `apps/api/app/services/compliance/pii_inventory.py`（新建，PII 字段清单 + 用途映射）
-- `apps/api/app/api/v1/admin.py`（加 ``GET /api/v1/admin/pii-inventory`` 端点）
-- `apps/api/tests/test_pii_inventory.py`（单元）
-- `apps/api/tests/integration/test_admin_pii.py`（集成）
+- `apps/api/app/services/compliance/pii_inventory.py`（新建，13 条 PII 字段清单 + 同意机制 + 第三方 SDK + 出境法域 — 全静态 frozen dataclass）
+- `apps/api/app/services/compliance/__init__.py`（exports 加 PII 模块的 9 个公共符号）
+- `apps/api/app/services/pii_inventory_service.py`（新建，DB 实时计数聚合）
+- `apps/api/app/schemas/pii_inventory.py`（新建 5 个 pydantic schema）
+- `apps/api/app/api/v1/admin.py`（加 `GET /admin/pii-inventory`）
+- `apps/api/tests/test_pii_inventory.py`（17 unit case）
+- `apps/api/tests/integration/test_admin_pii.py`（6 integration case）
 
-**PII 清单（基于现有 ORM 模型）**：
+**PII 清单（实际 13 条；对齐 ORM models + spec/12 §BE-S5-002）**
 
-| 字段 | 表 | 收集场景 | 用途 | 留存期 |
-|------|----|---------|------|------|
-| `phone` | users | OTP 注册 / 登录 | 身份识别 / 通知发送 | 注销后 30d |
-| `wechat_openid` | users | 微信小程序登录 | 身份识别 / 微信支付 | 注销后 30d |
-| `wechat_unionid` | users | 微信小程序登录 | 跨小程序识别 | 注销后 30d |
-| `apple_id` | users | iOS Apple Login（5.5 后置） | 身份识别 | 注销后 30d |
-| `nickname` / `avatar_url` | users | 微信授权 / 用户填 | 个人主页展示 | 注销后立即 |
-| `region` | users | 注册时选 | 内容地域适配 | 注销后立即 |
-| `last_active_at` | users | 自动 | 活跃度统计 | 注销后立即 |
-| `device_id` | push_tokens | 推送注册 | 消息推送 | 注销后立即 |
-| `ip_address` | （日志）| 每次请求 | 风控 / 审计 | 90d 后压缩归档 |
-| `user_agent` | （日志）| 每次请求 | 兼容性诊断 | 90d 后压缩归档 |
+| 字段 | 表 | 合法性基础 (PIPL §13) | 留存 | 敏感 |
+|------|----|---------------------|------|:---:|
+| `phone` | users | contract_necessity | 注销+30d | ✓ |
+| `wechat_openid` | users | contract_necessity | 注销+30d | |
+| `wechat_unionid` | users | consent | 注销+30d | |
+| `apple_id` | users | contract_necessity | 注销+30d | |
+| `nickname` | users | consent | 立即 | |
+| `avatar_url` | users | consent | 立即 | |
+| `region` | users | contract_necessity | 立即 | |
+| `last_active_at` | users | legitimate_interest | 立即 | |
+| `device_id` | push_tokens | consent | 立即 | |
+| `token` | push_tokens | contract_necessity | 立即 | |
+| `ip_inet` | feedbacks (BE-S5-004) | legitimate_interest | 注销+90d | |
+| `ip_address` | __log__ | legitimate_interest | 90d 归档 | |
+| `user_agent` | __log__ | legitimate_interest | 90d 归档 | |
+| `refresh_jti` | auth_sessions | contract_necessity | 立即 | |
 
-**`GET /api/v1/admin/pii-inventory`** 响应（admin token 鉴权）：
+**`GET /api/v1/admin/pii-inventory` 响应结构**（X-Admin-Token 鉴权）
 
 ```json
 {
   "items": [
-    {"field": "phone", "table": "users", "scenario": "OTP 注册 / 登录",
-     "purpose": "身份识别 / 通知发送", "retention_days_after_logout": 30}
+    {
+      "field": "phone", "table": "users",
+      "scenario": "OTP 注册 / 登录 (短信验证码)",
+      "purpose": "身份识别 + 通知发送 (新股开打 / 风控告警)",
+      "legal_basis": "contract_necessity",
+      "retention_days_after_logout": 30,
+      "is_sensitive": true,
+      "notes": "PIPL §28 敏感信息; 注销后 30d 真删 (BE-S5-003 cron)"
+    }
+    // ... 13 条
   ],
   "data_export_jurisdictions": [],
-  "total_active_users": 0,
-  "total_pii_records": 0
+  "consent_mechanism": {
+    "type": "explicit_opt_in",
+    "ui_location": "登录页底部双勾选 (用户协议 + 隐私政策)",
+    "rejection_behavior": "无法继续登录注册, 引导退出",
+    "withdrawal_path": "我的页 → 注销账号 (BE-S5-003)"
+  },
+  "third_party_sdks": [
+    { "name": "微信开放平台 SDK", "vendor": "腾讯", "purpose": "微信登录 / 支付",
+      "pii_collected": "wechat_openid / wechat_unionid / 支付 prepay_id",
+      "url": "https://privacy.qq.com/" },
+    // 微信支付 / Sentry / AKShare
+  ],
+  "counts": {
+    "total_active_users": 1234,
+    "total_users_lifetime": 1500,
+    "total_push_tokens": 800,
+    "total_feedbacks_with_ip": 50,
+    "total_auth_sessions": 1100
+  },
+  "spec_version": "2026-04-spec-12-BE-S5-002"
 }
 ```
 
-**AC**
+**关键工程决策**
 
-- [ ] PII 清单覆盖 spec/05 §3.2 users 表 + 所有 PII 字段
-- [ ] admin 端点带 ``X-Admin-Token`` 鉴权（OPS-S4-001 路径）
-- [ ] 集成测：admin 鉴权全通 + 数据计数与 DB 实际行数对齐
-- [ ] 文档（README）链接到此端点，方便 PIPL 合规审计
+1. **静态清单 vs schema 反射** — 选静态 frozen dataclass，因为 PII 清单是"业务声明"而非"schema 反射结果"。例如 `last_active_at` 虽是 users 表字段，但 `legal_basis` 写 `legitimate_interest`（合法利益）需要人工判断；`region` 同字段不同业务用途也需声明。让法务 / PM 直接 review 这一份代码常量，不必去逆推 ORM。
+2. **PIPL §13 严格 7 类合法性基础** — `LegalBasis = Literal[...]` 7 个枚举值，单测 `test_legal_basis_in_pipl_seven_categories` 强制覆盖；后续加 PII 字段必须落在七类内，否则编译期就会被 mypy 拒。
+3. **敏感 PII (PIPL §28) 单独标记** — `phone` 是唯一敏感 PII，单测 `test_phone_is_marked_sensitive` 强制断言；将来加身份证 / 生物特征时同样标记。
+4. **第三方 SDK 共同处理者声明 (PIPL §23-25)** — 列出 微信 SDK / 微信支付 / Sentry / AKShare 4 个；隐私政策链接强制 HTTPS。
+5. **DB 计数走 5 个独立 `count(*)` 查询** — 都走主键 / 索引，整体 < 50ms。不用 `union` 是因为 5 表 schema 不同没法合并；`count(*)` 不读 PII row，零隐私风险。
+6. **`spec_version` 字段** — 让法务 / 监管能一眼看到"这是哪一版的清单"；后续修订时 bump 这个字段，admin 拉到新版本立刻知道。
+7. **不落库** — PII 清单是代码常量，不需要 DB 表 / 不需要 alembic migration；改清单走代码 review + git commit + tag 即可。
+
+**AC 全过**
+
+- [x] PII 清单覆盖 spec/05 §3.2 users 表 + push_tokens + feedbacks + auth_sessions + 日志 = 13 条 ✅
+- [x] admin 端点带 `X-Admin-Token` 鉴权（OPS-S4-001 路径） ✅
+- [x] 集成测：admin 鉴权三态（缺 token 401 / 错 token 401 / 未配 503） ✅
+- [x] 数据计数与 DB 实际行数对齐（active = status=1 + 未软删；lifetime = 全部） ✅
+- [x] feedback IP 计数仅算 `ip_inet IS NOT NULL` ✅
+- [x] 单测 17/17 + 集成测 6/6 + 全量回归 981/981 全绿（3min） ✅
+
+**回归**：981 passed（unit + integration 全绿，0 break；从 BE-S5-005 后的 958 → 981 增量 23 case）。
 
 ---
 

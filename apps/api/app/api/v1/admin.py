@@ -1,16 +1,17 @@
-"""OPS-S4-001 + BE-S5-004 Admin API: 灰度旋钮 + 错误率监控 + 反馈管理.
+"""OPS-S4-001 + BE-S5-002 + BE-S5-004 Admin API: 灰度旋钮 + 错误率监控 + 反馈管理 + PIPL PII 审计.
 
 路由总览 (全部走 ``X-Admin-Token`` header 鉴权, 见 ``security/admin.py``):
 
-| Method | Path                        | 用途                                |
-|--------|-----------------------------|-------------------------------------|
-| GET    | /api/v1/admin/flags         | 列所有 flag 配置                    |
-| GET    | /api/v1/admin/flags/{name}  | 查单 flag                           |
-| PUT    | /api/v1/admin/flags/{name}  | 写 / 改 flag (admin-write)          |
-| DELETE | /api/v1/admin/flags/{name}  | 删 flag                             |
-| GET    | /api/v1/admin/metrics       | 当前窗口 错误率 / total / errors    |
-| POST   | /api/v1/admin/metrics/reset | 清当前窗口计数 (debug / 灰度回滚后) |
-| GET    | /api/v1/admin/feedbacks     | 反馈列表 (分页 + filter)            |
+| Method | Path                          | 用途                                |
+|--------|-------------------------------|-------------------------------------|
+| GET    | /api/v1/admin/flags           | 列所有 flag 配置                    |
+| GET    | /api/v1/admin/flags/{name}    | 查单 flag                           |
+| PUT    | /api/v1/admin/flags/{name}    | 写 / 改 flag (admin-write)          |
+| DELETE | /api/v1/admin/flags/{name}    | 删 flag                             |
+| GET    | /api/v1/admin/metrics         | 当前窗口 错误率 / total / errors    |
+| POST   | /api/v1/admin/metrics/reset   | 清当前窗口计数 (debug / 灰度回滚后) |
+| GET    | /api/v1/admin/feedbacks       | 反馈列表 (分页 + filter)            |
+| GET    | /api/v1/admin/pii-inventory   | PIPL 个人信息收集清单 + 实时计数    |
 
 注意:
 - 所有路由都 ``require_admin_token`` Depends, ``OPS_ADMIN_TOKEN`` 留空时返 503
@@ -32,8 +33,14 @@ from app.schemas.feedback import (
     FeedbackCategory,
     FeedbackPlatform,
 )
+from app.schemas.pii_inventory import PIIInventoryResponse
 from app.security.admin import require_admin_token
-from app.services import error_monitor, feature_flags, feedback_service
+from app.services import (
+    error_monitor,
+    feature_flags,
+    feedback_service,
+    pii_inventory_service,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -182,6 +189,29 @@ async def list_feedbacks(
         limit=limit,
         offset=offset,
     )
+
+
+# ─── PIPL PII 审计 (BE-S5-002) ─────────────────────────────────────
+
+
+@router.get(
+    "/pii-inventory",
+    response_model=PIIInventoryResponse,
+    dependencies=[Depends(require_admin_token)],
+    summary="PIPL 个人信息收集清单 + 实时数据规模 (合规审计)",
+)
+async def get_pii_inventory(
+    session: AsyncSession = Depends(get_session),
+) -> PIIInventoryResponse:
+    """返回静态 PII 字段清单 + DB 实时行数 + 第三方 SDK + 同意机制 + 出境法域.
+
+    用途:
+    - PIPL 合规审计 (法务 / 监管下载)
+    - 配合 BE-S5-003 注销账号: 清单字段 = 注销时必清字段
+    - 让前端拉清单生成"用户协议 → 我们收集的个人信息"章节
+    """
+    payload = await pii_inventory_service.build_inventory_response(session)
+    return PIIInventoryResponse.model_validate(payload)
 
 
 __all__ = ["router"]
