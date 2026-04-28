@@ -15,7 +15,7 @@
        SSE event=tool_call (status=error) 透传, 但**不**冒成 SSE error 整流
        中断; LLM 第二步看到 tool error 仍能给 final
     3. **forbidden_pattern_filter 端到端**: LLM 输出违规词, 主循环替换为
-       "[已合规过滤]" 后落 chat_messages; 同时 disclaimer 兜底
+       "[已脱敏]" 后落 chat_messages; 同时 disclaimer 兜底
     4. **匿名链路 + IP 配额**: 不带 token 也能用, chat_sessions.user_id IS NULL,
        走 IP key 配额; 第二次匿名 → 429
     5. **max_steps 熔断**: LLM 持续 tool_calls 不收, 主循环到 max_steps 强制
@@ -662,12 +662,12 @@ async def test_e2e_diagnose_forbidden_pattern_replaced_in_db_final(
     llm_credential_envs: None,  # noqa: ARG001
 ) -> None:
     """LLM 输出含违规词 (强烈推荐 / 必涨 等), 主循环 ``forbidden_pattern_filter``
-    会替换为 ``[已合规过滤]`` 后写 chat_messages.content. 这是 spec/04 §3.3 §B
+    会替换为 ``[已脱敏]`` 后写 chat_messages.content. 这是 spec/04 §3.3 §B
     "中立性合规" 的端到端保障; 即便 LLM prompt 写得不够严, 输出层也能挡掉.
 
     SSE delta 流的设计: 主循环是先 yield 原始 delta 给端层 (流式体验), 之后
     才整段过 forbidden_filter 写 DB; 因此 SSE delta 文本可能含违规词, 但 **DB
-    final assistant.content 必含 [已合规过滤] 替代**, 这是用户最终复盘看到的
+    final assistant.content 必含 [已脱敏] 替代**, 这是用户最终复盘看到的
     版本 (FE 在 end 帧后会拉 message_id 拿权威版本).
     """
     push, _captured = fake_streaming_llm
@@ -711,8 +711,8 @@ async def test_e2e_diagnose_forbidden_pattern_replaced_in_db_final(
         )
         assert len(msgs) == 1
         final_text = msgs[0].content
-        assert "[已合规过滤]" in final_text, (
-            f"违规词应被 forbidden_pattern_filter 替换为 [已合规过滤]; "
+        assert "[已脱敏]" in final_text, (
+            f"违规词应被 forbidden_pattern_filter 替换为 [已脱敏]; "
             f"实际 final: {final_text!r}"
         )
         # 原文里的违规词应已被剥除

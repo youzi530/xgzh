@@ -8,7 +8,7 @@
 3. test_cache_hit_no_llm_second_call
    同 params 2 次调用 → LLM 仅调 1 次 (@cached 命中)
 4. test_forbidden_pattern_filter_cleans_before_sse
-   LLM 输出含违禁词 ("必涨" / "稳赚") → SSE delta 仅含 "[已合规过滤]", 不泄
+   LLM 输出含违禁词 ("必涨" / "稳赚") → SSE delta 仅含 "[已脱敏]", 不泄
 5. test_unauthenticated_401
    无 Bearer token → 401 token_missing
 6. test_rate_limit_429
@@ -340,7 +340,7 @@ async def test_forbidden_pattern_filter_cleans_before_sse(
     monkeypatch: pytest.MonkeyPatch,
     clear_hp_cache: None,  # noqa: ARG001
 ) -> None:
-    """LLM 输出含违禁词 → SSE delta 仅 "[已合规过滤]" 不泄."""
+    """LLM 输出含违禁词 → SSE delta 仅 "[已脱敏]" 不泄."""
     _, token = await _seed_user_and_token(session_factory, phone_suffix="0004")
     await _seed_candidates(session_factory, count=8, industry="新能源")
 
@@ -370,7 +370,7 @@ async def test_forbidden_pattern_filter_cleans_before_sse(
     assert "稳赚" not in full_text
     assert "建议满仓" not in full_text
     assert "all in" not in full_text.lower()
-    assert "[已合规过滤]" in full_text
+    assert "[已脱敏]" in full_text
 
     # end.warnings 含 forbidden_patterns_filtered 标记
     end = next(d for e, d in frames if e == "end")

@@ -9,6 +9,7 @@ from app.api.v1 import (
     chat,
     favorites,
     feature_flags,
+    feedback,
     invite,
     ipos,
     me,
@@ -31,6 +32,7 @@ router.include_router(articles.search_router)
 router.include_router(brokers.router)
 router.include_router(vip.router)
 router.include_router(payment.router)
+router.include_router(feedback.router)
 router.include_router(feature_flags.router)
 router.include_router(admin.router)
 

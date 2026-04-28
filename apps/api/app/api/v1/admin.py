@@ -1,4 +1,4 @@
-"""OPS-S4-001 Admin API: 灰度旋钮 + 错误率监控.
+"""OPS-S4-001 + BE-S5-004 Admin API: 灰度旋钮 + 错误率监控 + 反馈管理.
 
 路由总览 (全部走 ``X-Admin-Token`` header 鉴权, 见 ``security/admin.py``):
 
@@ -10,6 +10,7 @@
 | DELETE | /api/v1/admin/flags/{name}  | 删 flag                             |
 | GET    | /api/v1/admin/metrics       | 当前窗口 错误率 / total / errors    |
 | POST   | /api/v1/admin/metrics/reset | 清当前窗口计数 (debug / 灰度回滚后) |
+| GET    | /api/v1/admin/feedbacks     | 反馈列表 (分页 + filter)            |
 
 注意:
 - 所有路由都 ``require_admin_token`` Depends, ``OPS_ADMIN_TOKEN`` 留空时返 503
@@ -20,11 +21,19 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import get_session
+from app.schemas.feedback import (
+    FeedbackAdminItem,
+    FeedbackAdminListResponse,
+    FeedbackCategory,
+    FeedbackPlatform,
+)
 from app.security.admin import require_admin_token
-from app.services import error_monitor, feature_flags
+from app.services import error_monitor, feature_flags, feedback_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -135,6 +144,44 @@ async def get_metrics() -> MetricsPayload:
 )
 async def reset_metrics() -> None:
     await error_monitor.reset_metrics()
+
+
+# ─── Feedbacks 路由 (BE-S5-004) ────────────────────────────────────
+
+
+@router.get(
+    "/feedbacks",
+    response_model=FeedbackAdminListResponse,
+    dependencies=[Depends(require_admin_token)],
+    summary="拉反馈列表 (admin)",
+)
+async def list_feedbacks(
+    category: FeedbackCategory | None = Query(
+        default=None,
+        description="bug / feature / content / other",
+    ),
+    platform: FeedbackPlatform | None = Query(
+        default=None,
+        description="h5 / mp-weixin / app-android / app-ios",
+    ),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+) -> FeedbackAdminListResponse:
+    """admin 拉反馈, 分页 + 可选 category / platform filter."""
+    items, total = await feedback_service.list_feedbacks(
+        session,
+        category=category,
+        platform=platform,
+        limit=limit,
+        offset=offset,
+    )
+    return FeedbackAdminListResponse(
+        items=[FeedbackAdminItem.model_validate(it) for it in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 __all__ = ["router"]

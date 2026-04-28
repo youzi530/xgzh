@@ -71,7 +71,7 @@
 | BE-S5-001 | compliance | 红线词词典固化 + `forbidden_pattern_filter` v2（spec/06 §2 全词表） | 0.5d | — | P0 | ✅ |
 | BE-S5-002 | compliance | PIPL 个人信息收集清单 + admin 审计接口（`GET /api/v1/admin/pii-inventory`）| 0.5d | OPS-S4-001 | P0 | ⬜ |
 | BE-S5-003 | compliance | 用户注销账号工程支持（`DELETE /api/v1/me`，soft delete + 30d 后真删 cron） | 1d | BE-S5-002 | P0 | ⬜ |
-| BE-S5-004 | feedback | 反馈表 + API（``POST /api/v1/feedback``，落 PG `feedbacks` 表，admin 可读）| 0.5d | — | P0 | ⬜ |
+| BE-S5-004 | feedback | 反馈表 + API（``POST /api/v1/feedback``，落 PG `feedbacks` 表，admin 可读）| 0.5d | — | P0 | ✅ |
 | BE-S5-005 | invite | 邀请有礼 trigger（成功邀请 ≥ 3 人 → VIP +7d，复用 vip_service `extend_membership`）| 0.5d | BE-S3-007 | P0 | ⬜ |
 | BE-S5-006 | dashboard | `app/api/v1/admin/dashboard.py`（6 指标：DAU / 注册转化 / VIP 转化 / Agent 调用 / 错误率 / SSE p95，admin 鉴权 + JSON / HTML 双格式）| 1d | OPS-S4-001 | P0 | ⬜ |
 
@@ -259,37 +259,69 @@ OPS-S5-002 钉钉 webhook ─────→│         ↓
 
 ---
 
-### BE-S5-004 · 反馈表 + API ⬜
+### BE-S5-004 · 反馈表 + API ✅
 
 **目标**：客服反馈入口（spec/07 §S5）。最轻量方案：PG `feedbacks` 表 + `POST /api/v1/feedback` + admin 列表。不上工单系统（钉钉群够用）。
 
-**改动文件**
+**改动文件**（实际）
 
-- `apps/api/alembic/versions/0009_feedbacks.py`（如 BE-S5-003 已用 0009，本 PR 用 0010）
-- `apps/api/app/db/models/feedback.py`
-- `apps/api/app/api/v1/feedback.py`（新建路由）
-- `apps/api/app/api/v1/admin.py`（admin 端 ``GET /api/v1/admin/feedbacks``）
-- `apps/api/tests/integration/test_feedback.py`
+- `apps/api/alembic/versions/0009_feedbacks.py`（新建表 + 3 索引）
+- `apps/api/app/db/models/feedback.py`（ORM）
+- `apps/api/app/db/models/__init__.py`（注册 `Feedback`）
+- `apps/api/app/schemas/feedback.py`（Pydantic schemas + IP 字段 validator）
+- `apps/api/app/services/feedback_service.py`（双策略限流 + create + admin list）
+- `apps/api/app/api/v1/feedback.py`（公开 ``POST /feedback`` 路由）
+- `apps/api/app/api/v1/admin.py`（admin ``GET /admin/feedbacks``）
+- `apps/api/app/api/v1/__init__.py`（注册路由）
+- `apps/api/tests/test_feedback_service.py`（5 unit 限流分支）
+- `apps/api/tests/integration/test_feedback.py`（9 e2e）
+- `apps/api/tests/integration/conftest.py`（truncate_all 加 `feedbacks` 表）
+- `apps/api/tests/integration/test_e2e_chat_diagnose.py` + `test_historical_pattern_e2e.py`（修复 BE-S5-001 漏掉的 ``[已合规过滤]`` → ``[已脱敏]``）
 
-**字段**
+**字段**（与 spec 完全对齐 + 加 ``ip_inet`` / ``updated_at``）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `feedback_id` | UUID | 主键 |
-| `user_id` | UUID | nullable, 匿名也能反馈 |
-| `category` | str | 'bug' / 'feature' / 'content' / 'other' |
-| `content` | text | 用户填写, ≤ 2000 字 |
-| `contact` | str | nullable, 用户留的 phone / email |
-| `app_version` | str | nullable, 客户端版本 |
-| `platform` | str | 'h5' / 'mp-weixin' / 'app-android' / 'app-ios' |
-| `created_at` | timestamp | |
+| `feedback_id` | UUID | 主键, ``server_default=gen_random_uuid()`` |
+| `user_id` | UUID | nullable, FK users SET NULL — 注销后保留反馈但脱钩 |
+| `category` | VARCHAR(16) | 'bug' / 'feature' / 'content' / 'other' (Pydantic Literal 校验) |
+| `content` | TEXT | 1 ≤ len ≤ 2000 |
+| `contact` | VARCHAR(64) | nullable, phone / email / 微信号 (无格式校验) |
+| `app_version` | VARCHAR(32) | nullable |
+| `platform` | VARCHAR(16) | 'h5' / 'mp-weixin' / 'app-android' / 'app-ios' (Literal 校验) |
+| `ip_inet` | INET | nullable, 客户端 IP (PG INET 类型确保格式合法) |
+| `created_at` | TIMESTAMPTZ | server_default=now() |
+| `updated_at` | TIMESTAMPTZ | server_default=now() (mixin 一致性, 实际不会改) |
 
-**AC**
+**索引** (alembic 0009 用裸 SQL):
+- ``ix_feedbacks_created_at`` (DESC) — admin 默认排序
+- ``ix_feedbacks_category`` — admin filter
+- ``ix_feedbacks_platform`` — admin filter
 
-- [ ] `POST /api/v1/feedback` 匿名 + 登录都能调
-- [ ] 限流：匿名 IP / 5 min ≤ 3 条；登录用户 / 1h ≤ 10 条（防滥用）
-- [ ] admin GET 分页 + filter by category / platform
-- [ ] e2e ≥ 4 case
+**实现要点**
+
+- **双策略限流**: 用 ``feedback_service.enforce_rate_limit`` 直接调 ``cache.get_redis_client().incr_with_expire``, 因为 ``@rate_limit`` 装饰器无法根据"是否登录"切配额. 路由层一行调用, 超限 raise ``RateLimitExceeded`` → main.py 全局 handler 转 429 + Retry-After.
+- **匿名 IP 解析**: 复刻 ``brokers.py`` / ``chat.py`` 的 ``_resolve_client_ip`` (优先 ``X-Forwarded-For`` 第一段 → fallback ``request.client.host``). 没有抽公共 utils 是因为只有这 3 个文件需要, 抽小工具反而增加 import 路径.
+- **匿名缺 IP fallback bucket** ``rate:feedback:ip:_unknown``: 防"代理透传不全 → 无限刷"; 真生产靠 nginx / Cloudflare 配 ``X-Forwarded-For``.
+- **红线词不阻断 content**: BE-S5-001 词典在 ``feedback_service.create_feedback`` 仅 logger.warning. 用户反馈"AI 说了必涨"是合法吐槽, 强行阻断反而让用户告不上 admin.
+- **PG INET ↔ Pydantic str**: asyncpg 把 ``INET`` 列读成 ``IPv4Address`` 对象, Pydantic 不认; ``FeedbackAdminItem`` 的 ``ip_inet`` 字段加 ``mode='before'`` validator 把 IP 对象转 str.
+
+**AC（验收结果）**
+
+- [x] ``POST /api/v1/feedback`` 匿名 + 登录都能调 (``get_optional_user``)
+- [x] 限流: 匿名 IP / 5min ≤ 3 (test 第 4 次 429), 登录用户 / 1h ≤ 10 (test 第 11 次 429); 双桶独立不串
+- [x] admin GET 分页 (limit/offset, ge=1 le=100) + filter by category / platform (单条件 / 双条件)
+- [x] e2e **9 case** (>> 4 要求): 匿名提交 / 字段校验 3 / 限流 / admin filter & 分页 / 鉴权 2 / 红线词不阻断
+- [x] unit **5 case**: 双桶限流 + retry_after / fallback bucket / 桶隔离
+- [x] 全 suite **949 passed** (+12 net 新增, 0 回归)
+- [x] ruff + mypy 全绿
+
+**关键学习**
+
+1. 让限流跟"登录态"切配额不能用 ``@rate_limit`` 装饰器(单桶), 而要在 service 层手写 dispatch — 装饰器适合固定 key,业务级条件分桶要直调 redis client
+2. PG ``INET`` 列在 asyncpg → ``IPv4Address`` 对象,跨 ORM/schema 边界要明确转换;懒人法是用 ``String(45)``, 但失去 PG 端格式校验
+3. ``TimestampMixin`` 隐式期望 migration 也建 ``updated_at`` 列 — 写完 ORM 跑 e2e 才暴露,后续新表要么继承 mixin 要么明确不继承,不要部分继承
+4. integration 测试要把新表加到 ``conftest.truncate_all``,否则跨 case 残留;但 ``feedbacks.user_id FK SET NULL`` 不会被 ``users CASCADE`` 顺带清
 
 ---
 
