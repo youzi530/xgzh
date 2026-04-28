@@ -140,6 +140,10 @@ function openDetail(item: IPOItem) {
   })
 }
 
+function gotoArticles() {
+  uni.navigateTo({ url: '/pages/article/index' })
+}
+
 onShow(() => {
   if (list.value.length === 0) load(true)
 })
@@ -157,11 +161,22 @@ onReachBottom(() => {
         <text class="hero-title">新股智汇</text>
         <text class="hero-subtitle">港 A 股打新 · AI 分析 · 跨境合规</text>
       </view>
-      <view v-if="!loggedIn" class="auth-pill" @tap="gotoLogin">
-        <text>登录 / 注册</text>
-      </view>
-      <view v-else class="auth-avatar" @tap="gotoProfile">
-        <text class="auth-avatar-text">{{ nicknameInitial(currentUser!) }}</text>
+      <view class="hero-actions">
+        <!-- FE-S3-001: 市场文章入口; tabBar 落地前以小入口形式暴露 -->
+        <view
+          class="hero-icon-btn"
+          hover-class="hero-icon-btn-hover"
+          :hover-stay-time="80"
+          @tap="gotoArticles"
+        >
+          <text class="hero-icon">📰</text>
+        </view>
+        <view v-if="!loggedIn" class="auth-pill" @tap="gotoLogin">
+          <text>登录 / 注册</text>
+        </view>
+        <view v-else class="auth-avatar" @tap="gotoProfile">
+          <text class="auth-avatar-text">{{ nicknameInitial(currentUser!) }}</text>
+        </view>
       </view>
     </view>
 
@@ -281,6 +296,30 @@ onReachBottom(() => {
   margin-top: 8rpx;
   font-size: 24rpx;
   color: var(--color-text-muted);
+}
+.hero-actions {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12rpx;
+}
+.hero-icon-btn {
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1rpx solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hero-icon-btn-hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.hero-icon {
+  font-size: 32rpx;
+  line-height: 1;
 }
 .auth-pill {
   flex-shrink: 0;

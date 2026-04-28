@@ -60,6 +60,15 @@
             }
         },
         {
+            "path": "pages/article/index",
+            "style": {
+                "navigationBarTitleText": "市场文章",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
             "path": "pages/vip/index",
             "style": {
                 "navigationBarTitleText": "升级 VIP",
