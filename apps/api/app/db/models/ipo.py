@@ -62,6 +62,23 @@ class IPO(Base, TimestampMixin):
     raised_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 2), nullable=True)
     pe_ratio: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
 
+    # Sprint 4 BE-S4-001: 历史 IPO 数据沉淀 — 上市后回填字段, upcoming/subscribing 阶段为 NULL
+    first_day_change_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 4),
+        nullable=True,
+        comment="上市首日涨跌幅 % (HK/A 通用; 范围 [-100, 5000])",
+    )
+    one_lot_winning_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(8, 6),
+        nullable=True,
+        comment="一手中签率 (HK 专用; 范围 [0, 1]; A 股 NULL)",
+    )
+    oversubscribe_multiple: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        comment="公开认购超额倍数 (HK 专用; 285.6 = 285.6 倍; A 股 NULL)",
+    )
+
     sponsors: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     underwriters: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     prospectus_url: Mapped[str | None] = mapped_column(Text, nullable=True)
