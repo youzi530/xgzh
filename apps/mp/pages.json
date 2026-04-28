@@ -69,6 +69,14 @@
             }
         },
         {
+            "path": "pages/article/detail",
+            "style": {
+                "navigationBarTitleText": "文章详情",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
             "path": "pages/vip/index",
             "style": {
                 "navigationBarTitleText": "升级 VIP",

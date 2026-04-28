@@ -43,12 +43,15 @@ import { computed, ref } from 'vue'
 
 import {
   fetchArticleList,
+  fetchTLDR,
   type ArticleListItem,
   type ListMarketFilter,
   type Sentiment,
   type SortBy,
+  type TLDRResponse,
 } from '@/api/article'
 import ArticleCard from '@/components/ArticleCard.vue'
+import TldrDrawer from '@/components/TldrDrawer.vue'
 
 const PAGE_SIZE = 20
 
@@ -134,6 +137,9 @@ async function load(reset = false) {
 function selectMarket(m: ListMarketFilter) {
   if (market.value === m || loading.value) return
   market.value = m
+  // TL;DR scope 跟 market 走; 切 market 后清旧 payload 让下次 gotoTldr 重拉
+  tldrPayload.value = null
+  tldrSources.value = []
   void load(true)
 }
 
@@ -153,10 +159,6 @@ function selectSort(s: SortBy) {
 function onArticleClick(articleId: string) {
   uni.navigateTo({
     url: `/pages/article/detail?article_id=${encodeURIComponent(articleId)}`,
-    fail: () => {
-      // detail 页 (FE-S3-002) 还未注册时, 直接跳原文 URL 兜底; 这里先 toast 提示
-      uni.showToast({ title: '详情页即将上线', icon: 'none' })
-    },
   })
 }
 
@@ -164,10 +166,69 @@ function onIpoClick(code: string) {
   uni.navigateTo({ url: `/pages/ipo/detail?code=${encodeURIComponent(code)}` })
 }
 
+// ─── TL;DR drawer (FE-S3-002) ────────────────────────────────
+//
+// scope 派发: market='HK'/'A' → ``scope=market, scope_value=HK/A``;
+// market='all' → BE-S3-005 不接受 'all', 退化用 'HK' (港股池量大, 默认主战场).
+// 等真有 ``scope=global`` BE 支持时再加分支.
+const tldrVisible = ref(false)
+const tldrPayload = ref<TLDRResponse | null>(null)
+const tldrLoading = ref(false)
+const tldrError = ref<string>('')
+/** 来源文章列表; 由 TL;DR payload 中 source_article_ids 反查 list 内已加载文章得到 */
+const tldrSources = ref<ArticleListItem[]>([])
+
+const tldrScope = computed<{ scope: 'market'; value: string }>(() => ({
+  scope: 'market',
+  value: market.value === 'all' ? 'HK' : market.value,
+}))
+
+async function loadTldr(forceRefresh = false) {
+  tldrLoading.value = true
+  tldrError.value = ''
+  try {
+    const resp = await fetchTLDR({
+      scope: tldrScope.value.scope,
+      scope_value: tldrScope.value.value,
+      force_refresh: forceRefresh,
+    })
+    tldrPayload.value = resp
+    // source_article_ids 反查 list 内已加载的文章; 没在 list 内的(不在当前页)略过.
+    // 比再去拉一次 detail 省 N 次请求 — 列表里通常已经能覆盖大部分 source.
+    const idSet = new Set(resp.source_article_ids)
+    tldrSources.value = list.value.filter((a) => idSet.has(a.article_id))
+  } catch (e) {
+    console.warn('[tldr] fetch failed', e)
+    tldrError.value = '生成失败, 请稍后再试'
+    tldrPayload.value = null
+  } finally {
+    tldrLoading.value = false
+  }
+}
+
 function gotoTldr() {
-  // FE-S3-002 实现; 这里先 toast 占位, scope 走 market 当前值
-  // 真实页面 query 形如 ``?scope=market&scope_value=HK`` (BE-S3-005 协议)
-  uni.showToast({ title: 'TL;DR 抽屉即将上线', icon: 'none' })
+  // 已经打开过 + payload 还在 + scope 没变 → 直接 reopen 不重拉 (BE 已 Redis 缓存,
+  // 这里再省一次请求); 想强刷的用户可在抽屉内点 "重试" 走 force_refresh
+  tldrVisible.value = true
+  if (!tldrPayload.value && !tldrLoading.value) {
+    void loadTldr(false)
+  }
+}
+
+function closeTldr() {
+  tldrVisible.value = false
+}
+
+function retryTldr() {
+  void loadTldr(true)
+}
+
+function onTldrSourceClick(articleId: string) {
+  closeTldr()
+  // 抽屉关掉再跳, 避免 mp-weixin 上 navigateTo 与抽屉 transition 冲突看起来跳一半
+  setTimeout(() => {
+    uni.navigateTo({ url: `/pages/article/detail?article_id=${encodeURIComponent(articleId)}` })
+  }, 100)
 }
 
 // ─── lifecycle ──────────────────────────────────────────────
@@ -282,6 +343,18 @@ onReachBottom(() => {
         <text class="list-end-text">— 已加载全部 {{ list.length }} 篇 —</text>
       </view>
     </view>
+
+    <!-- ─── TL;DR 底部抽屉 (FE-S3-002) ─── -->
+    <TldrDrawer
+      :visible="tldrVisible"
+      :payload="tldrPayload"
+      :sources="tldrSources"
+      :loading="tldrLoading"
+      :error="tldrError || null"
+      @close="closeTldr"
+      @retry="retryTldr"
+      @source-click="onTldrSourceClick"
+    />
   </view>
 </template>
 
