@@ -196,8 +196,9 @@ def test_coerce_points_dedups_and_filters_forbidden() -> None:
     raw = ["看好后市", "看好后市", "强烈推荐买入腾讯"]
     out = tldr._coerce_points(raw)
     assert "看好后市" in out
-    # forbidden_pattern_filter 会把违规词替换为 [已合规过滤]
-    cleaned_kw_seen = any("已合规过滤" in p for p in out)
+    # BE-S5-001 forbidden_pattern_filter v2 把违规词替换为 [已脱敏]
+    # (Sprint 1 旧占位 [已合规过滤] 已废弃)
+    cleaned_kw_seen = any("已脱敏" in p for p in out)
     assert cleaned_kw_seen
 
 

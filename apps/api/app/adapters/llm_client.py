@@ -37,7 +37,6 @@ LiteLLM 1.51 对 cohere-style rerank 的路由要求 ``COHERE_API_KEY`` env, 路
 from __future__ import annotations
 
 import asyncio
-import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
@@ -50,30 +49,41 @@ from litellm import acompletion, aembedding
 from app.core.config import Settings, get_settings
 from app.core.logging import logger
 
-# ─── 合规护栏 (Sprint 1 沿用, 公开 export) ────────────────────────────────
+# ─── 合规护栏 (BE-S5-001: delegate 到 services.compliance v2) ────────────
+#
+# 历史:
+# - Sprint 1 在本模块直接落 6 条 regex + 不真过滤 (扫完 hits 但 cleaned 没 yield 出去)
+# - BE-S5-001 v2 把词典 + 否定豁免 + Tier 1/2 分级移到 ``services.compliance`` 模块,
+#   本文件仅保留兼容签名让历史调用方不需要改 import.
+#
+# 新代码请直接 ``from app.services.compliance import forbidden_pattern_filter``,
+# 它返 ``(cleaned, ScanResult)``, 比这里的 ``(cleaned, list[str])`` 信息更全.
+from app.services.compliance import (
+    TIER1_PATTERNS as _TIER1_PATTERNS,
+)
+from app.services.compliance import (
+    TIER2_PATTERNS as _TIER2_PATTERNS,
+)
+from app.services.compliance import (
+    forbidden_pattern_filter as _forbidden_pattern_filter_v2,
+)
 
-FORBIDDEN_PATTERNS = [
-    r"建议(满仓|重仓|全仓|加仓|抄底)",
-    r"强烈(推荐|建议)买入",
-    r"必涨|稳赚|包赚|躺赚",
-    r"保本|保收益|无风险",
-    r"all\s*in|梭哈",
-    r"打新必中|中签率\s*100\s*%",
-]
+# 兼容旧 export: 调用方可能在 import ``FORBIDDEN_PATTERNS``, 老的 list 是 6 条 regex,
+# 新的拼一起暴露完整词表.
+FORBIDDEN_PATTERNS: list[str] = _TIER1_PATTERNS + _TIER2_PATTERNS
 
 DISCLAIMER = "\n\n> ⚠️ 以上分析仅供参考，不构成投资建议，请独立决策。"
 
 
 def forbidden_pattern_filter(text: str) -> tuple[str, list[str]]:
-    """检测违规词. 返回 (清理后文本, 命中的违规词列表)."""
-    hits: list[str] = []
-    cleaned = text
-    for pattern in FORBIDDEN_PATTERNS:
-        m = re.search(pattern, cleaned, flags=re.IGNORECASE)
-        if m:
-            hits.append(m.group(0))
-            cleaned = re.sub(pattern, "[已合规过滤]", cleaned, flags=re.IGNORECASE)
-    return cleaned, hits
+    """检测违规词. 返回 (清理后文本, 命中的违规词列表) — 兼容 Sprint 1 签名.
+
+    内部走 ``services.compliance.forbidden_pattern_filter`` v2, 它返 ScanResult,
+    本函数把 ScanResult.tier1_hits + tier2_hits 合并成单 list 给老调用方用.
+    新代码用新模块 (拿到 tier 分级 + negation_skipped 信息).
+    """
+    cleaned, result = _forbidden_pattern_filter_v2(text)
+    return cleaned, result.all_hits
 
 
 def ensure_disclaimer(text: str) -> str:
@@ -443,7 +453,29 @@ async def stream_chat(
 
     logger.info(f"llm.stream_chat model={use_model} msgs={len(messages)}")
 
-    buffer: list[str] = []
+    # BE-S5-001: chunk 实时合规扫描.
+    # 策略: 每收一个 chunk 拼到 ``buffer`` (累计 full), 在 ``buffer`` 末尾
+    # ``tail_buffer_chars`` 范围内做扫描, 因为 LLM 可能把 "必涨" 切成 ["必", "涨"]
+    # 两个 chunk; 只对"已确定不再增长的部分" yield 给上游, 让 chunk 边界拆词
+    # 也能被本扫描捕获.
+    # Tier 1 命中: yield 命中位置之前的干净前缀 + 阻断提示, 截断后续所有 LLM 输出.
+    # Tier 2 命中: 让它过去 (替换为 [已脱敏]) + 末尾再次 logger.warning 上报 metrics.
+    from app.services.compliance import (
+        find_first_tier1_hit,
+    )
+    from app.services.compliance import (
+        forbidden_pattern_filter as _scan_v2,
+    )
+
+    tail_buffer_chars = 16  # 比最长 Tier 1 / Tier 2 词长一点, 足够覆盖跨 chunk 拼接
+    block_notice = (
+        "\n\n> ⚠️ 检测到不合规内容，已停止输出。请尝试调整提问或换一种表达。"
+    )
+
+    full_buffer = ""
+    flushed_len = 0  # 已 yield 给上游的 full_buffer 前缀长度
+    blocked = False
+
     try:
         base_kwargs, _provider, effective_model = _build_completion_kwargs(use_model, s)
         call_kwargs: dict[str, Any] = {
@@ -462,9 +494,62 @@ async def stream_chat(
                 delta = chunk.choices[0].delta.content or ""
             except (AttributeError, IndexError):
                 delta = ""
-            if delta:
-                buffer.append(delta)
-                yield delta
+            if not delta:
+                continue
+            full_buffer += delta
+
+            # 决定本轮可 flush 的安全边界: 末尾留 tail_buffer_chars 不 yield
+            # (可能正在被切红线词中间), 前面的部分扫完 + yield.
+            safe_until = max(flushed_len, len(full_buffer) - tail_buffer_chars)
+            if safe_until <= flushed_len:
+                # 还不到 16 字, 全压在 buffer 里, 暂不 yield
+                continue
+            pending = full_buffer[flushed_len:safe_until]
+
+            hit = find_first_tier1_hit(pending)
+            if hit is not None:
+                hit_start, hit_word = hit
+                clean_prefix, prefix_scan = _scan_v2(pending[:hit_start])
+                logger.warning(
+                    f"llm.stream_chat.tier1_blocked hit={hit_word!r} pos={hit_start}"
+                )
+                if clean_prefix:
+                    yield clean_prefix
+                yield block_notice
+                blocked = True
+                break
+
+            # 干净部分(可能含 Tier 2): 过滤后 yield, hits 上报
+            cleaned, scan_res = _scan_v2(pending)
+            if scan_res.has_tier2:
+                logger.warning(
+                    f"llm.stream_chat.tier2_redacted hits={scan_res.tier2_hits}"
+                )
+            yield cleaned
+            flushed_len = safe_until
+
+        # 主循环结束: 把 tail buffer 剩余的部分 flush 出去
+        if not blocked:
+            tail = full_buffer[flushed_len:]
+            if tail:
+                hit = find_first_tier1_hit(tail)
+                if hit is not None:
+                    hit_start, hit_word = hit
+                    clean_prefix, _ = _scan_v2(tail[:hit_start])
+                    logger.warning(
+                        f"llm.stream_chat.tier1_blocked_tail hit={hit_word!r}"
+                    )
+                    if clean_prefix:
+                        yield clean_prefix
+                    yield block_notice
+                    blocked = True
+                else:
+                    cleaned, scan_res = _scan_v2(tail)
+                    if scan_res.has_tier2:
+                        logger.warning(
+                            f"llm.stream_chat.tier2_redacted_tail hits={scan_res.tier2_hits}"
+                        )
+                    yield cleaned
 
     except LLMConfigError as e:
         # 配置错误 (没填 key) 走友好引导, 不让 SSE 断
@@ -476,12 +561,10 @@ async def stream_chat(
         yield f"\n\n⚠️ 模型调用失败: {type(e).__name__}: {e}"
         return
 
-    full = "".join(buffer)
-    _, hits = forbidden_pattern_filter(full)
-    if hits:
-        logger.warning(f"forbidden_patterns_hit count={len(hits)} hits={hits}")
+    if blocked:
+        return
 
-    if "不构成投资建议" not in full:
+    if "不构成投资建议" not in full_buffer:
         yield DISCLAIMER
 
 

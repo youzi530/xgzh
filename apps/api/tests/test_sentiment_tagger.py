@@ -188,9 +188,9 @@ def test_coerce_keywords_filters_forbidden_pattern() -> None:
     """LLM 偶尔在 keywords 漏放违规词, 端层 forbidden_pattern_filter 兜底."""
     raw = ["强烈推荐买入", "稳赚", "财报"]
     out = st._coerce_keywords(raw)
-    # 违规词被替换 (内容里包含 "[已合规过滤]")
+    # BE-S5-001 forbidden_pattern_filter v2 把违规词替换为 [已脱敏]
     assert "财报" in out
-    assert any("已合规过滤" in kw for kw in out if kw != "财报")
+    assert any("已脱敏" in kw for kw in out if kw != "财报")
 
 
 # ─── 4. _tag_batch 三段式: 整批 → 单条降级 → fallback ─────────────────────

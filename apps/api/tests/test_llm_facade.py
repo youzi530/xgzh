@@ -296,6 +296,116 @@ async def test_stream_chat_appends_disclaimer_at_end(
     assert "不构成投资建议" in full
 
 
+# ─── 4.1 BE-S5-001 stream_chat × 红线词合规 ───────────────────────────────
+
+
+async def test_stream_chat_blocks_tier1_inline(
+    llm_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM 吐出 Tier 1 词 → 截断到命中之前 + yield 阻断提示, 后续 token 丢弃,
+    末尾无 disclaimer.
+
+    设计取舍: Tier 1 是绝对红线, 不替换为 [已脱敏], 直接截断 (避免占位本身让用户
+    产生 "原本是什么词" 的二次想象). Tier 2 才走 [已脱敏] 替换 + 继续输出.
+    """
+
+    async def fake_stream(**kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+        # 凑足 > 16 字符让 tail buffer 多次 flush 命中实时扫描而非末尾兜底
+        for tok in [
+            "本股票估值合理 ",
+            "募资规模适中  ",
+            "其行业空间大  ",
+            "我们认为必涨!",
+            "继续看好",
+        ]:
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=tok))]
+            )
+
+    async def fake_acompletion(**kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+        return fake_stream(**kwargs)
+
+    monkeypatch.setattr(llm_client, "acompletion", fake_acompletion)
+
+    out: list[str] = []
+    async for tok in stream_chat([{"role": "user", "content": "x"}]):
+        out.append(tok)
+    full = "".join(out)
+
+    # 关键断言:
+    assert "必涨" not in full, "Tier 1 词不应出现在 SSE 输出"
+    assert "[已脱敏]" not in full, "Tier 1 直接截断, 不应有占位 (避免二次想象)"
+    assert "检测到不合规内容" in full, "应 yield 友好阻断提示"
+    assert "继续看好" not in full, "Tier 1 命中后续 LLM token 应被丢弃"
+    assert "不构成投资建议" not in full, "阻断后不再 append disclaimer (已有阻断提示)"
+    # 命中前的内容仍保留, 让用户看到部分有效输出
+    assert "本股票估值合理" in full
+
+
+async def test_stream_chat_redacts_tier2_continues(
+    llm_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM 吐出 Tier 2 词 → 替换为 [已脱敏] 但流不阻断, 末尾仍 append disclaimer."""
+
+    async def fake_stream(**kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+        for tok in [
+            "本次新股大概率赚 ",  # Tier 2: 大概率赚
+            "估值合理空间大 " * 3,
+            "千年一遇机会",  # Tier 2: 千年一遇
+        ]:
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=tok))]
+            )
+
+    async def fake_acompletion(**kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+        return fake_stream(**kwargs)
+
+    monkeypatch.setattr(llm_client, "acompletion", fake_acompletion)
+
+    out: list[str] = []
+    async for tok in stream_chat([{"role": "user", "content": "x"}]):
+        out.append(tok)
+    full = "".join(out)
+
+    # Tier 2 都被替换 + disclaimer 仍 append
+    assert "[已脱敏]" in full
+    assert "大概率赚" not in full
+    assert "千年一遇" not in full
+    assert "不构成投资建议" in full
+    assert "检测到不合规内容" not in full, "Tier 2 不阻断, 不应有阻断提示"
+
+
+async def test_stream_chat_negation_phrase_passes_through(
+    llm_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``"不是必涨"`` 否定句应豁免, 完整保留原文 + 末尾 disclaimer."""
+
+    async def fake_stream(**kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+        for tok in [
+            "本股票并不是必涨,投资需谨慎。",
+            "估值合理,可关注,但不要重仓。" * 3,  # 拉长让 tail buffer 触发
+        ]:
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=tok))]
+            )
+
+    async def fake_acompletion(**kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+        return fake_stream(**kwargs)
+
+    monkeypatch.setattr(llm_client, "acompletion", fake_acompletion)
+
+    out: list[str] = []
+    async for tok in stream_chat([{"role": "user", "content": "x"}]):
+        out.append(tok)
+    full = "".join(out)
+
+    # 否定句完整保留, 不被替换
+    assert "不是必涨" in full
+    assert "[已脱敏]" not in full
+    assert "检测到不合规内容" not in full
+    assert "不构成投资建议" in full
+
+
 # ─── 5. astream_chat_with_meta (BE-S2-007 用) ────────────────────────────
 
 
