@@ -196,6 +196,22 @@ function gotoBack() {
   uni.navigateBack({ delta: 1 })
 }
 
+/**
+ * FE-S4-003 AI 报告入口: 透传当前筛选条件 (industry / market / year_from / year_to),
+ * 报告页 onLoad 自动填表; 用户进去直接点"生成"即可, 不用重选条件.
+ */
+function gotoAIReport() {
+  const params: string[] = []
+  if (industry.value) params.push(`industry=${encodeURIComponent(industry.value)}`)
+  if (market.value !== 'all') params.push(`market=${market.value}`)
+  params.push(`year_from=${yearFrom.value}`)
+  params.push(`year_to=${yearTo.value}`)
+  const qs = params.join('&')
+  uni.navigateTo({
+    url: `/pages/ipo/historical-pattern${qs ? '?' + qs : ''}`,
+  })
+}
+
 onShow(() => {
   if (list.value.length === 0) load(true)
 })
@@ -323,6 +339,17 @@ onReachBottom(() => {
 
     <view class="footer">
       <text class="footer-disclaimer">历史数据仅供参考, 不构成投资建议</text>
+    </view>
+
+    <!-- FE-S4-003: AI 历史规律分析报告 FAB; 透传当前筛选 industry/market/year 直入报告页 -->
+    <view
+      class="ai-fab"
+      hover-class="ai-fab-hover"
+      :hover-stay-time="80"
+      @tap="gotoAIReport"
+    >
+      <text class="ai-fab-icon">🤖</text>
+      <text class="ai-fab-text">AI 看规律</text>
     </view>
   </view>
 </template>
@@ -518,5 +545,33 @@ onReachBottom(() => {
   font-size: 22rpx;
   color: var(--color-text-muted, #94a3b8);
   opacity: 0.8;
+}
+
+/* FE-S4-003: AI 报告 FAB; fixed 右下角, 不挡列表 */
+.ai-fab {
+  position: fixed;
+  right: 24rpx;
+  bottom: calc(40rpx + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  padding: 18rpx 28rpx;
+  border-radius: 999rpx;
+  background: linear-gradient(135deg, #4f8bff, #7c3aed);
+  box-shadow: 0 8rpx 24rpx rgba(79, 139, 255, 0.32);
+  z-index: 99;
+}
+.ai-fab-hover {
+  opacity: 0.85;
+}
+.ai-fab-icon {
+  font-size: 28rpx;
+  line-height: 1;
+}
+.ai-fab-text {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 1rpx;
 }
 </style>

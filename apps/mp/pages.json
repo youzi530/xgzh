@@ -27,6 +27,14 @@
             }
         },
         {
+            "path": "pages/ipo/historical-pattern",
+            "style": {
+                "navigationBarTitleText": "AI 历史规律分析",
+                "navigationBarBackgroundColor": "#0F172A",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
             "path": "pages/ipo/agent",
             "style": {
                 "navigationBarTitleText": "AI 诊断",
