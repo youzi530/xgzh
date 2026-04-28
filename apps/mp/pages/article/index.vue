@@ -39,7 +39,7 @@
  */
 
 import { onLoad, onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
-import { computed, ref } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 
 import {
   fetchArticleList,
@@ -51,7 +51,11 @@ import {
   type TLDRResponse,
 } from '@/api/article'
 import ArticleCard from '@/components/ArticleCard.vue'
-import TldrDrawer from '@/components/TldrDrawer.vue'
+// PE-S4-001 首屏 lazy-load: TL;DR drawer 仅在用户点 "看 TL;DR" 后才打开, 大多数
+// 用户只浏览列表不点 TL;DR. defineAsyncComponent 拆 chunk 减小首屏 bundle.
+const TldrDrawer = defineAsyncComponent(
+  () => import('@/components/TldrDrawer.vue'),
+)
 
 const PAGE_SIZE = 20
 
@@ -67,7 +71,13 @@ const page = ref(1)
 const loading = ref(false)
 const error = ref<string>('')
 
-const hasMore = computed(() => list.value.length < total.value)
+// PE-S4-001 长列表内存释放: 文章流单次累计 hardcap 200 篇, 超过后 onReachBottom
+// 静默拒绝 + toast 引导. 与 ipo/historical.vue 同款防御.
+const MAX_LIST_LENGTH = 200
+const hasMore = computed(
+  () => list.value.length < total.value && list.value.length < MAX_LIST_LENGTH,
+)
+const hitHardCap = computed(() => list.value.length >= MAX_LIST_LENGTH)
 
 // ─── 筛选选项 ──────────────────────────────────────────────
 interface MarketOption {
@@ -249,6 +259,14 @@ onPullDownRefresh(() => {
 })
 
 onReachBottom(() => {
+  if (hitHardCap.value) {
+    uni.showToast({
+      title: `已加载 ${MAX_LIST_LENGTH} 篇上限, 下拉刷新查看最新`,
+      icon: 'none',
+      duration: 2500,
+    })
+    return
+  }
   void load(false)
 })
 </script>

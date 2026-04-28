@@ -235,6 +235,9 @@ export function streamSSE<TBody = unknown>(
       let httpStatus = 0
       let httpBody: unknown = undefined
 
+      // ``uni.request`` 在带 ``success``/``fail`` 回调时按 ``UniApp.RequestTask`` 返回,
+      // 但部分 ``@dcloudio/types`` 版本的重载会落到 ``Promise<RequestSuccessCallbackResult>``,
+      // 这里强制 cast 一次, 因为我们后面还要拿 ``task.abort`` / ``task.onChunkReceived``.
       taskRef = uni.request({
         url: fullUrl,
         method: opts.method ?? 'POST',
@@ -272,7 +275,7 @@ export function streamSSE<TBody = unknown>(
           )
           resolve()
         },
-      } as UniApp.RequestOptions)
+      } as UniApp.RequestOptions) as unknown as UniApp.RequestTask
 
       // ``onHeadersReceived`` 是 wx.request 拓展, MP-WEIXIN 上有, H5 编译被 #ifndef
       // 拦掉走不到这里; uni 类型未声明这两个 onXxx 故 cast unknown 强行注入

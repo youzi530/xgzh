@@ -31,10 +31,14 @@
 
 import { onShow, onUnload } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { computed, onUnmounted, reactive, ref } from 'vue'
+import { computed, defineAsyncComponent, onUnmounted, reactive, ref } from 'vue'
 
 import { bindInvite, parseInviteError } from '@/api/invite'
-import UpgradeVipModal from '@/components/UpgradeVipModal.vue'
+// PE-S4-001 首屏 lazy-load: VIP 升级 modal 仅在用户点"立即升级" 后弹, 95% 用户
+// 进个人中心不会触发. defineAsyncComponent 让它独立成 chunk, 首屏不下载.
+const UpgradeVipModal = defineAsyncComponent(
+  () => import('@/components/UpgradeVipModal.vue'),
+)
 import { useUpgradeModal } from '@/composables/upgradeModal'
 import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'

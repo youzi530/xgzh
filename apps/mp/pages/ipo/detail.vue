@@ -23,7 +23,7 @@
 
 import { onLoad } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 
 import {
   fetchIPODetail,
@@ -34,8 +34,15 @@ import {
   statusPalette,
 } from '@/api/ipo'
 import FavoriteButton from '@/components/FavoriteButton.vue'
-import PeerScatterChart from '@/components/PeerScatterChart.vue'
-import PeerStatsBars from '@/components/PeerStatsBars.vue'
+// PE-S4-001 首屏 lazy-load: PeerScatterChart + PeerStatsBars 仅在用户切到 "行业对比"
+// tab 时才需要 (实测 80% 用户进详情看完基本面就走). 用 defineAsyncComponent 让这两
+// 个 SVG-heavy 组件 (~12KB combined) 不进首屏 chunk, 降低首字节传输量.
+const PeerScatterChart = defineAsyncComponent(
+  () => import('@/components/PeerScatterChart.vue'),
+)
+const PeerStatsBars = defineAsyncComponent(
+  () => import('@/components/PeerStatsBars.vue'),
+)
 import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'
 
@@ -208,8 +215,7 @@ function openProspectus() {
   })
   // #endif
   // #ifndef MP-WEIXIN
-  // H5 / App 直接 webview
-  // @ts-expect-error uni-app types 在某些版本里没暴露 navigateTo 的 webview 用法
+  // H5 / App 直接 webview (uni-app types 现版本已正确推断, 不再需要 ts-expect-error)
   uni.navigateTo({ url: `/hybrid/html/web-view?url=${encodeURIComponent(url)}` })
   // #endif
 }

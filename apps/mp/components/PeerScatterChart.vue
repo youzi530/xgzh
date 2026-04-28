@@ -157,8 +157,8 @@ const summary = computed(() => {
     <view v-else class="psc-svg-wrap">
       <svg
         :viewBox="`0 0 ${W} ${H}`"
-        :width="`${W}rpx`"
-        :height="`${H}rpx`"
+        width="100%"
+        :style="`display: block; aspect-ratio: ${W} / ${H};`"
         preserveAspectRatio="xMidYMid meet"
       >
         <!-- 背景 + 边框 -->
@@ -406,12 +406,16 @@ const summary = computed(() => {
 .psc-svg-wrap {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 12rpx;
   background: rgba(255, 255, 255, 0.02);
   border: 1rpx solid var(--color-border, rgba(255, 255, 255, 0.06));
   border-radius: 16rpx;
   padding: 24rpx 8rpx 16rpx;
+}
+.psc-svg-wrap > svg {
+  width: 100%;
+  max-width: 100%;
 }
 
 .psc-legend {

@@ -119,7 +119,10 @@ function rawRequest<TResp>(opts: RequestOptions, fullUrl: string): Promise<TResp
     uni.request({
       url: fullUrl,
       method: opts.method ?? 'GET',
-      data: opts.data,
+      // ``RequestOptions<TData>`` 默认 ``TData=unknown``, uni.request 类型签名要求
+      // ``string | AnyObject | ArrayBuffer | undefined``. 业务方传的都是 plain object
+      // 或 string, cast 安全.
+      data: opts.data as string | Record<string, unknown> | undefined,
       header: {
         'Content-Type': 'application/json',
         ...opts.header,

@@ -102,7 +102,15 @@ const industry = ref<string | null>(null)
 const yearFrom = ref<number>(DEFAULT_YEAR_FROM)
 const yearTo = ref<number>(DEFAULT_YEAR_TO)
 
-const hasMore = computed(() => list.value.length < total.value)
+// PE-S4-001 长列表内存释放: 单次加载累计 hardcap 200 条 (= 10 页 × 20).
+// 超过后 onReachBottom 静默拒绝 + toast 引导用户下拉刷新; 防止 dev DB 600+ 行
+// 用户狂滚到 list.length=600 内存爆 (单条 ~250B JSON × 600 = ~150KB, MP 上 vue 反应式
+// + DOM 节点开销可达 5MB+). 阈值 200 来自 spec/07 §6.2 性能预算.
+const MAX_LIST_LENGTH = 200
+const hasMore = computed(
+  () => list.value.length < total.value && list.value.length < MAX_LIST_LENGTH,
+)
+const hitHardCap = computed(() => list.value.length >= MAX_LIST_LENGTH)
 const yearRangeText = computed(() => `${yearFrom.value} - ${yearTo.value}`)
 
 const yearOptions = computed<number[]>(() => {
@@ -217,6 +225,15 @@ onShow(() => {
 })
 onPullDownRefresh(() => load(true))
 onReachBottom(() => {
+  // PE-S4-001: 已到 hardcap 静默拒, 防"用户一直滚一直 fetch" 流量浪费 + 内存膨胀
+  if (hitHardCap.value) {
+    uni.showToast({
+      title: `已加载 ${MAX_LIST_LENGTH} 条上限, 下拉刷新查看最新`,
+      icon: 'none',
+      duration: 2500,
+    })
+    return
+  }
   if (hasMore.value) load(false)
 })
 </script>

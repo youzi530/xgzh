@@ -48,13 +48,17 @@
 
 import { onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
 import type { ChatCitation, ChatToolCallPayload } from '@/api/chat'
 import { fetchIPODetail } from '@/api/ipo'
 import CitationDrawer from '@/components/CitationDrawer.vue'
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
-import UpgradeVipModal from '@/components/UpgradeVipModal.vue'
+// PE-S4-001 首屏 lazy-load: 配额 modal 仅在 429 quota_exceeded 时弹, 大多数会话
+// 不会触发. defineAsyncComponent 拆 chunk 减小 agent 页首屏 bundle.
+const UpgradeVipModal = defineAsyncComponent(
+  () => import('@/components/UpgradeVipModal.vue'),
+)
 import { useUpgradeModal } from '@/composables/upgradeModal'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'

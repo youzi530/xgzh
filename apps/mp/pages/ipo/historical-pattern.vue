@@ -25,9 +25,11 @@
  * 设计取舍:
  * - 不复用 chat agent 的 ChatStore 多轮对话: 这是单轮报告生成, 用页内 ref 即可,
  *   页面切走再回来重置; ChatStore 的 session_id / 续聊 / tool_call 这些用不到
- * - SSE event=delta 直接 append + 重 parse markdown: 后端已 30 字符 / 帧重放,
- *   parse 1KB markdown < 1ms (MarkdownRenderer 文档实测), 不做 typewriter throttle
- *   也够流畅; chat agent 是因为真 stream 速度不可预期才加 16ms throttle
+ * - PE-S4-001 优化: 流式 delta 走 ``Typewriter`` (16ms rAF 帧合并 + drain),
+ *   markdown 重 parse 频率从"每 token 一次"降到"每帧一次", 1000 token / 5s 报告
+ *   下 reparse 调用从 ~200 次降到 ~50 次. 之前注释说"不需 throttle" 是只考虑了
+ *   后端 30 字符 / 帧重放 — 但 BE-S4-004 后端真实 LLM 流速不稳, 高峰会到 100 token/s,
+ *   每个 delta 都重 parse 整篇 markdown 累计开销显著. 节流后流畅度提升明显
  */
 
 import { onLoad } from '@dcloudio/uni-app'
@@ -45,6 +47,7 @@ import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { isAbortError, type StreamHandle } from '@/utils/sse'
 import { type MarkdownBlock, parseMarkdown } from '@/utils/markdown'
+import { Typewriter } from '@/utils/typewriter'
 
 interface MarketOption {
   key: Market | 'all'
@@ -117,6 +120,10 @@ const errorMessage = ref<string>('')
 const httpStatus = ref<number>(0)
 
 let _streamHandle: StreamHandle | null = null
+// PE-S4-001: 复用 chat store 同款 Typewriter, 把流式 delta 节流到每帧 (16ms) 一次
+// commit, 每帧 commit 时再重 parse 整段 markdown — 高峰 100 token/s 下 reparse 频率
+// 从 100/s 降到 60/s, MP 上扣的 frame budget 显著节省
+let _typewriter: Typewriter | null = null
 
 const isStreaming = computed(() => phase.value === 'streaming')
 const canSubmit = computed(() => !isStreaming.value && industry.value)
@@ -147,11 +154,29 @@ function _resetStreamState() {
   httpStatus.value = 0
 }
 
+/** PE-S4-001 优化: 通过 Typewriter 把 N 次 delta 合并成 1 帧 commit. */
+function _commitChunk(text: string) {
+  reportBuffer.value += text
+  // 帧节流后整段重 parse, 同时拿到最新 streaming cursor 位置 (MarkdownRenderer 自处理光标)
+  parsedBlocks.value = parseMarkdown(reportBuffer.value)
+}
+
 function _onDelta(text: string) {
   if (!text) return
-  reportBuffer.value += text
-  // 增量 parse (markdown.ts 实测 1KB < 1ms; 不需 throttle)
-  parsedBlocks.value = parseMarkdown(reportBuffer.value)
+  if (!_typewriter) {
+    // 首个 delta 才创建; abort/end 时 drain + 置空, 下一次新流再起
+    _typewriter = new Typewriter(_commitChunk)
+  }
+  _typewriter.push(text)
+}
+
+/** 流终止 (end / business error / transport error / abort) 必须 drain, 防止
+ *  最后一段 buffer 卡在 typewriter 里不落地 (会导致用户看到的报告比实际短一截). */
+function _drainTypewriter() {
+  if (_typewriter) {
+    _typewriter.drain()
+    _typewriter = null
+  }
 }
 
 async function startStream() {
@@ -191,10 +216,12 @@ async function startStream() {
         citationsTotal.value = total
       },
       onEnd: (meta) => {
+        _drainTypewriter()
         endMeta.value = meta
         phase.value = 'done'
       },
       onBusinessError: (err: HistoricalPatternErrorPayload) => {
+        _drainTypewriter()
         errorCode.value = err.code
         errorMessage.value = err.message
         if (err.peer_count != null) {
@@ -203,6 +230,7 @@ async function startStream() {
         phase.value = 'error'
       },
       onTransportError: (err, ctx) => {
+        _drainTypewriter()
         if (isAbortError(err)) {
           // 用户主动取消, 不显错; phase 已被 abortStream() 改成 'done' (有部分内容) 或 'idle'
           return
@@ -232,6 +260,8 @@ function abortStream() {
     _streamHandle.abort()
     _streamHandle = null
   }
+  // PE-S4-001: abort 也要 drain typewriter, 否则 cancel 时 buffer 里的最后几帧会丢
+  _drainTypewriter()
   // partial buffer 保留, 让用户能看到部分输出 + 重试
   phase.value = reportBuffer.value ? 'done' : 'idle'
 }

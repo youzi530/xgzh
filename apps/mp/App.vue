@@ -54,8 +54,23 @@ page,
  * - accent #d97706 → 金黄变橙, 浅底上保持可识别
  * - border 用浅灰色 5% 黑而非透明白
  */
+/* QA-S4-002 BC-8 修复:
+ * uni-app H5 把 ``page`` 选择器编译为 ``uni-page-body``, 所以上面的
+ * ``page, :root { --color-bg: #0b1220 }`` 实际把 *变量* 直接定义在
+ * ``uni-page-body`` 上 — 这比从 ``:root`` 继承下来的同名变量优先级高,
+ * 导致 ``:root[data-theme='light'] { --color-bg: #f8fafc }`` 改了 ``html``
+ * 上的变量但 ``uni-page-body`` 自己的同名变量纹丝不动. 必须再加一条直接
+ * 命中 ``uni-page-body`` 的下沉 override (类似 ``html data-theme='light'``
+ * 时把 uni-page-body 视作下层).
+ *
+ * 设计: 同时保留 ``page.theme-light`` 给 mp-weixin 端 (mp ``page`` 不会
+ * 被编译, 仍按字面 ``page`` 选择器写; 用 store ``reapply()`` 在 mp 端给
+ * page 挂 class — mp v2 增强).
+ */
 :root[data-theme='light'],
-page.theme-light {
+:root[data-theme='light'] uni-page-body,
+page.theme-light,
+uni-page-body.theme-light {
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
   --color-surface-elevated: #f1f5f9;
@@ -74,4 +89,24 @@ page {
   font-family:
     -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
 }
+
+/* FE-S4-004 + QA-S4-002 BC-8 修复:
+ * H5 端 uni-app 把 ``page`` 编译为 ``uni-page-body`` 但实际可视 wrapper 是
+ * ``uni-page-body``, 因为 uni-app 内部又给 ``uni-page`` / ``html`` / ``body``
+ * 各自挂了一份默认 bg, ``page { background }`` 单写过不去. QA-S4-002 实测
+ * console: ``uni-page-body-bg=rgb(11,18,32)`` 拉不动主题 — 显式补 H5 选择器.
+ *
+ * mp 端不会进 H5 条件块, 不影响小程序行为.
+ */
+/* #ifdef H5 */
+html,
+body,
+uni-app,
+uni-page,
+uni-page-wrapper,
+uni-page-body {
+  background: var(--color-bg) !important;
+  color: var(--color-text);
+}
+/* #endif */
 </style>
