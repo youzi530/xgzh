@@ -1695,30 +1695,42 @@ FE-S3-004 闭环 BE-S3-010，已经能从 modal → 升级页 → 选套餐 → 
 
 ---
 
-### QA-S3-001 · 文章流水线 e2e ⬜
+### QA-S3-001 · 文章流水线 e2e ✅
 
 **目标**：覆盖 BE-S3-002 ~ 006 全链路 — ingest → 去重 → 情感打标 → TL;DR 缓存 → 列表 / 详情 / 搜索。
 
-**改动文件**（预期）
+**改动文件**（实际）
 
-- `apps/api/tests/integration/test_e2e_article_pipeline.py`（新建 ≥ 6 条用例）
-- `apps/api/tests/integration/conftest.py`（+ `mock_article_sources` fixture：fixture 数据 5 篇文章覆盖 3 种 sentiment + 2 个相似文章触发去重）
+- `apps/api/tests/integration/test_e2e_article_pipeline.py`（新建 7 条用例 — 6 条 spec + 1 条 fixture 隔离 sanity）
+- `apps/api/tests/integration/conftest.py`（+ `mock_article_sources` / `mock_sentiment_llm` 复用 fixture）
 
 **测试用例**
 
-1. **金线 happy**：mock 雪球返回 5 篇 → dispatcher → 写 5 行 → simhash → 1 对子文折叠 → sentiment_tagger → 5 行打标 → GET /articles 返回 4 行（折叠后 parent + 1 child 隐藏）
-2. **TL;DR 缓存命中**：插 5 篇 IPO=00700.HK 文章 → POST /tldr → 200 + 字段齐全 → 二次调用走 Redis 缓存（mock LLM 不再被调用）
-3. **insufficient_data**：插 1 篇 → POST /tldr → status='insufficient_data'
-4. **全文搜索中英文混合**：插 3 篇含"美团"+ 2 篇含"meituan" → search?q=美团 命中 5 行
-5. **情感打标失败兜底**：mock LLM 返回非 JSON → 文章字段 sentiment='neutral', score=0.0 + warning 日志
-6. **去重 + 排序边界**：插 2 篇 simhash 距离=2（折叠）+ 1 篇距离=10（不折叠）→ list 返回 2 篇 parent
+1. ✅ **金线 happy** (`test_pipeline_happy_full_chain`)：mock 雪球返回 5 篇 → dispatcher → 写 5 行 → simhash → D1/D2 distance=0 折叠 1 对 → sentiment_tagger → 5 行打标（A1=bullish/A2=neutral/A3=bearish 按关键词推断正确）→ GET /api/v1/articles 返回 4 行（D2 child 折叠不出现）
+2. ✅ **TL;DR 缓存命中** (`test_tldr_cache_hit_after_pipeline`)：插 5 篇 IPO=00700.HK → POST /tldr → 200 + ok + article_count=5 + LLM call_log.count=1 → 二次调用 LLM call_log.count 仍 =1（缓存命中，generated_at 也一致）
+3. ✅ **insufficient_data** (`test_tldr_insufficient_data_with_one_article`)：池 < 3 → status='insufficient_data' + LLM call_log.count=0 + message 含"不足"+ 含免责声明
+4. ✅ **全文搜索中英文混合** (`test_search_chinese_english_mixed`)：5 篇标题混 "美团 / Meituan"（其中 2 篇英文转写并存）→ search?q=美团 命中 5 行（验 CJK 字符级预切 + 中英混不破坏 tokenization）
+5. ✅ **情感打标失败兜底** (`test_sentiment_fallback_on_llm_invalid_json`)：LLM 整批 + 单条 fallback 都返非 JSON → 全 5 篇 sentiment='neutral' / score=0.000 / keywords=[] + dispatcher stats.errors=0 + sentiment_tagged=5（兜底也算成功）
+6. ✅ **去重 + 排序边界** (`test_dedup_threshold_boundary`)：X1/X2 完全同主题（distance=0 折叠）+ Y 完全异主题（distance >> 阈值 3 不折叠）→ 1 行 article_topics（X1 早 published_at = parent）→ GET /api/v1/articles 返回 2 行（X1 + Y）
+7. ✅ **fixture 隔离 sanity** (`test_pipeline_fixture_isolation`)：truncate_all 后 articles + article_topics 双零 — 守住用例间隔离假设
+
+**关键设计决策**
+
+- **`mock_article_sources` fixture**：5 篇文章覆盖 3 sentiment + 2 个 1:1 转发文（D1/D2 完全相同 title+summary，distance=0 必折叠）。注释里明确锁定"严格转发"语义 — 单字差距离波动 4-9 不可靠（与 `test_article_dedup_e2e.py` 同款保证）
+- **`mock_sentiment_llm` fixture**：不返"统一 sentiment"，而是按文章 title 关键词模糊推断 (超预期/+18% → bullish, 反垄断/下跌 → bearish, 其余 → neutral)；这样金线 happy 用例能验 sentiment 真的被字段化分类，而非全部一锅 bullish
+- **不重复其他文件已覆盖的 stage 单链 case**：dispatcher 单链 / dedup 单链 / TLDR cache / 列表 / 搜索 各自的 e2e 已在 `test_article_*.py` 里覆盖；本文件聚焦 *cross-stage* 串行验证（"1 次 ingest 之后 GET /articles 看到的是去重 + 打标 + 折叠后的最终态"）
+- **IPO seed 用 `香港交易所` 而非 `港交所`**：`IPOKeywordIndex` 走全字符串包含匹配，不会自动 `香港交易所 → 港交所` 短化。fixture 注释里显式说明这条
+- **`_StaticArticleSource` 抽到 conftest**：原本 `test_article_*_e2e.py` 各自内联 `_StaticSource` 私类，本 PR 抽到 conftest 复用（QA-S3-001 + 后续 QA-S3-005 都要用），减少 5 处重复
 
 **AC**
 
-- [ ] 6 条 e2e 全绿
-- [ ] CI integration lane 跑过
+- [x] 6 条 e2e（+ 1 sanity）全绿 — 实际 7 passed, 0 failed
+- [x] CI integration lane 跑过 — `make ci-integration` 等价命令在本地全绿（217 integration + 440 unit）
+- [x] ruff lint 干净
+- [x] mypy 干净
+- [x] 不影响其他文件已存在 case (217 integration tests 全部继续 PASS)
 
-**依赖**：BE-S3-006
+**依赖**：BE-S3-006（已就绪）
 
 ---
 

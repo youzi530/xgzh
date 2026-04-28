@@ -22,8 +22,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -37,6 +41,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from alembic import command
+from app.adapters.llm_client import ChatResult, TokenUsage
 from app.adapters.sms import MockSMSAdapter, reset_sms_adapter, set_sms_adapter
 from app.cache import (
     InMemoryRedisClient,
@@ -46,6 +51,7 @@ from app.cache import (
 from app.db.base import get_engine, get_session
 from app.db.base import get_session_factory as _get_factory_lru
 from app.main import create_app
+from app.services.article_ingest.sources.base import ArticleRaw, ArticleSource
 
 # integration 包内所有用例都需要真 PG; 没配 ``XGZH_TEST_DATABASE_URL`` 时
 # 顶层 ``tests/conftest.py`` 已经会 skip, 这里再用 ``pytestmark`` 给 IDE / pytest
@@ -295,3 +301,195 @@ async def client(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+# ─── 文章流水线 e2e 复用 fixtures (QA-S3-001) ─────────────────────────
+
+
+class _StaticArticleSource:
+    """静态 ``ArticleSource`` 实现, 给 ``mock_article_sources`` fixture 用.
+
+    把构造时给定的 ``ArticleRaw`` 列表原样吐回; ``fetch`` 是 async 方法以
+    匹配 ``ArticleSource`` 协议. 与 ``test_article_*_e2e.py`` 内联的私有
+    实现等价, 抽到 conftest 复用 (QA-S3-001 / 后续 QA-S3-005 都要用).
+    """
+
+    def __init__(self, name: str, articles: list[ArticleRaw]) -> None:
+        self.name = name
+        self._articles = articles
+
+    async def fetch(
+        self, *, since: datetime | None = None
+    ) -> list[ArticleRaw]:
+        return list(self._articles)
+
+
+def _make_article_raw(
+    *,
+    title: str,
+    url: str,
+    summary: str | None = None,
+    source_name: str = "雪球",
+    market: str = "HK",
+    published_at: datetime | None = None,
+    hot_score: float = 100.0,
+) -> ArticleRaw:
+    """``ArticleRaw`` 工厂; 默认字段适配文章流水线 e2e 场景.
+
+    与 ``test_article_*_e2e.py`` 私有 helper 同口径; ``hot_score`` 走 Decimal
+    避免 PG numeric 入库时丢精度.
+    """
+    return ArticleRaw(
+        title=title,
+        original_url=url,
+        source_name=source_name,
+        published_at=published_at or datetime.now(UTC),
+        summary=summary,
+        market=market,
+        source_credibility=2,
+        is_full_text_available=True,
+        hot_score=Decimal(str(hot_score)),
+    )
+
+
+@pytest.fixture
+def mock_article_sources() -> list[ArticleSource]:
+    """5 篇覆盖 3 sentiment + 2 对 simhash near-duplicate 的固定文章池.
+
+    设计 (QA-S3-001 §测试用例 1 金线 happy 锁定):
+
+    - ``A1`` 腾讯利好  (bullish 用)
+    - ``A2`` 腾讯中性  (neutral 用)
+    - ``A3`` 腾讯利空  (bearish 用)
+    - ``D1`` 港交所长文  (parent, 与 D2 1:1 转发关系)
+    - ``D2`` 港交所长文  (D1 完全相同 title+summary, distance=0 必折叠)
+
+    关键约束:
+    1. ``A1/A2/A3/D1`` 标题主题各不相同, simhash 距离 >> 阈值 3 → 不会误折
+    2. ``D1/D2`` 完全相同 title+summary → distance=0, 必折叠 (与
+       ``test_article_dedup_e2e.py`` "严格转发" 同款保证)
+    3. 全部命中 IPO 关键词 (腾讯控股 / 港交所), dispatcher 不丢条
+    4. ``published_at`` 从早到晚: A1 < A2 < A3 < D1 < D2
+       (D1 早于 D2 1 分钟, 保证 D1 = parent / D2 = child)
+
+    返回 ``[ArticleSource]`` (单源即可); 测试侧再 monkeypatch
+    ``dispatcher.register_sources`` 让 dispatcher 用这个源.
+    """
+    base = datetime.now(UTC) - timedelta(hours=1)
+    # 注: 必须用 IPO 全名 "香港交易所" 而非短名 "港交所" — ``IPOKeywordIndex``
+    # 走全字符串包含匹配, 不会自动 ``香港交易所 → 港交所`` 短化 (与 spec/03 §模块二
+    # 关键词派生规则一致, 仅对 ``-W/-B/控股/集团`` 等后缀做去除).
+    common_dup_title = (
+        "香港交易所 Q3 IPO 募资额创新高 新股市场全面回暖 投行排队抢承销份额"
+    )
+    common_dup_summary = (
+        "香港交易所发布最新统计, 第三季度新股募资额创近 5 年新高, 多只重磅 IPO "
+        "上市首日涨幅可观, 多家投行加大 ECM 团队投入, 市场情绪持续回暖."
+    )
+
+    articles: list[ArticleRaw] = [
+        _make_article_raw(
+            title="腾讯控股 Q3 业绩超预期 净利润同比 +18% 派息提振股价",
+            url="https://x.com/p/qa1-tx-bullish",
+            summary=(
+                "腾讯控股发布第三季度财报, 营收 +12% / 净利润 +18% 双双超出"
+                "市场预期, 派息提振股价表现, 多家投行上调目标价."
+            ),
+            published_at=base + timedelta(minutes=0),
+        ),
+        _make_article_raw(
+            title="腾讯控股召开股东周年大会 通过常规董事任命议案",
+            url="https://x.com/p/qa1-tx-neutral",
+            summary=(
+                "腾讯控股于周三召开股东周年大会, 全部 12 项议案均获通过, "
+                "包括董事任命 / 核数师续聘 / 股息派发等常规事项."
+            ),
+            published_at=base + timedelta(minutes=10),
+        ),
+        _make_article_raw(
+            title="腾讯控股游戏业务遭欧盟反垄断调查 股价大跌 8%",
+            url="https://x.com/p/qa1-tx-bearish",
+            summary=(
+                "欧盟委员会宣布对腾讯游戏业务在欧洲市场的份额展开反垄断调查, "
+                "公司股价当日下跌 8%, 多家分析机构下调目标价."
+            ),
+            published_at=base + timedelta(minutes=20),
+        ),
+        _make_article_raw(
+            title=common_dup_title,
+            url="https://x.com/p/qa1-hkex-d1-original",
+            summary=common_dup_summary,
+            published_at=base + timedelta(minutes=30),  # D1 = parent (最早)
+        ),
+        _make_article_raw(
+            title=common_dup_title,
+            url="https://x.com/p/qa1-hkex-d2-repost",
+            summary=common_dup_summary,
+            published_at=base + timedelta(minutes=31),  # D2 = child
+        ),
+    ]
+    return [_StaticArticleSource("雪球", articles)]
+
+
+def _make_chat_result(content: str) -> ChatResult:
+    """``ChatResult`` 简易工厂, 让 e2e 用例 mock LLM 返回固定 JSON."""
+    return ChatResult(
+        content=content,
+        finish_reason="stop",
+        usage=TokenUsage.empty(),
+        model="zhipu/glm-4-flash",
+        provider="zhipu",
+        tool_calls=None,
+    )
+
+
+@pytest.fixture
+def mock_sentiment_llm() -> Any:
+    """sentiment_tagger 用的 mock chat: 按文章 title 关键词推断 sentiment.
+
+    与 ``mock_article_sources`` 配套: A1 命中 "超预期/+18%/上调" → bullish,
+    A3 命中 "反垄断/下跌/下调" → bearish, 其余 → neutral. ``call_log`` 暴露
+    给测试侧断言调用次数 (TLDR 缓存 / sentiment fallback 都要查).
+
+    返回 callable, 测试侧 ``monkeypatch.setattr(sentiment_tagger, "chat", ...)``.
+    """
+
+    call_log: dict[str, int] = {"count": 0}
+
+    bullish_kw = ("超预期", "增长", "上调", "派息", "回暖", "+", "新高", "看多")
+    bearish_kw = ("反垄断", "调查", "下跌", "下调", "处罚", "退市", "风险", "看空")
+
+    async def fake_chat(**kwargs: Any) -> ChatResult:
+        call_log["count"] += 1
+        messages = kwargs.get("messages", [])
+        user_msg = next((m for m in messages if m["role"] == "user"), None)
+        body = user_msg["content"].split("\n\n", 1)[1] if user_msg else "[]"
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = []
+
+        articles_out: list[dict[str, Any]] = []
+        for item in payload:
+            text_blob = (item.get("title") or "") + " " + (item.get("summary") or "")
+            if any(k in text_blob for k in bearish_kw):
+                sentiment, score = "bearish", -0.7
+            elif any(k in text_blob for k in bullish_kw):
+                sentiment, score = "bullish", 0.8
+            else:
+                sentiment, score = "neutral", 0.0
+            articles_out.append(
+                {
+                    "id": item["id"],
+                    "sentiment": sentiment,
+                    "score": score,
+                    "keywords": ["腾讯", "财报"]
+                    if "腾讯" in text_blob
+                    else ["港交所", "IPO"],
+                }
+            )
+        content = json.dumps({"articles": articles_out}, ensure_ascii=False)
+        return _make_chat_result(content)
+
+    fake_chat.call_log = call_log  # type: ignore[attr-defined]
+    return fake_chat
