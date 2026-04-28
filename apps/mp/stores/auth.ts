@@ -30,6 +30,7 @@ import {
   logout as logoutAPI,
   refreshToken as refreshTokenAPI,
 } from '@/api/auth'
+import { fetchMembership, type MembershipResponse } from '@/api/vip'
 import { useUpgradeModal } from '@/composables/upgradeModal'
 import {
   clearAuth,
@@ -50,6 +51,22 @@ export const useAuthStore = defineStore('auth', () => {
   const accessExpiresAt = ref<number>(0)
   const refreshExpiresAt = ref<number>(0)
   const user = ref<UserPublic | null>(null)
+
+  /**
+   * VIP 订阅快照 (FE-S3-004).
+   *
+   * 与 ``user`` 解耦的原因:
+   * 1. 频次差: ``user`` 注册 / 登录后基本不变; ``vipMembership`` 在试用结束 / 支付成功 /
+   *    续费时变, 走独立 ``refreshMembership`` action 主动拉 (而不是侵入 setSession)
+   * 2. 不持久化: 重启 / 冷启动时不读 storage — 拉 ``GET /vip/me`` 才是 source of truth.
+   *    避免"本地缓存 active 但实际已 expired" 的过时态. 代价是 me 页 onShow 多一次
+   *    HTTP 调用, 单点 UNIQUE 查询 < 5ms 不计较
+   * 3. ``null`` 三态语义: ``null`` = "未拉过 / 加载中"; ``has_active=false`` = "拉过但
+   *    确实不是 VIP"; ``has_active=true`` = VIP 状态. UI 根据这三态决定 skeleton / 升级 CTA / 续费 CTA
+   */
+  const vipMembership = ref<MembershipResponse | null>(null)
+  const vipMembershipLoading = ref<boolean>(false)
+  const vipMembershipError = ref<string | null>(null)
 
   // ─── hydrate from storage on construction ──────────────
   // Pinia store 是 lazy-create: 第一次 useAuthStore() 才跑这个 setup;
@@ -104,6 +121,9 @@ export const useAuthStore = defineStore('auth', () => {
     } catch (e) {
       console.warn('[auth] reset upgrade modal failed', e)
     }
+    // 登录态变化时清掉旧 vip 快照: A 登出 → B 登入 时不能让 B 看到 A 的 VIP 状态
+    vipMembership.value = null
+    vipMembershipError.value = null
     // chat store 用 dynamic import 防 bundle 体积污染 + 防循环 import
     void import('@/stores/chat')
       .then((mod) => {
@@ -182,6 +202,42 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
+   * 拉当前用户 VIP 订阅状态 (FE-S3-004).
+   *
+   * 调用场景:
+   * - 个人中心 ``onShow`` (FE-S3-005)
+   * - VIP 升级页 / 支付结果页 onLoad (FE-S3-004)
+   * - 支付成功后 (回调到达后端 → frontend 主动拉一次确认 active)
+   *
+   * 设计:
+   * - 不去重: VIP 状态可能秒级变化 (回调到 → active), 调用方需要"拿到最新"
+   *   的一致性比"省一次请求"重要. 单点查 UNIQUE 索引 < 5ms 也不计较
+   * - 失败兜底: 仅 401 / 网络错时 ``vipMembershipError`` 给个简短文案,
+   *   不抛异常打断 UI; 旧 ``vipMembership`` 不清 (上次还能用就用, 不闪 skeleton)
+   * - 未登录直接返 null: 不发请求, 防止 401 拦截器把用户踢回登录页
+   */
+  async function refreshMembership(): Promise<MembershipResponse | null> {
+    if (!loggedIn.value) {
+      vipMembership.value = null
+      vipMembershipError.value = null
+      return null
+    }
+    vipMembershipLoading.value = true
+    vipMembershipError.value = null
+    try {
+      const resp = await fetchMembership()
+      vipMembership.value = resp
+      return resp
+    } catch (e) {
+      console.warn('[auth] refreshMembership failed', e)
+      vipMembershipError.value = (e as Error)?.message ?? '加载会员状态失败'
+      return null
+    } finally {
+      vipMembershipLoading.value = false
+    }
+  }
+
+  /**
    * 登出: 调后端拉黑 access + refresh, 然后 clearSession.
    * 后端调用失败也 clearSession (用户视角已经"登出"了, 不能因为网络问题阻塞)。
    * Redis 短暂故障最坏情况是这个 jti 多保留 30min 才自然过期, 不是安全灾难。
@@ -203,6 +259,9 @@ export const useAuthStore = defineStore('auth', () => {
     accessExpiresAt,
     refreshExpiresAt,
     user,
+    vipMembership,
+    vipMembershipLoading,
+    vipMembershipError,
     loggedIn,
     isAccessFresh,
     isRefreshFresh,
@@ -210,6 +269,7 @@ export const useAuthStore = defineStore('auth', () => {
     setTokens,
     clearSession,
     refresh,
+    refreshMembership,
     logout,
   }
 })
