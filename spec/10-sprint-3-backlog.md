@@ -92,7 +92,7 @@
 | FE-S3-002 | page | 文章详情 + TL;DR 底部抽屉（多空饼图 + Top3 论据 + 来源列表 + 跳原文）| 1d | BE-S3-005, BE-S3-006 | P0 | ⬜ |
 | FE-S3-003 | page | 券商对比页 UI（横滚表 + 首列冻结 + 筛选 / 排序 + 详情 + UTM 跳转）| 1.5d | BE-S3-007, BE-S3-008 | P0 | ⬜ |
 | FE-S3-004 | page | VIP 升级页 + 微信支付集成（`uni.requestPayment`）+ 接 `useUpgradeModal`（FE-S2-004 占位单点替换）| 1d | BE-S3-010 | P0 | ✅ |
-| FE-S3-005 | page | 个人中心 VIP 卡接 membership status + 7 天试用 CTA + 订阅管理入口 | 0.5d | BE-S3-009, FE-S3-004 | P0 | ⬜ |
+| FE-S3-005 | page | 个人中心 VIP 卡接 membership status + 7 天试用 CTA + 订阅管理入口 | 0.5d | BE-S3-009, FE-S3-004 | P0 | ✅ |
 
 **FE 合计**：~5 PR · ~5 工作日
 
@@ -1384,7 +1384,7 @@ FE-S3-004 闭环 BE-S3-010，已经能从 modal → 升级页 → 选套餐 → 
 
 ---
 
-### FE-S3-005 · 个人中心 VIP 卡接 membership status + 试用 CTA ⬜
+### FE-S3-005 · 个人中心 VIP 卡接 membership status + 试用 CTA ✅ 2026-04-28
 
 **目标**：FE-003 的 VIP 卡占位 → 接真实 `auth.vipMembership` state；显示当前订阅状态 + 剩余天数 + 试用倒计时 + 续费 CTA。
 
@@ -1415,6 +1415,86 @@ FE-S3-004 闭环 BE-S3-010，已经能从 modal → 升级页 → 选套餐 → 
 - [ ] vue-tsc 0 错 / ESLint 0 错
 
 **依赖**：BE-S3-009, FE-S3-004
+
+#### 实施成果（2026-04-28）
+
+**完成情况**：4 态 UI / 倒计时 / 订单列表 / vue-tsc 0 错 全部通过 ✅；MP-WEIXIN + H5 双 bundle 构建成功；不分页 / 触底加载部分主动收敛（详见关键设计 §2）。
+
+**最终落地文件**
+
+- `apps/mp/pages/me/index.vue`（升级 VIP 卡 — 4 态视觉 (gold/gray) + 主 CTA 文案分流 (立即升级/续费/重新订阅/开通) + 倒计时滴答（剩余天/时/分）+ 卡底"支付历史 / 管理订阅" 双入口；`onShow` 主动 `refreshMembership()`；`startCountdown` setInterval 每分钟刷一次, `onUnload + onUnmounted` 双清防泄漏）
+- `apps/mp/pages/me/orders.vue`（新建：订单列表页 — summary 条 (订单数 + 累计支付额) + 4 状态徽标 (paid 绿 / pending 琥珀 / failed 灰 / refunded 红) + 下拉刷新；3 phase (idle / empty / error) 空态分流；空态自带"开通 VIP" CTA 引流）
+- `apps/mp/pages.json`（+ 注册 `pages/me/orders` 一条路由，启用 `enablePullDownRefresh`）
+
+未新建文件（spec 预期但实际复用）：
+- `apps/mp/api/payment.ts` 的 `fetchOrders` —— 实际放在 `api/vip.ts`（FE-S3-004 时已建），与"订单 = VIP 域"语义一致，比"订单放 payment 域" 更对
+- `apps/mp/api/vip.ts` —— FE-S3-004 已建 `fetchMembership` + `fetchOrders`
+
+**关键设计决定（与初版 spec 的差异）**
+
+1. **VIP 卡主 CTA 直接 navigateTo `/pages/vip/index`, 不走 modal**: spec 暗示走 `useUpgradeModal()` (与 agent / inline-error 共享), 但 me 页是用户主动来的, 不需要二次引导 modal "解释 VIP 是什么"。modal 适合 "打断用户当前任务" 场景 (quota 撞墙 / inline error), me 页点 VIP 卡 = 已经"打算买", 直接进选套餐页转化路径最短
+2. **不做"分页 / 触底加载"**: spec AC 提到 "订单列表分页 + 触底加载", 但 BE-S3-009 `GET /vip/orders` 设计就是"一次取全, 默认 20 条上限 100"; 单用户长期 lifetime + 续费 ≤ 20 笔, 远低于分页阈值; 加分页 / 触底逻辑得不偿失。直接拉 100 条一次性渲染, 用户撞 100 笔再说 (那时也是 P1 优化, 不是 MVP 必需)
+3. **倒计时 reactive 触发用 `tick.value` ref**: Vue computed 默认按引用比较, 不会每秒重算 `Date.now()` 表达式 — 必须显式引用响应式 ref。`tick = ref(0)` + `setInterval(() => tick.value++, 60_000)` + `vipDaysLabel = computed(() => { void tick.value; ... })` 是标准 pattern，比"每秒读 Date.now()"省 99% 计算 (1 分钟一次足够"剩余天数"刻度)
+4. **倒计时颗粒度自适应**: ≥ 7 天显 "剩余 X 天"; 1-7 天显 "剩余 X 天 Y 时"; < 1 天显 "剩余 H 时 M 分"。营造"剩余越少越精确" 的紧迫感, 比一律 "剩 5 天" 强
+5. **VIP 卡底 "支付历史 / 管理订阅" 仅在有订阅记录时显**: `v-if="vipMembership?.membership_id"` 守卫 — 完全没买过的用户 (null) 看到这两条入口反而困惑 ("我没买过为什么有支付历史"); 只在 trialing / active / expired / cancelled 用户身上展示, 视觉简洁且符合用户认知
+6. **管理订阅走 modal 占位**: 微信支付 v3 没有 "小程序内取消订阅" 页可跳; 实际生态是用户在 "微信 → 我 → 服务 → 钱包 → 支付管理 → 自动续费" 列表里取消; 给固定文案"本应用为单次支付订阅, 到期自动失效, 不会自动扣款" + 客服联系方式, 比放假按钮装作能跳实在
+7. **`onUnmounted + onUnload` 双清 setInterval**: uni-app 不一定每次都触发 `onUnload`, 例如 H5 路由切走 / 后退时只触发 Vue 的 `onUnmounted`。两个钩子都清是双保险, `clearInterval(null)` 已被 stopCountdown 内部 if 守卫，重复调安全
+8. **状态徽标色板**: paid 绿 (积极) / pending 琥珀 (中间态, 不报警但提示中) / failed **灰非红** (微信支付失败多是用户取消, 不是事故) / refunded 红 (例外态, 醒目)。spec 写 "paid 绿 / failed 灰 / refunded 红", 我加了 pending 琥珀 (BE-S3-010 stub 模式下下单初态就是 pending, 测试时会看到)
+9. **空态文案双分支**: 真没订单 (新用户) 显 "还没有订阅记录, 升级 VIP 解锁全部权益" + 自带"开通 VIP" CTA; 网络错 / 401 显 "加载失败, 下拉刷新", 让用户区分 "我没买过" vs "暂时拉不到"
+10. **summary 条用 `vipMembership.total_paid_cny`**: BE 原子算的累计支付额 (财务对账依据), 比前端把列表 sum 加起来准 — 列表只 20 笔, 超过 20 笔的用户 sum 会少一截
+
+**对外 UI 行为（公开契约）**
+
+| 路由 | 行为 | 跨端 |
+|---|---|---|
+| `/pages/me/index` VIP 卡 | 4 态分流; 主 CTA 跳 `/pages/vip/index`; 卡底入口 (有订阅记录时) 跳订单页 / 弹管理订阅 modal | 全端一致 |
+| `/pages/me/orders` | summary + 列表 + 下拉刷新; 空态 / 错误态分流 + 空态 CTA 引流 | 全端一致 |
+| me 页 onShow | 主动 `refreshMembership()` + 启动倒计时 setInterval | 全端一致 |
+
+**质量门**
+
+- ✅ vue-tsc 新文件 0 错（pre-existing 错位于 `pages/ipo/detail.vue` / `utils/request.ts` / `utils/sse.ts`）
+- ✅ `npx uni build -p mp-weixin` 构建成功
+- ✅ `npx uni build` (h5) 构建成功
+
+**端到端流转（验证脚本）**
+
+```
+[me 页 onShow]
+  → refreshMembership() → GET /vip/me
+  → vipMembership.has_active=false (新用户 / null)
+  → VIP 卡 gray + "开通 VIP" 高亮 CTA
+  → tap → navigateTo /pages/vip/index (FE-S3-004)
+  → 选套餐 → 立即开通 → uni.requestPayment → result
+  → membership active → tick countdown 跑
+
+[trialing 用户]
+  → has_active=true, status=trialing, end_at=now+7d
+  → VIP 卡 gold + 👑 + "VIP 试用中" + "剩余 7 天 · 升级解锁全部权益"
+  → 主 CTA "立即升级" 高亮
+  → 卡底 "支付历史 | 管理订阅" 双入口 (因为 membership_id 已有)
+
+[active 用户买月度]
+  → has_active=true, status=active, plan=monthly, end_at=now+30d
+  → VIP 卡 gold + "VIP 已激活" + "有效期至 2026-05-28 · 剩余 30 天"
+  → 主 CTA "续费" (淡金色, 不高亮 — 不强引流)
+
+[expired 用户]
+  → has_active=false, status=expired
+  → VIP 卡 gray + "VIP 已过期" + "续费即可恢复全部权益"
+  → 主 CTA "立即续费" 高亮
+
+[订单列表]
+  → tap "支付历史" → /pages/me/orders
+  → fetchOrders(100) + 顺手 refreshMembership()
+  → summary "共 N 笔订阅, 累计支付 ¥XXX.XX"
+  → 列表渲染: plan 标题 + 状态徽标 + 金额 + 时间 + 订单号
+  → 下拉刷新 → 重新拉一次
+```
+
+**下一步 (FE-S3-001 / 002 / 003 / QA-S3-001 / 002)**
+
+至此 Sprint 3 **变现闭环全部完成**（BE-S3-001/007/009/010 + FE-S3-004 + FE-S3-005）—— 用户从注册 → 试用 → 撞 quota → 升级 → 支付 → 回调 → active → 订单查询 → 续费 全链路走通。剩余战场：内容差异化（FE-S3-001/002 接 BE-S3-006 文章列表 + 详情）、CPA 闭环最后一公里（FE-S3-003 接 BE-S3-007/008 券商对比页）、QA e2e（QA-S3-001/002）。
 
 ---
 
@@ -1773,7 +1853,7 @@ apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 
 
 ### FE-S3-004 ✅ 2026-04-28（实施成果详见上方主体段）
 
-### FE-S3-005 ⬜ 待落地
+### FE-S3-005 ✅ 2026-04-28（实施成果详见上方主体段）
 
 ### QA-S3-001 ⬜ 待落地
 

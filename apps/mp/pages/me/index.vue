@@ -1,11 +1,12 @@
 <script setup lang="ts">
 /**
- * 个人中心 (FE-003 + FE-S2-004 VIP 升级 modal).
+ * 个人中心 (FE-003 + FE-S2-004 VIP 升级 modal + FE-S3-005 VIP 卡接真).
  *
  * 模块:
  * 1. 顶部资料卡: 头像 + 昵称 + region + 邀请码 (可点击复制)
- * 2. VIP 入口卡: 当前会员等级 + 升级按钮 (FE-S2-004 起接 ``UpgradeVipModal`` 单例;
- *    支付通道仍占位, Sprint 3 实接微信支付 / Apple IAP)
+ * 2. **VIP 入口卡 (FE-S3-005 接真)**: 4 态 (trialing / active / expired / null) +
+ *    剩余天数 + 试用倒计时 (每分钟刷新) + "立即升级 / 续费 / 重新订阅" 主 CTA +
+ *    "支付历史 / 管理订阅" 次 CTA. 主 CTA 跳 ``/pages/vip/index`` (FE-S3-004)
  * 3. 邀请绑定卡: 一次性绑定 referrer (BE-006); 已绑则灰态展示
  * 4. 设置区: 隐私协议 / 用户协议 / 免责声明 / 关于
  * 5. 退出登录按钮 (走 store.logout(), 然后 reLaunch 首页)
@@ -18,11 +19,19 @@
  * - onShow 时若 ``store.loggedIn === false`` 直接 ``uni.reLaunch`` 回登录页
  *   (不能 navigateTo: 个人中心可能从 tabbar 跳来, 用户登出后回到这里再后退会闪)
  * - 拦截器在所有 API 401 时自动跳登录, 这里只处理"页面级冷启动 + 切换回前台"那一刻的兜底
+ *
+ * VIP 卡接真 (FE-S3-005) 设计:
+ * - 状态走 ``auth.vipMembership`` (BE-S3-009 ``GET /vip/me``); ``onShow`` 时
+ *   ``refreshMembership()`` 拉最新; 不持久化 storage (回避"显示 active 实际 expired" 不一致)
+ * - 试用 / active 用户走金色卡片 + 倒计时; expired / null 走灰色卡 + 升级 CTA
+ * - 倒计时 (剩余天 / 时 / 分) 每 ``COUNTDOWN_TICK_MS=60_000`` 刷一次, ``onUnload`` 清 setInterval
+ * - 不直接打 ``upgrade.open()`` 走 modal, 直接跳 ``/pages/vip/index`` 让用户清楚选套餐
+ *   (modal 适合"打断用户当前任务" 场景如 quota 撞墙, me 页是用户主动来的不需要二次引导)
  */
 
-import { onShow } from '@dcloudio/uni-app'
+import { onShow, onUnload } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
-import { computed, reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref } from 'vue'
 
 import { bindInvite, parseInviteError } from '@/api/invite'
 import UpgradeVipModal from '@/components/UpgradeVipModal.vue'
@@ -31,9 +40,11 @@ import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'
 
 const KEY_BOUND_REFERRER = 'xgzh.invite.bound_referrer'
+/** 试用 / 订阅倒计时刷新间隔; 1 分钟 — 比"剩余天数"刻度细一档, 给视觉"在跑" */
+const COUNTDOWN_TICK_MS = 60_000
 
 const authStore = useAuthStore()
-const { user, loggedIn } = storeToRefs(authStore)
+const { user, loggedIn, vipMembership, vipMembershipLoading } = storeToRefs(authStore)
 const upgrade = useUpgradeModal()
 
 // 自选数量徽标; 进个人中心时若已登录顺手 loadOnce, 列表入口立刻能看到 N
@@ -81,6 +92,145 @@ function refreshAuthGate() {
   // 预热自选列表; 失败不阻塞页面渲染, FE-006 列表页内还会再 ensure 一次
   favStore.loadOnce().catch(() => {
     // 忽略, 进自选 Tab 时还会再调
+  })
+  // 刷新 VIP 状态; 失败也不影响页面渲染, 卡片走 fallback 文案
+  void authStore.refreshMembership()
+}
+
+// ─── VIP 卡四态 ─────────────────────────────────────────────
+// 倒计时滴答 (每分钟自增, 触发 ``vipDaysLabel`` / ``vipFootText`` re-compute)
+const tick = ref(0)
+let countdownTimer: number | null = null
+
+function startCountdown() {
+  if (countdownTimer !== null) return
+  countdownTimer = setInterval(() => {
+    tick.value += 1
+  }, COUNTDOWN_TICK_MS) as unknown as number
+}
+
+function stopCountdown() {
+  if (countdownTimer !== null) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+}
+
+/**
+ * VIP 卡视觉 + 文案分发四态:
+ *
+ * - **trialing**:  金色卡, "VIP 试用中" + 剩余 X 天 X 时, "立即升级"主 CTA
+ * - **active**:    金色卡, "VIP 至 YYYY-MM-DD 到期" 或 "终身 VIP", "续费" 主 CTA
+ * - **expired**:   灰色卡, "VIP 已过期" + "立即续费"主 CTA (高亮)
+ * - **null**:      灰色卡, "免费会员" + "开通 VIP" 主 CTA (高亮)
+ *
+ * 视觉层级: 金色 = 已有权益 (静态展示); 灰色 + 高亮 CTA = 引导转化 (强引流)
+ */
+const vipStatus = computed<'trialing' | 'active' | 'expired' | 'null'>(() => {
+  const m = vipMembership.value
+  if (m?.has_active && m.status === 'trialing') return 'trialing'
+  if (m?.has_active) return 'active'
+  if (m?.status === 'expired' || m?.status === 'cancelled') return 'expired'
+  return 'null'
+})
+
+const isVipGold = computed(() => vipStatus.value === 'trialing' || vipStatus.value === 'active')
+
+/**
+ * 倒计时显示串.
+ *
+ * 计算依赖 ``tick`` 让每分钟 reactive 重算 (Vue computed 默认按引用比较, 不显式
+ * 引用 tick 不会重算). 不直接读 ``Date.now()`` 然后期待 setInterval 触发 — Vue 的
+ * 响应式系统不会监听 Date.now()
+ */
+const vipDaysLabel = computed(() => {
+  void tick.value // touch 让 setInterval 触发重算
+  const m = vipMembership.value
+  if (!m?.end_at) return ''
+  if (m.plan === 'lifetime') return '永久有效'
+
+  const remainMs = new Date(m.end_at).getTime() - Date.now()
+  if (remainMs <= 0) return '已过期'
+  const days = Math.floor(remainMs / 86_400_000)
+  const hours = Math.floor((remainMs % 86_400_000) / 3_600_000)
+  if (days >= 7) return `剩余 ${days} 天`
+  // 倒数 7 天内显示精确"X 天 Y 时", 营造紧迫感
+  if (days >= 1) return `剩余 ${days} 天 ${hours} 时`
+  const mins = Math.floor((remainMs % 3_600_000) / 60_000)
+  return `剩余 ${hours} 时 ${mins} 分`
+})
+
+/** 主标题 */
+const vipTitle = computed(() => {
+  switch (vipStatus.value) {
+    case 'trialing':
+      return 'VIP 试用中'
+    case 'active':
+      if (vipMembership.value?.plan === 'lifetime') return '终身 VIP'
+      return 'VIP 已激活'
+    case 'expired':
+      return 'VIP 已过期'
+    case 'null':
+    default:
+      return '免费会员'
+  }
+})
+
+/** 副标题 + 倒计时 */
+const vipDesc = computed(() => {
+  const m = vipMembership.value
+  switch (vipStatus.value) {
+    case 'trialing':
+      return `${vipDaysLabel.value} · 升级解锁全部权益`
+    case 'active':
+      if (m?.plan === 'lifetime') return '解锁全部 AI 深度功能'
+      if (m?.end_at) return `有效期至 ${formatDate(m.end_at)} · ${vipDaysLabel.value}`
+      return '已激活'
+    case 'expired':
+      return '续费即可恢复全部权益'
+    case 'null':
+    default:
+      return '解锁 AI 深度诊断 / 历史数据 / 提醒'
+  }
+})
+
+/** 主 CTA 文案 */
+const vipCtaText = computed(() => {
+  switch (vipStatus.value) {
+    case 'trialing':
+      return '立即升级'
+    case 'active':
+      if (vipMembership.value?.plan === 'lifetime') return '查看权益'
+      return '续费'
+    case 'expired':
+      return '立即续费'
+    case 'null':
+    default:
+      return '开通 VIP'
+  }
+})
+
+/** 主 CTA 是否走"高亮金色"突出 (引导用户转化的态: expired / null / trialing) */
+const vipCtaHighlight = computed(
+  () => vipStatus.value === 'trialing' || vipStatus.value === 'expired' || vipStatus.value === 'null',
+)
+
+function formatDate(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function gotoOrders() {
+  uni.navigateTo({ url: '/pages/me/orders' })
+}
+
+function showManageSubscription() {
+  uni.showModal({
+    title: '管理订阅',
+    content:
+      '本应用当前为单次支付订阅 (非自动续费), 到期后自动失效, 不会自动扣款.\n\n如需取消已生效订阅, 请联系客服: contact@example.com',
+    showCancel: false,
+    confirmText: '我知道了',
   })
 }
 
@@ -156,15 +306,17 @@ async function handleBindInvite() {
 }
 
 /**
- * VIP 卡点击: 走 ``useUpgradeModal()`` 单例, 与 agent 页 banner / inline-error
- * 共用同一份 modal state. ``source = 'me_page'`` 让 modal 内部走"个人中心"专属
- * 文案 (无配额尾巴, 纯营销模式).
+ * VIP 卡主 CTA: 直接跳 ``/pages/vip/index`` (FE-S3-004).
  *
- * 实际支付通道仍是占位 (Sprint 3); modal 内部 "立即升级" 走 ``upgrade.gotoPay()``,
- * 当前是 uni.showModal 提示, Sprint 3 接微信支付时单点替换.
+ * **不走 modal 的原因**: me 页是用户主动来的, 不需要二次引导 modal "解释 VIP 是什么"
+ * (modal 适合 quota 撞墙这种"打断"场景, 给用户"我撞了什么 → 怎么解决"的归因).
+ * 用户在 me 页点 VIP 卡 = 已经"打算买", 直接进选套餐页转化路径最短.
+ *
+ * VIP 升级页 (FE-S3-004) 内部有套餐对比 / 权益矩阵 / 真实下单 + uni.requestPayment;
+ * me 页负责"展示当前状态 + 引流", 不重复造轮子.
  */
 function gotoVip() {
-  upgrade.open({ source: 'me_page' })
+  uni.navigateTo({ url: '/pages/vip/index' })
 }
 
 function openLegal(kind: 'tos' | 'privacy' | 'disclaimer' | 'about') {
@@ -221,6 +373,17 @@ async function handleLogout() {
 
 onShow(() => {
   refreshAuthGate()
+  // 启动倒计时滴答; trialing 用户最关心剩余时间, 每分钟自动刷一次让"剩 X 时 Y 分"持续走动
+  startCountdown()
+})
+
+onUnload(() => {
+  stopCountdown()
+})
+
+// onUnmounted 兜底 (uni-app 不一定每次都触发 onUnload, 例如 H5 路由切走时)
+onUnmounted(() => {
+  stopCountdown()
 })
 </script>
 
@@ -245,13 +408,35 @@ onShow(() => {
       </view>
     </view>
 
-    <view class="vip-card" @tap="gotoVip">
-      <view class="vip-left">
-        <text class="vip-tag">免费会员</text>
-        <text class="vip-desc">升级 VIP 解锁 AI 深度诊断 / 历史数据 / 提醒</text>
+    <view :class="['vip-card', isVipGold ? 'vip-card-gold' : 'vip-card-gray']">
+      <view class="vip-card-main" @tap="gotoVip">
+        <view class="vip-left">
+          <view class="vip-title-row">
+            <text v-if="isVipGold" class="vip-crown">👑</text>
+            <text class="vip-tag">{{ vipMembershipLoading && !vipMembership ? '加载中…' : vipTitle }}</text>
+          </view>
+          <text class="vip-desc">{{ vipDesc }}</text>
+        </view>
+        <view :class="['vip-cta', vipCtaHighlight && 'vip-cta-highlight']">
+          <text class="vip-cta-text">{{ vipCtaText }}</text>
+        </view>
       </view>
-      <view class="vip-cta">
-        <text>升级</text>
+      <!-- 下方双入口: 支付历史 + 管理订阅; 仅在已有订阅记录时显 -->
+      <view v-if="vipMembership?.membership_id" class="vip-card-foot">
+        <view class="vip-foot-item" hover-class="vip-foot-item-hover" :hover-stay-time="80" @tap="gotoOrders">
+          <text class="vip-foot-text">支付历史</text>
+          <text class="vip-foot-arrow">›</text>
+        </view>
+        <view class="vip-foot-divider" />
+        <view
+          class="vip-foot-item"
+          hover-class="vip-foot-item-hover"
+          :hover-stay-time="80"
+          @tap="showManageSubscription"
+        >
+          <text class="vip-foot-text">管理订阅</text>
+          <text class="vip-foot-arrow">›</text>
+        </view>
       </view>
     </view>
 
@@ -425,37 +610,114 @@ onShow(() => {
 }
 
 .vip-card {
-  background: linear-gradient(135deg, rgba(246, 196, 83, 0.15), rgba(79, 139, 255, 0.1));
-  border: 1rpx solid rgba(246, 196, 83, 0.35);
   border-radius: 24rpx;
-  padding: 32rpx;
+  padding: 0;
+  overflow: hidden;
+  border: 1rpx solid;
+}
+.vip-card-gold {
+  background: linear-gradient(135deg, rgba(246, 196, 83, 0.2), rgba(79, 139, 255, 0.1));
+  border-color: rgba(246, 196, 83, 0.45);
+  box-shadow: 0 4rpx 20rpx rgba(246, 196, 83, 0.08);
+}
+.vip-card-gray {
+  background: var(--color-surface, #131a2c);
+  border-color: var(--color-border, rgba(255, 255, 255, 0.08));
+}
+
+.vip-card-main {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 24rpx;
+  padding: 32rpx;
 }
+
 .vip-left {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8rpx;
 }
+.vip-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+.vip-crown {
+  font-size: 32rpx;
+  line-height: 1;
+}
 .vip-tag {
-  font-size: 28rpx;
+  font-size: 30rpx;
   font-weight: 700;
+}
+.vip-card-gold .vip-tag {
   color: #f6c453;
+}
+.vip-card-gray .vip-tag {
+  color: var(--color-text, #e2e8f0);
 }
 .vip-desc {
   font-size: 22rpx;
   color: var(--color-text-muted, #94a3b8);
+  line-height: 1.5;
 }
 .vip-cta {
+  flex-shrink: 0;
   padding: 16rpx 32rpx;
   border-radius: 999rpx;
-  background: #f6c453;
-  color: #0b1220;
+  background: rgba(246, 196, 83, 0.16);
+  border: 1rpx solid rgba(246, 196, 83, 0.32);
+}
+.vip-cta-highlight {
+  background: linear-gradient(135deg, #f6c453, #d97706);
+  border-color: transparent;
+  box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.32);
+}
+.vip-cta-text {
   font-size: 26rpx;
   font-weight: 700;
+  color: #f6c453;
+}
+.vip-cta-highlight .vip-cta-text {
+  color: #1a1305;
+}
+
+.vip-card-foot {
+  display: flex;
+  flex-direction: row;
+  border-top: 1rpx solid rgba(246, 196, 83, 0.18);
+}
+.vip-card-gray .vip-card-foot {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}
+.vip-foot-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  padding: 22rpx 0;
+}
+.vip-foot-item-hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.vip-foot-text {
+  font-size: 24rpx;
+  color: var(--color-text, #e2e8f0);
+  opacity: 0.9;
+}
+.vip-foot-arrow {
+  font-size: 26rpx;
+  color: var(--color-text-muted, #94a3b8);
+  opacity: 0.7;
+}
+.vip-foot-divider {
+  width: 1rpx;
+  margin: 12rpx 0;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .entry-list {
