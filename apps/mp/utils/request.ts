@@ -53,6 +53,31 @@ function getBaseURL(): string {
 }
 
 /**
+ * 把相对路径拼成完整的后端 URL (H5 走当前 origin + 路径; 其它端走 ``DEFAULT_BASE_URL``).
+ *
+ * 用途: ``GET /api/v1/brokers/{slug}/redirect`` 这种 302 端点, 需要在 H5 / App
+ * 上让浏览器跟随 302; 因此前端必须拿到完整的后端 URL 而非相对路径. 普通 JSON API
+ * 不要用这个, 走 ``request()`` 即可 (内部已处理 baseURL).
+ *
+ * - 已经是 ``http(s)://`` 开头: 直接返
+ * - H5: ``window.location.origin + path`` (vite proxy 在 H5 dev 时把同源 ``/api/v1``
+ *   反代到 BE 真实 origin; 生产部署时 SPA 与 API 同域, 也走同源)
+ * - 非 H5: ``DEFAULT_BASE_URL + path`` (同 ``request()`` 内部行为)
+ */
+export function buildAbsoluteApiUrl(path: string): string {
+  if (path.startsWith('http://') || path.startsWith('https://')) return path
+  // #ifdef H5
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return `${window.location.origin}${path}`
+  }
+  return path
+  // #endif
+  // #ifndef H5
+  return `${DEFAULT_BASE_URL}${path}`
+  // #endif
+}
+
+/**
  * 解析后端 ``HTTPException(detail={"code","message"})`` 的 ``detail.code``.
  * 401 / 400 等错误码用这个判别业务分支; 与 ``api/auth.ts:parseAuthError`` 同源逻辑,
  * 但这里只取 code 字符串。

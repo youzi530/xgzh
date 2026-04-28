@@ -144,6 +144,10 @@ function gotoArticles() {
   uni.navigateTo({ url: '/pages/article/index' })
 }
 
+function gotoBrokers() {
+  uni.navigateTo({ url: '/pages/broker/index' })
+}
+
 onShow(() => {
   if (list.value.length === 0) load(true)
 })
@@ -170,6 +174,15 @@ onReachBottom(() => {
           @tap="gotoArticles"
         >
           <text class="hero-icon">📰</text>
+        </view>
+        <!-- FE-S3-003: 券商对比入口 -->
+        <view
+          class="hero-icon-btn"
+          hover-class="hero-icon-btn-hover"
+          :hover-stay-time="80"
+          @tap="gotoBrokers"
+        >
+          <text class="hero-icon">🏦</text>
         </view>
         <view v-if="!loggedIn" class="auth-pill" @tap="gotoLogin">
           <text>登录 / 注册</text>
