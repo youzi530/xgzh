@@ -148,6 +148,11 @@ function gotoBrokers() {
   uni.navigateTo({ url: '/pages/broker/index' })
 }
 
+// FE-S4-001: 历史 IPO 列表入口 (新股 → 历史规律, 给"看打新参考"用户钩子)
+function gotoHistorical() {
+  uni.navigateTo({ url: '/pages/ipo/historical' })
+}
+
 onShow(() => {
   if (list.value.length === 0) load(true)
 })
@@ -183,6 +188,15 @@ onReachBottom(() => {
           @tap="gotoBrokers"
         >
           <text class="hero-icon">🏦</text>
+        </view>
+        <!-- FE-S4-001: 历史新股入口 -->
+        <view
+          class="hero-icon-btn"
+          hover-class="hero-icon-btn-hover"
+          :hover-stay-time="80"
+          @tap="gotoHistorical"
+        >
+          <text class="hero-icon">📊</text>
         </view>
         <view v-if="!loggedIn" class="auth-pill" @tap="gotoLogin">
           <text>登录 / 注册</text>

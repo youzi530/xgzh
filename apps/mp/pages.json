@@ -18,6 +18,15 @@
             }
         },
         {
+            "path": "pages/ipo/historical",
+            "style": {
+                "navigationBarTitleText": "历史新股",
+                "navigationBarBackgroundColor": "#0F172A",
+                "navigationBarTextStyle": "white",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
             "path": "pages/ipo/agent",
             "style": {
                 "navigationBarTitleText": "AI 诊断",

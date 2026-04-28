@@ -61,6 +61,114 @@ export interface IPOListParams {
   size?: number
 }
 
+// ─── Sprint 4 BE-S4-003 历史 IPO 列表 + 行业聚合 ──────────────────
+
+export type HistoricalSortBy =
+  | 'listing_date'
+  | 'first_day_change_pct'
+  | 'one_lot_winning_rate'
+
+/**
+ * 历史 IPO 卡片字段 (BE-S4-003 ``GET /ipos/historical`` 返回项).
+ *
+ * 与 ``IPOItem`` 区别:
+ * - ``status`` 固定 ``'listed'`` (路由层强制 listed-only)
+ * - 多 3 个上市后回填字段 + ``industry_l2`` + ``sponsors``
+ * - ``one_lot_winning_rate`` / ``oversubscribe_multiple`` HK 专用; A 股为 null
+ */
+export interface HistoricalIPOItem extends IPOItem {
+  industry_l2?: string | null
+  first_day_change_pct?: number | null
+  oversubscribe_multiple?: number | null
+  sponsors?: string[] | null
+}
+
+export interface HistoricalIPOListResponse {
+  items: HistoricalIPOItem[]
+  total: number
+  market: Market | 'all'
+  page: number
+  size: number
+  filter_summary: Record<string, unknown>
+}
+
+export interface HistoricalIPOListParams {
+  market?: Market
+  industry?: string
+  year_from?: number
+  year_to?: number
+  sponsor?: string
+  sort_by?: HistoricalSortBy
+  page?: number
+  size?: number
+}
+
+/**
+ * BE-S4-003 ``GET /ipos/historical``: 多维筛选 + 排序 + 分页.
+ *
+ * 不传 market 则全市场 (HK + A 合并); year_from / year_to 默认后端不限.
+ * size 上限 50; ``sort_by`` 支持 listing_date / first_day_change_pct / one_lot_winning_rate.
+ */
+export function fetchHistoricalIPOList(params: HistoricalIPOListParams = {}) {
+  const data: Record<string, string | number> = {
+    page: params.page ?? 1,
+    size: params.size ?? 20,
+    sort_by: params.sort_by ?? 'listing_date',
+  }
+  if (params.market) data.market = params.market
+  if (params.industry) data.industry = params.industry
+  if (params.year_from != null) data.year_from = params.year_from
+  if (params.year_to != null) data.year_to = params.year_to
+  if (params.sponsor) data.sponsor = params.sponsor
+  return request<HistoricalIPOListResponse>({
+    url: '/api/v1/ipos/historical',
+    data,
+  })
+}
+
+// ─── BE-S4-003 行业聚合 (FE-S4-002 散点图 / FE-S4-003 AI 报告共用) ─
+
+export interface IPOPeerStats {
+  mean: number | null
+  median: number | null
+  p25: number | null
+  p75: number | null
+  min: number | null
+  max: number | null
+}
+
+export interface IPOPeerScatterPoint {
+  code: string
+  name: string
+  pe_ratio: number | null
+  first_day_change_pct: number | null
+  is_self: boolean
+}
+
+export interface IPOPeerAggregate {
+  code: string
+  industry_l1: string | null
+  peer_count: number
+  first_day_change_pct: IPOPeerStats
+  pe_ratio: IPOPeerStats
+  one_lot_winning_rate: IPOPeerStats
+  oversubscribe_multiple: IPOPeerStats
+  raised_amount: IPOPeerStats
+  scatter_points: IPOPeerScatterPoint[]
+}
+
+/**
+ * BE-S4-003 ``GET /ipos/{code}/peer-aggregate``: 行业聚合统计 + 散点图.
+ *
+ * peer_count < 5 时 stats 全 null + scatter_points=[] (FE 走"数据不足"分支).
+ * 404 ``ipo_or_industry_missing``: code 不存在 / 没行业信息.
+ */
+export function fetchPeerAggregate(code: string) {
+  return request<IPOPeerAggregate>({
+    url: `/api/v1/ipos/${encodeURIComponent(code)}/peer-aggregate`,
+  })
+}
+
 /**
  * BE-008 ``GET /ipos``: 分页 + 筛选 + Redis 缓存 (10min).
  *
