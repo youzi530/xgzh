@@ -16,6 +16,7 @@ from app.cache import RateLimitExceeded
 from app.core.config import get_settings
 from app.core.logging import logger, setup_logging
 from app.scheduler import shutdown_scheduler, start_scheduler
+from app.services import error_monitor, feature_flags
 
 
 @asynccontextmanager
@@ -33,6 +34,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await start_scheduler(settings)
     except Exception as e:  # noqa: BLE001
         logger.exception(f"scheduler.startup_failed: {e}")
+
+    # OPS-S4-001: 灰度旋钮 bootstrap. ``feature_flags_default`` JSON 不可解析时
+    # 不抛, 仅 warning; 服务核心功能不受影响.
+    try:
+        await feature_flags.bootstrap_defaults()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"feature_flags.bootstrap_failed (non-fatal): {e}")
 
     try:
         yield
@@ -65,8 +73,17 @@ def create_app() -> FastAPI:
     ) -> Response:
         rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
         with logger.contextualize(request_id=rid):
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception:
+                # OPS-S4-001: unhandled exception 也算 error, 把 record 后让 FastAPI
+                # 默认 500 handler 接管. 不在这里 swallow.
+                await error_monitor.record_request(request_id=rid, is_error=True)
+                raise
         response.headers["x-request-id"] = rid
+        # 5xx 都算 error; 4xx (鉴权失败 / 参数错) 是用户行为, 不计错误率
+        is_error = response.status_code >= 500
+        await error_monitor.record_request(request_id=rid, is_error=is_error)
         return response
 
     @app.exception_handler(RateLimitExceeded)

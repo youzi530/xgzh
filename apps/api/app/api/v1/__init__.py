@@ -1,12 +1,14 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    admin,
     agent,
     articles,
     auth,
     brokers,
     chat,
     favorites,
+    feature_flags,
     invite,
     ipos,
     me,
@@ -29,5 +31,7 @@ router.include_router(articles.search_router)
 router.include_router(brokers.router)
 router.include_router(vip.router)
 router.include_router(payment.router)
+router.include_router(feature_flags.router)
+router.include_router(admin.router)
 
 __all__ = ["router"]

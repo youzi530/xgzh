@@ -288,22 +288,35 @@ class InMemoryRedisClient:
             self._store[nk] = (value, expire_at)
 
     async def delete(self, key: str) -> int:
+        """与 ``Redis.DEL`` 对齐: 任意类型 (string / zset) 都能删, 返删了几个 key.
+
+        InMemory 把 string 与 zset 拆到两个 dict 里, 因此要同时清 ``_store``
+        和 ``_zsets``; 真 Redis 同 key 不可能既是 string 又是 zset (类型唯一),
+        但 InMemory 的两个 dict 是独立 namespace, 必须一并清空才能让"删完再
+        ``sliding_window_count`` 看 0"这种 invariant 成立 (OPS-S4-001 reset_metrics 用)。
+        """
         nk = namespaced_key(key)
         async with self._lock:
-            return 1 if self._store.pop(nk, None) is not None else 0
+            had_string = self._store.pop(nk, None) is not None
+            had_zset = self._zsets.pop(nk, None) is not None
+            return 1 if (had_string or had_zset) else 0
 
     async def delete_by_prefix(self, prefix: str) -> int:
         """按前缀批量删除 keys (内存版: dict 遍历).
 
         语义与 :meth:`RealRedisClient.delete_by_prefix` 一致, ``prefix`` 同样
-        是逻辑前缀 (不带 ``xgzh:``), 内部加. 测试与单机降级场景用.
+        是逻辑前缀 (不带 ``xgzh:``), 内部加. 测试与单机降级场景用. 同时清
+        ``_store`` (string) 与 ``_zsets`` (zset), 与 ``delete`` 一致.
         """
         full_prefix = namespaced_key(prefix)
         async with self._lock:
-            keys = [k for k in self._store if k.startswith(full_prefix)]
-            for k in keys:
+            string_keys = [k for k in self._store if k.startswith(full_prefix)]
+            for k in string_keys:
                 del self._store[k]
-            return len(keys)
+            zset_keys = [k for k in self._zsets if k.startswith(full_prefix)]
+            for k in zset_keys:
+                del self._zsets[k]
+            return len(string_keys) + len(zset_keys)
 
     async def incr_with_expire(self, key: str, ttl_seconds: int) -> int:
         nk = namespaced_key(key)

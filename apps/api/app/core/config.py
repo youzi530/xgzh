@@ -686,6 +686,56 @@ class Settings(BaseSettings):
             and self.wechatpay_app_id
         )
 
+    # ─── OPS-S4-001 灰度 + 监控 ────────────────────────────────────────
+    ops_admin_token: str = Field(
+        default="",
+        description=(
+            "Admin API token (灰度旋钮 / 监控查询 / 配置写). "
+            "走 ``X-Admin-Token`` header. 留空 = 关闭 admin endpoints (生产保护)."
+            "DEV 默认空, 显式设置后才能走 ``/api/v1/admin/*``. 32+ 字节随机串."
+        ),
+    )
+    feature_flags_default: str = Field(
+        default="",
+        description=(
+            "JSON map of bootstrap flag values. 例: "
+            "``{\"history_tab\":{\"enabled\":true,\"rollout_pct\":5}}``. "
+            "Redis 缺失 / 服务首次启动时回填, 让本地 / CI 不依赖手工 admin write."
+        ),
+    )
+    feature_flags_cache_ttl_seconds: int = Field(
+        default=60,
+        description=(
+            "前端 / 服务端 in-process 缓存 TTL. 短一点 (60s) 让灰度旋钮调整 "
+            "在 1 min 内全机器对齐, 不需要重启."
+        ),
+        ge=5,
+        le=3600,
+    )
+    error_alert_threshold_pct: float = Field(
+        default=1.0,
+        description=(
+            "5xx + unhandled exception 错误率告警阈值 (%, 0–100). "
+            "1 min 滑动窗内错误占比超过此值, 走 loguru ERROR + 钉钉 webhook (mock). "
+            "默认 1% 是 spec/07 §S4 约定."
+        ),
+        ge=0.0,
+        le=100.0,
+    )
+    error_alert_window_seconds: int = Field(
+        default=60,
+        description="错误率统计的滑动窗口长度 (秒). 与告警频率一致, 默认 1 min.",
+        ge=10,
+        le=600,
+    )
+    alert_dingtalk_webhook: str = Field(
+        default="",
+        description=(
+            "钉钉机器人 webhook URL. 留空 = 仅打 log, 不真发告警 (dev 默认). "
+            "格式: ``https://oapi.dingtalk.com/robot/send?access_token=xxx``."
+        ),
+    )
+
     @property
     def cors_origin_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
