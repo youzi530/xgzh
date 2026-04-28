@@ -1734,29 +1734,47 @@ FE-S3-004 闭环 BE-S3-010，已经能从 modal → 升级页 → 选套餐 → 
 
 ---
 
-### QA-S3-002 · 微信支付 v3 沙箱 e2e ⬜
+### QA-S3-002 · 微信支付 v3 沙箱 e2e ✅
 
 **目标**：覆盖 BE-S3-009 + 010 全链路 — 注册 → 试用 → 升级下单 → 沙箱回调验签 → 配额放开 → 续费堆叠。
 
-**改动文件**（预期）
+**改动文件**（实际）
 
-- `apps/api/tests/integration/test_e2e_payment_lifecycle.py`（新建 ≥ 5 条用例）
-- `apps/api/scripts/dev_wechatpay_simulate_callback.py`（BE-S3-010 已建，本 PR 加 4 种回调 fixture：成功 / 失败 / 验签错误 / 重投幂等）
+- `apps/api/tests/integration/test_e2e_payment_lifecycle.py`（新建 5 条 lifecycle journey 用例 + 4 个 callback fixture helper）
+- `apps/api/scripts/dev_wechatpay_simulate_callback.py`（已在 BE-S3-010 建立，本 PR 沿用其 4 种 scenario：success / non-success / sig-fail / amount-mismatch；测试侧把 4 种回调结构 复刻成 fixture 函数 `callback_fixture_*`，保证测试自包含不依赖脚本运行)
 
 **测试用例**
 
-1. **金线**：注册 → 自动 trialing → 下月度订单 → mock 回调成功 → membership status='active', end_at=now + 30d → quota.check_quota 走 VIP 无限
-2. **续费堆叠**：active 用户 end_at=2026-01-31 → 下月度订单 → 回调成功 → end_at=2026-03-02（堆叠 30d）
-3. **试用切付费**：trialing 用户 end_at=now + 5d → 下月度订单 → 回调成功 → end_at=now + 30d（不堆叠试用剩余 5 天，按 spec/06 §2.3 试用立即结束）
-4. **回调幂等**：同 out_trade_no 二次回调 → membership 不重复加 30d, 直接返 SUCCESS
-5. **验签失败**：mock 错误签名 → 返回 200 + `code='FAIL'` + 订单仍 pending
+1. ✅ **金线** (`test_lifecycle_register_to_paid_active`)：完整 6 步 journey — `/auth/login/phone` 注册 → trialing → `/pay/wechat/order monthly` 落 pending → `/pay/wechat/notify` SUCCESS 回调 → DB 终态 `order.status='paid'` + `membership.status='active'` + `end_at ≈ now + 30d` + `total_paid_cny=39.00` + `current_order_id` 指向本笔订单 → `_resolve_plan_with_membership` + `check_quota` 都走 `QuotaPlan.VIP` / `limit=-1` → `GET /vip/me` 返 `has_active=True` / `plan='monthly'` / `days_remaining ∈ [29, 30]`
+2. ✅ **续费堆叠** (`test_lifecycle_renewal_stacks_end_at`)：第 1 单付费转 active → 人为 `UPDATE vip_memberships SET end_at = now + 60d` 锁定可预测的"现 end_at" → 第 2 单（第 1 单已 paid 不再 pending，绕开 5min 幂等窗复用）→ 回调 → `end_at = locked_end_at + 30d`（从锁定 end_at 起算，不从 now）+ `total_paid_cny = 78.00`
+3. ✅ **试用切付费** (`test_lifecycle_trialing_replaced_by_paid`)：注册 → 锁 `end_at = now + 5d` 模拟剩 5 天试用 → 月度付费 → 回调 → `end_at ≈ now + 30d`（而非 now + 5 + 30 = 35d）+ 反向断言 `|end_at - (now + 35d)| > 4d` 确认未错误堆叠（spec/06 §2.3 "试用立即结束"行为锁定）
+4. ✅ **回调幂等** (`test_lifecycle_callback_idempotent_no_double_extend`)：同 transaction_id + 同 body 二次回调 → 两次都返 200 SUCCESS（v3 协议要求重投也 ack，避免微信无限重试）+ `end_at` 二次后不变（精确 == ）+ `total_paid_cny` 仍 = 39.00 + `created_at` 不变
+5. ✅ **验签失败** (`test_lifecycle_signature_failure_keeps_pending_and_trialing`)：回调不带 `X-Stub-Sign-Override` header → 200 + `code='FAIL'`（v3 协议要求验签失败也 200，让微信不会因 4xx 误判商户 outage）+ 业务零副作用：`order.status='pending'` / `order.transaction_id IS NULL` / `order.paid_at IS NULL` / `membership.status='trialing'` / `GET /vip/me` 仍返 trialing
+
+**4 种回调 fixture helper**
+
+- `callback_fixture_success` — `trade_state=SUCCESS` + `X-Stub-Sign-Override: bypass`
+- `callback_fixture_payerror` — `trade_state=PAYERROR` + bypass header（场景 2/3 未直接用，给后续测试预留）
+- `callback_fixture_signature_invalid` — 故意不传 bypass header，触发验签闸门
+- `callback_fixture_replay_idempotent` — 显式锁定 `success_time` 让两次调用 body 严格一致，验证幂等闸门
+
+**关键设计决策**
+
+- **走完整 HTTP 链路**（注册 → 下单 → 回调 → /vip/me），而非直连 service — 与 `test_vip_lifecycle.py`（service 级状态机）/ `test_payment_e2e.py`（per-API 行为）形成"金字塔顶端" lifecycle 覆盖，互补不重复
+- **case 2 用 `_force_membership_end_at` helper 直接 UPDATE end_at**：原 `test_payment_e2e.test_callback_active_user_renewal_stacks_end_at` 因 5min 幂等窗导致第二单可能复用，加了 SKIP 路径；本用例第 1 单已 paid 后第 2 单一定是新订单，不会触发幂等复用，断言精度 ±5s
+- **case 3 反向断言** `|end_at - (now + 35d)| > 4d` — 防止"看起来过了"但其实是错堆叠的回归（如果未来某 PR 误把 trial→paid 改成堆叠模式，这个反向 assert 会立刻挂掉）
+- **case 5 用 `transaction_id IS NULL` + `paid_at IS NULL` 双 assert** — 单个字段可能因 model default 误绿；双约束更严
+- **不再覆盖** 已被 `test_payment_e2e.py` 覆盖的子场景：4 套餐金额 parametrize（已 18 case 覆盖）、 `trade_state=PAYERROR` / 孤儿 `out_trade_no` / 金额不匹配 / 限流 — 本文件聚焦 *journey-level state machine*，不重复 endpoint-level 行为验证
 
 **AC**
 
-- [ ] 5 条 e2e 全绿
-- [ ] CI integration lane 跑过
+- [x] 5 条 e2e 全绿 — 实际 5 passed, 0 failed
+- [x] CI integration lane 跑过 — `make test-e2e` 等价命令在本地全绿（222 integration tests）
+- [x] ruff lint 干净
+- [x] mypy 干净
+- [x] 不影响其他文件已存在 case (`test_payment_e2e.py` 18 case + `test_vip_lifecycle.py` 15 case 全部继续 PASS)
 
-**依赖**：BE-S3-010
+**依赖**：BE-S3-010（已就绪）
 
 ---
 
