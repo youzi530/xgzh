@@ -37,10 +37,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from loguru import logger
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import InviteCode, User
+from app.core.config import get_settings
+from app.db.models import InviteCode, InviteReward, User
 
 # ----------------------------- exceptions -----------------------------
 
@@ -85,6 +87,23 @@ class InviteBindResult:
     referrer_user_id: uuid.UUID
     referrer_invite_code: str
     new_usage_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class InviteRewardResult:
+    """``apply_invite_reward`` 返回; 路由层不直接暴露, 主要给单测断言用.
+
+    Fields:
+        triggered: 本次调用是否真的触发了奖励 (false 含义: 没达阈值 / 已发过 / 关闭奖励)
+        successful_invitee_count: 当前累计成功被邀请数
+        threshold_n: 配置的触发阈值 (settings.invite_reward_n_users)
+        vip_days_granted: 配置的奖励天数 (settings.invite_reward_vip_days); 即便未触发也带回, 让前端能渲染"还差 N 个达成 +M 天"
+    """
+
+    triggered: bool
+    successful_invitee_count: int
+    threshold_n: int
+    vip_days_granted: int
 
 
 # ----------------------------- 注册时落 invite_codes 行 -----------------------------
@@ -207,19 +226,168 @@ async def bind_invite(
     invite.usage_count += 1
     await session.flush()
 
+    referrer_user_id = invite.owner_user_id
+
     await session.commit()
     # 注意: ORM 实例已在 expire_on_commit=False 的 session 中, 但保险起见用本地变量
     new_count = invite.usage_count
 
     logger.info(
-        f"invite.bind.ok user_id={current_user.user_id} referrer={invite.owner_user_id} "
+        f"invite.bind.ok user_id={current_user.user_id} referrer={referrer_user_id} "
         f"code={code} usage={new_count}"
     )
 
+    # BE-S5-005: bind 成功 → 异步触发邀请奖励 (不阻断主路径; 失败仅 logger.exception).
+    # 用独立事务 (开新 session) 而不是复用 ``session``, 因为 bind 已 commit, 这里失败
+    # 不应回滚 bind. 任何异常都吞掉 — 用户成功绑定 referrer 是核心成功语义,
+    # 奖励是次要副作用; 失败可由 admin 后续手动补发.
+    try:
+        await _apply_invite_reward_outside_txn(referrer_user_id)
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            f"invite.reward.fail inviter={referrer_user_id} err={e!r}"
+        )
+
     return InviteBindResult(
-        referrer_user_id=invite.owner_user_id,
+        referrer_user_id=referrer_user_id,
         referrer_invite_code=code,
         new_usage_count=new_count,
+    )
+
+
+# ─── BE-S5-005 邀请有礼 trigger ────────────────────────────────────────
+
+
+async def _apply_invite_reward_outside_txn(inviter_user_id: uuid.UUID) -> InviteRewardResult:
+    """``bind_invite`` commit 后调; 起独立 session 把奖励算清楚.
+
+    与 ``apply_invite_reward`` 区别: 这个 helper 自己开 session + commit, 让 bind_invite
+    主路径不需要传 session 进来. 单测可以直接调 ``apply_invite_reward(session, ...)`` 走
+    同事务路径.
+    """
+    from app.db import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await apply_invite_reward(session, inviter_user_id=inviter_user_id)
+        await session.commit()
+        return result
+
+
+async def apply_invite_reward(
+    session: AsyncSession,
+    *,
+    inviter_user_id: uuid.UUID,
+) -> InviteRewardResult:
+    """统计 inviter 累计成功被邀请数, 达阈值则给 inviter 延 VIP + 写 audit.
+
+    "成功被邀请"定义 (spec/12 §防刷):
+    - 被邀请人 ``users.invited_by = inviter_user_id``
+    - 被邀请人 ``status = 1`` (active, 未禁用 / 未注销)
+    - 被邀请人 ``deleted_at IS NULL`` (BE-S5-003 注销后软删, 不算邀请数)
+    - 被邀请人 ``phone IS NOT NULL`` (微信注册无 phone 也算 — 用 ``user_id`` 唯一; 同手机号
+      防刷在 BE-S5-003 SoftDelete + ``users.phone`` UNIQUE 已隐式保证)
+
+    幂等:
+    - audit 表 UNIQUE (inviter, threshold_n) — INSERT ... ON CONFLICT DO NOTHING
+    - 同一阈值并发 / 重试调 → 只写一次, 只 extend 一次
+
+    奖励路径:
+    1. 数被邀请数 N
+    2. 不达阈值 → ``triggered=False`` 直接返回, 不动 audit / vip
+    3. 阈值已发过 (audit 命中) → ``triggered=False`` 静默跳过 (前端可以显示"已达成 +7d 已发放")
+    4. 阈值首次达成 → INSERT audit (rowcount=1 才进下一步) + extend_membership(+N days)
+
+    Args:
+        session: 调用方传 (或 ``_apply_invite_reward_outside_txn`` 自起新事务)
+        inviter_user_id: 邀请人 ID
+
+    Returns:
+        InviteRewardResult — 含 triggered / 当前邀请数 / 阈值 / 奖励天数
+    """
+    # 延迟 import 避免循环 (vip_service imports nothing from invite_service, 但保险起见)
+    from app.services import vip_service
+
+    settings = get_settings()
+    threshold_n = settings.invite_reward_n_users
+    vip_days = settings.invite_reward_vip_days
+
+    if threshold_n <= 0 or vip_days <= 0:
+        # 配置关闭奖励 — 直接走"未触发"分支, 不查表, 不写 audit
+        return InviteRewardResult(
+            triggered=False,
+            successful_invitee_count=0,
+            threshold_n=threshold_n,
+            vip_days_granted=vip_days,
+        )
+
+    # 1. 数累计成功被邀请数 (active + 未注销)
+    # SoftDeleteMixin.deleted_at IS NULL: BE-S5-003 注销后会 set, 这里用 SQL 表达
+    count_stmt = (
+        select(func.count())
+        .select_from(User)
+        .where(
+            User.invited_by == inviter_user_id,
+            User.status == 1,
+            User.deleted_at.is_(None),
+        )
+    )
+    invitee_count = int((await session.execute(count_stmt)).scalar_one())
+
+    if invitee_count < threshold_n:
+        return InviteRewardResult(
+            triggered=False,
+            successful_invitee_count=invitee_count,
+            threshold_n=threshold_n,
+            vip_days_granted=vip_days,
+        )
+
+    # 2. 检查 audit 是否已发过同阈值奖励 — INSERT ON CONFLICT DO NOTHING.
+    # rowcount=1 说明本次插入成功 (首次达成); rowcount=0 说明 UNIQUE 冲突 (已发过).
+    insert_stmt = (
+        pg_insert(InviteReward)
+        .values(
+            inviter_user_id=inviter_user_id,
+            threshold_n=threshold_n,
+            vip_days_granted=vip_days,
+            successful_invitee_count=invitee_count,
+        )
+        .on_conflict_do_nothing(constraint="uq_invite_rewards_inviter_threshold")
+    )
+    insert_result = await session.execute(insert_stmt)
+    inserted = (getattr(insert_result, "rowcount", 0) or 0) > 0
+
+    if not inserted:
+        # 已发过, 静默跳过 (这种情况通常是并发 / 用户从 4 人退到 3 人再涨回 4 人)
+        logger.debug(
+            f"invite.reward.already_granted inviter={inviter_user_id} "
+            f"threshold={threshold_n} count={invitee_count}"
+        )
+        return InviteRewardResult(
+            triggered=False,
+            successful_invitee_count=invitee_count,
+            threshold_n=threshold_n,
+            vip_days_granted=vip_days,
+        )
+
+    # 3. 真发奖励: 调 vip_service.extend_membership 延 N 天
+    snapshot = await vip_service.extend_membership(
+        session,
+        user_id=inviter_user_id,
+        days=vip_days,
+        reason="invite_reward",
+    )
+
+    logger.info(
+        f"invite.reward.granted inviter={inviter_user_id} threshold={threshold_n} "
+        f"invitees={invitee_count} +{vip_days}d new_end_at={snapshot.end_at.isoformat()}"
+    )
+
+    return InviteRewardResult(
+        triggered=True,
+        successful_invitee_count=invitee_count,
+        threshold_n=threshold_n,
+        vip_days_granted=vip_days,
     )
 
 
@@ -232,7 +400,9 @@ __all__ = [
     "InviteCodeNotFoundError",
     "InviteCodeNotPersonalError",
     "InviteError",
+    "InviteRewardResult",
     "InviteSelfBindError",
+    "apply_invite_reward",
     "bind_invite",
     "register_invite_code_for_user",
 ]

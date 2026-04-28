@@ -344,6 +344,92 @@ async def apply_paid_order(
     return _to_snapshot(membership)
 
 
+# ─── 3.5 reward 延期 (BE-S5-005 邀请有礼用) ─────────────────────────────
+
+
+async def extend_membership(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    days: int,
+    reason: str = "invite_reward",
+) -> MembershipSnapshot:
+    """**纯延期**: 把 user 的 VIP end_at 往后推 ``days`` 天.
+
+    与 ``apply_paid_order`` 的区别: 这个不创建 VipOrder, 不改 ``current_order_id``,
+    不动 ``total_paid_cny`` (没真支付). 只动 ``end_at`` + 必要时改 ``status``.
+
+    状态机:
+    - 无 membership (老用户 / grant_trial 失败) → 新建 ``status='active', plan='trial',
+      start_at=now, end_at=now+days``; plan='trial' 是因为 ``vip_memberships.plan`` 不接
+      "reward" 字面值, 用 'trial' 表示"非付费来源" (与零元订单同款)
+    - status ∈ (trialing, active) AND end_at > now → 直接 ``end_at += days``, status 不动
+    - status ∈ (expired, cancelled) OR end_at ≤ now → 重置: start_at=now, end_at=now+days,
+      status='active' (从过期 / 取消重新激活, 与 ``apply_paid_order`` 的覆盖分支一致)
+
+    Args:
+        session: 调用方传, 同事务 (与 grant_trial / apply_paid_order 同款)
+        user_id: 必须存在的用户; 不存在 → IntegrityError 由调用方处理
+        days: ≥ 0; 0 视为 noop 但仍返当前 snapshot
+        reason: 仅 logger 用, 审计 trail (如 "invite_reward" / "manual_grant")
+
+    Returns:
+        延期后 snapshot.
+    """
+    if days < 0:
+        raise ValueError(f"extend_membership days must be >= 0, got {days}")
+
+    now = datetime.now(UTC)
+    membership = (
+        await session.execute(
+            select(VipMembership).where(VipMembership.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+
+    if membership is None:
+        membership = VipMembership(
+            user_id=user_id,
+            status="active",
+            plan="trial",  # 非付费来源, 与零元订单一致
+            start_at=now,
+            end_at=now + timedelta(days=days),
+            auto_renew=False,
+            current_order_id=None,
+            total_paid_cny=Decimal("0.00"),
+        )
+        session.add(membership)
+        await session.flush()
+        logger.info(
+            f"vip.extend.new user_id={user_id} days={days} reason={reason} "
+            f"end_at={membership.end_at.isoformat()}"
+        )
+        return _to_snapshot(membership)
+
+    if days == 0:
+        return _to_snapshot(membership)
+
+    if membership.status in ("trialing", "active") and membership.end_at > now:
+        # 仍生效 → 直接延期
+        membership.end_at = membership.end_at + timedelta(days=days)
+        logger.info(
+            f"vip.extend.stack user_id={user_id} +{days}d reason={reason} "
+            f"new_end_at={membership.end_at.isoformat()}"
+        )
+    else:
+        # 已过期 / cancelled → 重置激活
+        membership.start_at = now
+        membership.end_at = now + timedelta(days=days)
+        prev_status = membership.status
+        membership.status = "active"
+        logger.info(
+            f"vip.extend.reactivate user_id={user_id} prev_status={prev_status!r}→active "
+            f"days={days} reason={reason} end_at={membership.end_at.isoformat()}"
+        )
+
+    await session.flush()
+    return _to_snapshot(membership)
+
+
 def _compute_end_at(plan: str, *, base: datetime) -> datetime:
     """根据 plan + base 起算点算 end_at.
 
@@ -447,6 +533,7 @@ __all__ = [
     "PLAN_DURATION_DAYS",
     "apply_paid_order",
     "expire_overdue_memberships",
+    "extend_membership",
     "get_active_membership",
     "get_any_membership",
     "grant_trial",

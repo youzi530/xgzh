@@ -597,6 +597,26 @@ class Settings(BaseSettings):
         le=59,
     )
 
+    # ─── BE-S5-005 邀请有礼 trigger ──────────────────────────────────
+    invite_reward_n_users: int = Field(
+        default=3,
+        description=(
+            "邀请有礼触发阈值: 邀请方累计成功邀请 ≥ N 个活跃用户 → 触发一次奖励. "
+            "默认 3; 设为 0 关闭奖励 (仅记 invited_by 链路, 不延 VIP)."
+        ),
+        ge=0,
+        le=100,
+    )
+    invite_reward_vip_days: int = Field(
+        default=7,
+        description=(
+            "邀请有礼奖励 VIP 天数: 触发时给 inviter 延 N 天. 默认 7. "
+            "走 vip_service.extend_membership(user_id, days=N), 与 vip_trial_days 独立."
+        ),
+        ge=0,
+        le=90,
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",

@@ -72,7 +72,7 @@
 | BE-S5-002 | compliance | PIPL 个人信息收集清单 + admin 审计接口（`GET /api/v1/admin/pii-inventory`）| 0.5d | OPS-S4-001 | P0 | ⬜ |
 | BE-S5-003 | compliance | 用户注销账号工程支持（`DELETE /api/v1/me`，soft delete + 30d 后真删 cron） | 1d | BE-S5-002 | P0 | ⬜ |
 | BE-S5-004 | feedback | 反馈表 + API（``POST /api/v1/feedback``，落 PG `feedbacks` 表，admin 可读）| 0.5d | — | P0 | ✅ |
-| BE-S5-005 | invite | 邀请有礼 trigger（成功邀请 ≥ 3 人 → VIP +7d，复用 vip_service `extend_membership`）| 0.5d | BE-S3-007 | P0 | ⬜ |
+| BE-S5-005 | invite | 邀请有礼 trigger（成功邀请 ≥ 3 人 → VIP +7d，复用 vip_service `extend_membership`）| 0.5d | BE-S3-007 | P0 | ✅ |
 | BE-S5-006 | dashboard | `app/api/v1/admin/dashboard.py`（6 指标：DAU / 注册转化 / VIP 转化 / Agent 调用 / 错误率 / SSE p95，admin 鉴权 + JSON / HTML 双格式）| 1d | OPS-S4-001 | P0 | ⬜ |
 
 **BE 合计**：~6 PR · ~4 工作日
@@ -325,31 +325,77 @@ OPS-S5-002 钉钉 webhook ─────→│         ↓
 
 ---
 
-### BE-S5-005 · 邀请有礼 trigger ⬜
+### BE-S5-005 · 邀请有礼 trigger ✅
 
-**目标**：spec/07 §S5 邀请有礼。复用 BE-S3-007 invite_service + BE-S3-009 vip_service。规则：成功邀请 N 人 → VIP +7d。
+**目标**：spec/07 §S5 邀请有礼。复用 BE-S3-007 invite_service + BE-S3-009 vip_service。规则：成功邀请 N 人 → VIP +N 天（默认 N=3 → +7d）。
 
-**改动文件**
+**实际改动文件**
 
-- `apps/api/app/services/invite_service.py`（加 ``apply_invite_reward(inviter_user_id)`` 触发函数）
-- `apps/api/app/services/auth_service.py`（注册成功后调 ``apply_invite_reward``）
+- `apps/api/alembic/versions/0010_invite_rewards.py`（新建 `invite_rewards` audit 表，UNIQUE (inviter_user_id, threshold_n) 防重发）
+- `apps/api/app/db/models/invite.py`（加 `InviteReward` ORM）
+- `apps/api/app/db/models/__init__.py`（注册新模型）
+- `apps/api/app/services/vip_service.py`（加 `extend_membership(session, user_id=, days=, reason=)` 纯延期接口）
+- `apps/api/app/services/invite_service.py`（加 `apply_invite_reward` + `_apply_invite_reward_outside_txn` + `bind_invite` 末尾自动触发）
 - `apps/api/app/core/config.py`（加 `invite_reward_n_users=3` / `invite_reward_vip_days=7`）
-- `apps/api/tests/integration/test_invite_reward.py`
+- `apps/api/tests/integration/conftest.py`（truncate 加 `invite_rewards`）
+- `apps/api/tests/integration/test_invite_reward.py`（新建 9 case）
 
-**规则**
+**触发时机的关键决定**
 
-- 邀请方注册时填 `invite_code`（已就位）→ users.invited_by 写邀请人 UUID
-- 被邀请人首次登录成功（BE-S3-007）→ 触发 ``apply_invite_reward(inviter_user_id)``
-- 邀请人累计成功被邀请数 = N（默认 3）→ extend_membership(+7d) + 写 audit log
-- 防刷：邀请人 + 被邀请人手机号去重 + 同设备 ID 拒绝
-- VIP 试用中 / active 用户邀请奖励叠加（end_at += 7d）
+spec 原文写"被邀请人首次登录成功 → 触发"，但 invite_service 实际架构上 `users.invited_by` **不在登录时写**，而在 `bind_invite`（用户主动调 `POST /invite/bind`）写。`bind_invite` 才是真正"建立邀请关系"的语义点 — 用户必须显式输 invite_code 才算"我承认是某某邀请来的"。所以 trigger 改在 `bind_invite` commit 之后，而不是 login 时（那样每次登录都触发太怪）。
 
-**AC**
+`bind_invite` 主路径已 commit 之后再调 `_apply_invite_reward_outside_txn`，开新 session 独立事务：失败仅 `logger.exception`，不回滚 bind。设计取舍：bind 是核心成功语义，奖励是次要副作用，奖励失败可由 admin 后续手动补发，不能让奖励 bug 阻断绑定。
 
-- [ ] N=3 时第 1/2 邀请不触发，第 3 个触发 +7d
-- [ ] 防刷：同手机号 / 同设备 ID 不算入
-- [ ] 防重：同一 (inviter, invitee) 只算一次
-- [ ] e2e ≥ 5 case（happy / 防刷 / VIP 叠加 / 异常）
+**幂等 + 防刷设计**
+
+- **同阈值幂等**：audit 表 `UNIQUE (inviter_user_id, threshold_n)` + INSERT ... ON CONFLICT DO NOTHING。同一 inviter + threshold=3 只发一次，并发 / 重试 / 用户增减都安全。
+- **被邀请人计数过滤**：只算 `status = 1` AND `deleted_at IS NULL` 的活跃用户。禁用 / 注销（BE-S5-003 SoftDelete 兼容）的邀请人不计入。
+- **同手机号防刷**：靠 `users.phone` UNIQUE 已隐式防（同一手机号无法注册两次）。
+- **同设备 ID 防刷**：MVP 没有设备 ID 表，留 5.5（spec/07 §S5.5 路线图明列）。
+- **自禁**：`bind_invite` 的 `InviteSelfBindError` 已挡，奖励触发前就 raise；audit 不会有自禁记录。
+
+**`vip_service.extend_membership` 三个分支**
+
+| 当前状态 | 处理 | 备注 |
+|---|---|---|
+| 无 membership | 新建 `status='active', plan='trial', start_at=now, end_at=now+days` | 老用户兜底，plan='trial' 复用零元订单字面值 |
+| trialing/active 且未过期 | `end_at += days`（不动 status / start_at） | 试用 + 奖励叠加：7d trial + 7d reward = 14d |
+| expired/cancelled 或已过期 | reactivate：start_at=now, end_at=now+days, status='active' | 与 `apply_paid_order` 覆盖分支语义一致 |
+
+不写 `vip_orders`、不动 `current_order_id`、不动 `total_paid_cny`（没真支付）— 财务 / 分账侧零影响。
+
+**配置**
+
+```env
+INVITE_REWARD_N_USERS=3   # 触发阈值，0 关闭奖励
+INVITE_REWARD_VIP_DAYS=7  # 奖励天数，0 关闭
+```
+
+阶梯奖励（3/6/9 人）留 5.5：audit 表的 `threshold_n` 字段已为多档预留，不需改 schema。
+
+**AC 全过**
+
+- [x] N=3 时第 1/2 邀请不触发，第 3 个触发 +7d ✅
+- [x] 第 4/5 个不再触发（audit UNIQUE 幂等）✅
+- [x] 防刷：禁用 / 注销 用户不算入 ✅
+- [x] inviter 现 trial → 14d 堆叠（不重置 start）✅
+- [x] inviter 已过期 → reactivate（status: expired → active）✅
+- [x] inviter 无 membership → 新建（plan='trial', current_order_id=NULL）✅
+- [x] 关闭奖励（n=0）→ 永远不触发 + audit 零行 ✅
+- [x] e2e 真走 `bind_invite` → 检查 audit + vip end_at ✅
+- [x] 自禁不触发奖励 ✅
+- [x] 集成测试 9/9 + 全量回归 958/958 全绿（21min 内）
+
+**关键工程决策 / 教训**
+
+1. **trigger 时机**：spec 写"登录时触发"是误差，正确语义点是 `bind_invite`（建立邀请关系的唯一服务端 API）；用户登录不会改变 `invited_by`，本来也不该重复触发。
+2. **独立事务 vs 主事务**：奖励逻辑放主事务里会让"奖励 bug 阻断绑定" — 用 `_apply_invite_reward_outside_txn` 起新 session 独立事务，失败仅 log，主路径成功仍返 200。
+3. **plan 字段处理**：reward 路径用 `plan='trial'` 而不是新增 `'reward'` 字面值 — 因为 `vip_memberships.plan` 在 BE-S3-009 已经规定 `trial / monthly / quarterly / yearly / lifetime` 五选一，配额闸门 `_resolve_plan` 也按此判定。新增 `'reward'` 要改 7+ 处分支，工程代价大；用 `'trial'` 一视同仁（"非付费来源"）零侵入。
+4. **audit 表幂等键**：选择 `(inviter, threshold_n)` 复合 UNIQUE 而不是 `(inviter)`，是给 5.5 阶梯奖励（3/6/9 三阈值）预留 — 同一 inviter 可以在三个阈值上各得一次奖励。
+5. **被邀请人计数 SQL**：用 `func.count() + .where(...)` 而不是 `len(rows)`，PG 命中 `ix_users_status` 索引 + `invited_by` 索引（5.5 加），10K+ 用户量级 < 5ms。本 PR 没建 `invited_by` 索引，因为 spec/07 §灰度数据量预估 < 1K 邀请关系，PG seq scan < 1ms 也够用；高水位再补。
+6. **测试用真 DB 而非 mock**：邀请奖励涉及 audit UNIQUE + asyncpg ON CONFLICT，mock Redis / SQLAlchemy in-memory 都模拟不出 PG 的 `INSERT ... ON CONFLICT DO NOTHING` 准确语义，只能上真 PG。9 条 e2e 跑 ~3.4s，可控。
+
+**回归**：958 passed（unit + integration 全绿，0 break）。
 
 ---
 

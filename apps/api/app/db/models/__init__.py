@@ -14,7 +14,7 @@ from app.db.models.chat import (
     ChatToolCall,
 )
 from app.db.models.feedback import Feedback
-from app.db.models.invite import InviteCode
+from app.db.models.invite import InviteCode, InviteReward
 from app.db.models.ipo import IPO, IPODocument
 from app.db.models.push import PushToken
 from app.db.models.user import User, UserFavorite
@@ -32,6 +32,7 @@ __all__ = [
     "ConversionEvent",
     "Feedback",
     "InviteCode",
+    "InviteReward",
     "IPO",
     "IPODocument",
     "PushToken",

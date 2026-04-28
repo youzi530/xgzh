@@ -130,7 +130,8 @@ async def truncate_all(db_engine: AsyncEngine) -> AsyncIterator[None]:
                 "articles, "  # article_topics 由 articles CASCADE 顺带清
                 "brokers, conversion_events, "  # conversion_events 也走 brokers CASCADE, 显式列更稳
                 "vip_orders, vip_memberships, "  # vip_memberships 走 vip_orders FK SET NULL, 不会 CASCADE 顺带清
-                "feedbacks "  # BE-S5-004: feedbacks.user_id FK SET NULL, 不会被 users CASCADE
+                "feedbacks, "  # BE-S5-004: feedbacks.user_id FK SET NULL, 不会被 users CASCADE
+                "invite_rewards "  # BE-S5-005: invite_rewards.inviter_user_id FK CASCADE, users CASCADE 会清, 但显式列让用例间隔离更显
                 "RESTART IDENTITY CASCADE"
             )
         )
