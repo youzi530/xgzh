@@ -27,18 +27,23 @@ import { computed, ref } from 'vue'
 
 import {
   fetchIPODetail,
+  fetchPeerAggregate,
   type IPODetail,
+  type IPOPeerAggregate,
   statusLabel,
   statusPalette,
 } from '@/api/ipo'
 import FavoriteButton from '@/components/FavoriteButton.vue'
+import PeerScatterChart from '@/components/PeerScatterChart.vue'
+import PeerStatsBars from '@/components/PeerStatsBars.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'
 
-type Tab = 'fundamental' | 'sponsor' | 'highlights' | 'risks'
+type Tab = 'fundamental' | 'peer' | 'sponsor' | 'highlights' | 'risks'
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'fundamental', label: '基本面' },
+  { key: 'peer', label: '行业对比' },
   { key: 'sponsor', label: '保荐承销' },
   { key: 'highlights', label: '投资亮点' },
   { key: 'risks', label: '主要风险' },
@@ -51,6 +56,15 @@ const loading = ref(false)
 const error = ref('')
 const errorCode = ref('')
 const activeTab = ref<Tab>('fundamental')
+
+// FE-S4-002: 行业对比 (BE-S4-003 ``/ipos/{code}/peer-aggregate``)
+//
+// 懒加载策略: 用户切到 'peer' tab 才发请求, 不在 onLoad 时打 (避免详情页首屏多打
+// 1 次 API). peer 数据有自己的 30min 后端缓存, 切回再打也不肉.
+const peerData = ref<IPOPeerAggregate | null>(null)
+const peerLoading = ref(false)
+const peerError = ref('')
+const peerErrorCode = ref('')
 
 const authStore = useAuthStore()
 const { loggedIn } = storeToRefs(authStore)
@@ -137,6 +151,39 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * FE-S4-002: 加载行业对比数据 (懒加载, 切到 peer tab 才打).
+ *
+ * 错误兜底:
+ * - 404 ``ipo_or_industry_missing`` → 用户友好文案"暂无行业聚合数据";
+ *   实际原因可能是 IPO 没填 industry_l1 (旧脏数据) 或 code 拼错
+ * - 其它网络错走 message 透传, 提供"重试"按钮
+ */
+async function loadPeer() {
+  if (peerLoading.value || peerData.value) return
+  peerLoading.value = true
+  peerError.value = ''
+  peerErrorCode.value = ''
+  try {
+    peerData.value = await fetchPeerAggregate(code.value)
+  } catch (e) {
+    const msg = (e as Error).message
+    if (msg.includes('404')) {
+      peerErrorCode.value = 'ipo_or_industry_missing'
+      peerError.value = '暂无行业聚合数据 (该 IPO 行业字段未补全)'
+    } else {
+      peerError.value = msg
+    }
+  } finally {
+    peerLoading.value = false
+  }
+}
+
+function onTabSelect(t: Tab) {
+  activeTab.value = t
+  if (t === 'peer') loadPeer()
 }
 
 function gotoAgent() {
@@ -231,7 +278,7 @@ function openProspectus() {
           v-for="t in TABS"
           :key="t.key"
           :class="['tab', activeTab === t.key && 'tab-active']"
-          @tap="activeTab = t.key"
+          @tap="onTabSelect(t.key)"
         >
           <text>{{ t.label }}</text>
         </view>
@@ -249,6 +296,36 @@ function openProspectus() {
               <text class="kv-value">{{ row.value }}</text>
             </view>
           </view>
+        </view>
+
+        <!-- FE-S4-002: 行业对比 (散点图 + 5 维分位横条) -->
+        <view v-else-if="activeTab === 'peer'" class="peer-block">
+          <view v-if="peerLoading && !peerData" class="empty">
+            <text>加载行业对比数据…</text>
+          </view>
+          <view v-else-if="peerError" class="empty empty-warn">
+            <text>{{ peerError }}</text>
+            <view
+              v-if="peerErrorCode !== 'ipo_or_industry_missing'"
+              class="peer-retry"
+              hover-class="peer-retry-hover"
+              :hover-stay-time="80"
+              @tap="loadPeer"
+            >
+              <text class="peer-retry-text">点击重试</text>
+            </view>
+          </view>
+          <template v-else-if="peerData">
+            <PeerScatterChart :data="peerData" :width="640" />
+            <view class="peer-spacer" />
+            <PeerStatsBars :data="peerData" />
+            <view class="peer-foot">
+              <text class="peer-foot-text">
+                💡 上方散点图: 横轴 PE, 纵轴上市首日涨跌; 金色双圈 = 当前 IPO,
+                橙线 = 行业中位数. 下方分位横条: 蓝色块 = 25-75 分位, 黄线 = 中位.
+              </text>
+            </view>
+          </template>
         </view>
 
         <!-- 保荐承销 -->
@@ -453,6 +530,42 @@ function openProspectus() {
   text-align: center;
   padding: 32rpx 0;
   color: var(--color-text-muted);
+  font-size: 24rpx;
+}
+.empty-warn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+  color: var(--color-accent);
+}
+
+.peer-block {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+.peer-spacer {
+  height: 12rpx;
+}
+.peer-foot {
+  padding: 16rpx 4rpx;
+}
+.peer-foot-text {
+  font-size: 22rpx;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+.peer-retry {
+  padding: 12rpx 32rpx;
+  border-radius: 8rpx;
+  background: var(--color-primary, #4f8bff);
+}
+.peer-retry-hover {
+  opacity: 0.85;
+}
+.peer-retry-text {
+  color: #fff;
   font-size: 24rpx;
 }
 
