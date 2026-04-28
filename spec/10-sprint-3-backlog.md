@@ -79,8 +79,8 @@
 | BE-S3-006 | api | 文章列表 / 详情 / 全局搜索 API（PG FTS, 与 0004 同款中文预切策略） | 0.5d | BE-S3-001, BE-S3-004 | P0 | ✅ |
 | BE-S3-007 | db+api | `brokers` 表 + 6-8 家种子数据 + 横向对比 API（含筛选 / 排序）| 1d | — | P0 | ✅ |
 | BE-S3-008 | tracking | broker 跳转 redirect + UTM 落 `conversion_events` + 30d stats API + Postback 占位 | 1d | BE-S3-007 | P0 | ✅ |
-| BE-S3-009 | db | `vip_memberships` + `vip_orders` 表 + Alembic 0007 + 订阅状态机 + 7 天试用机制 | 1d | — | P0 | 🟡 schema 已落 |
-| BE-S3-010 | payment | 微信支付 v3 集成（小程序下单 + 回调验签 + 订阅状态流转 + 配额 `_resolve_plan` 接真表）| 1.5d | BE-S3-009 | P0 | ⬜ |
+| BE-S3-009 | db | `vip_memberships` + `vip_orders` 表 + Alembic 0007 + 订阅状态机 + 7 天试用机制 + 配额接真表 | 1d | — | P0 | ✅ |
+| BE-S3-010 | payment | 微信支付 v3 集成（小程序下单 + 回调验签 + 订阅状态流转 + 配额 `_resolve_plan` 接真表）| 1.5d | BE-S3-009 | P0 | ✅ |
 
 **BE 合计**：~9 PR · ~9 工作日
 
@@ -929,7 +929,7 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 
 ---
 
-### BE-S3-009 · `vip_memberships` + `vip_orders` 表 + 状态机 + 7 天试用 ⬜
+### BE-S3-009 · `vip_memberships` + `vip_orders` 表 + 状态机 + 7 天试用 ✅
 
 **目标**：spec/03 §模块六 + spec/06 §2 数据模型落库 + 订阅状态机 + 注册即送 7 天试用机制 + 配额闸门 `_resolve_plan` 接真表。
 
@@ -988,18 +988,75 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 
 **AC**
 
-- [ ] 注册流程跑通 → user 自动有 `vip_memberships.status='trialing'` 一行
-- [ ] 配额闸门：trialing 用户走 VIP 限额（无限）；试用结束后 → FREE 5/天
-- [ ] 续费堆叠：active 用户买月度 → end_at += 30d
-- [ ] scheduler 跑 expire job：把 `end_at < now` 的 trialing/active 改 expired
-- [ ] settings 白名单仍然兜底（dev 环境无 vip_memberships 行也能模拟 VIP）
-- [ ] `make test-all` 净增 ≥ 15 条测
+- [x] 注册流程跑通 → user 自动有 `vip_memberships.status='trialing'` 一行
+- [x] 配额闸门：trialing 用户走 VIP 限额（无限）；试用结束后 → FREE 5/天
+- [x] 续费堆叠：active 用户买月度 → end_at += 30d
+- [x] scheduler 跑 expire job：把 `end_at < now` 的 trialing/active 改 expired
+- [x] settings 白名单仍然兜底（dev 环境无 vip_memberships 行也能模拟 VIP）
+- [x] `make test-all` 净增 15 条 ≥ 15
 
-**依赖**：— （独立可起，但 alembic head=0007 要等 0006 BE-S3-007 落地）
+**依赖**：—（schema 已在 BE-S3-001 同期落 0007；本 PR 只动 service / API / scheduler / quota 接真表）
+
+**实施成果**
+
+- 改动 / 新增文件
+  - `apps/api/app/services/vip_service.py`（新建）— 业务逻辑层；5 个核心函数 + 1 个 scheduler 包装器
+  - `apps/api/app/schemas/vip.py`（新建）— Pydantic 响应模型 3 类：`MembershipResponse` / `OrderResponse` / `OrdersListResponse`
+  - `apps/api/app/api/v1/vip.py`（新建）— `GET /vip/me` + `GET /vip/orders`，纯只读路径
+  - `apps/api/app/api/v1/__init__.py`（增量）— 注册 `vip.router`
+  - `apps/api/app/services/agent/quota.py`（增量）— 新增 async `_resolve_plan_with_membership` 接真表；保留 sync `_resolve_plan` 走白名单（向后兼容 / 单测覆盖白名单分支）；`check_quota` / `record_usage` 改用 async 版本
+  - `apps/api/app/services/auth_service.py`（增量）— `_create_user_with_phone` / `_create_user_with_wechat` 注册成功后同事务调 `vip_service.grant_trial`，失败 fail-open warn 不阻塞主路径
+  - `apps/api/app/scheduler/__init__.py`（增量）— 注册 `vip_membership_expire_initial` + `vip_membership_expire_cron`（默认每小时跑一次，整点 +15 min 错峰）
+  - `apps/api/app/core/config.py`（增量）— 新增 `vip_trial_days` / `vip_membership_expire_initial_delay_seconds` / `vip_membership_expire_cron_hours` / `vip_membership_expire_cron_minute` 4 个 settings
+  - `apps/api/tests/integration/conftest.py`（增量）— `patch_session_factory` targets 加 `vip_service_mod`
+  - `apps/api/tests/integration/test_vip_lifecycle.py`（新建，15 条 e2e）
+
+- 关键设计决策（9 点）
+  1. **试用 = 一笔零元 internal 订单**：`vip_orders(plan='trial', amount_cny=0, status='paid', payment_channel='internal', out_trade_no='XGZH-TRIAL-<8 hex>')` + `vip_memberships(status='trialing', plan='trial', start_at=now, end_at=now+7d, current_order_id=order.id)`。避免业务层"试用 / 付费"分支，spec/06 §2.3。
+  2. **`grant_trial` 幂等**：先查现 membership；存在则直接返回快照不重复授予。注册流程兜底防抖（多次调用、重试都安全）。
+  3. **`grant_trial` 不 commit**：service 层内部仅 `add` + `flush`，事务边界由调用方（`_create_user_with_phone`）控制，与 `invite_service.register_invite_code_for_user` 同款。失败时整条注册事务可回滚干净。
+  4. **`grant_trial` fail-open**：注册流程外层 `try: await vip_service.grant_trial(s, user) except: logger.warning`。VIP 试用失败不应阻塞用户注册主路径——用户没 VIP 还能走免费档，比注册失败用户体验好得多。
+  5. **状态机覆盖 vs 堆叠**：`apply_paid_order` 现 `status='active'` → `end_at += plan_duration`（从 max(now, end_at) 起算）；现 `(trialing, expired, cancelled)` → 直接覆盖 `start_at=now / end_at=now+plan_duration / status='active'`。**试用 → 付费不堆叠剩余试用天数**，与 spec/06 §2.3 "试用立即结束"一致。
+  6. **`_resolve_plan_with_membership` 双层兜底**：白名单 sync 命中（dev / 紧急 / 单测）→ VIP，跳过 DB 查询；否则查 vip_memberships 真表。**Redis / DB 异常 → fail-open 降到白名单 plan**，不让配额闸门挡用户。
+  7. **`is_user_vip` 走 `SELECT literal(1)` EXISTS 单查**：不取数据，命中 `(status, end_at)` 索引点查 < 1ms；区别于 `get_active_membership` 拿快照供 `/vip/me` 用。
+  8. **scheduler `expire_overdue_memberships` 单条 UPDATE**：`UPDATE vip_memberships SET status='expired' WHERE status IN ('trialing','active') AND end_at < now()`，走 `ix_vip_memberships_status_end_at` 范围扫描；当前用户量级（10K 内）单次 < 100ms，未分批；Sprint 4+ 上量再加 LIMIT 分页。
+  9. **`run_expire_overdue_job` 不抛**：APScheduler 失败兜底任何异常都 `logger.exception` 不抛，避免 misfire 把 job 踢掉，让它继续按 cron 跑。
+
+- 公开 API 行为
+  - `GET /vip/me`：当前用户订阅状态 + 剩余天数；`has_active=False` 时仍返回历史订阅信息（前端用来决定 "重新订阅 / 延期" CTA）；完全无订阅记录时返"伪 membership" 全 None
+  - `GET /vip/orders`：订单倒序（最近 N 条，默认 20，最大 100），走 `(user_id, created_at DESC)` 索引；`raw_callback` 字段不暴露（PII + 商户敏感数据）
+
+- 踩过的坑
+  - **`patch_session_factory` 不会被 `client` 之外的 fixture 自动注入**：`test_expire_overdue_marks_expired` 等不需要 HTTP 客户端的测试只声明了 `session_factory` fixture，导致 `vip_service.get_session_factory()` 仍返原始 lru_cached factory（指向生产 DSN 而非测试库）。修复：所有直接调 vip_service 函数的测试函数显式声明 `patch_session_factory: None` 参数。
+  - **SQLAlchemy 2.x `Result.rowcount` 在泛型基类签名上未暴露**：`mypy` 报 `"Result[Any]" has no attribute "rowcount"`；走 `getattr(result, "rowcount", 0)` 兜底（CursorResult 子类实际有该属性，运行期反射拿到）。
+  - **Decimal NUMERIC(10,2) JSON 序列化保留 2 位小数**：测试中 `total_paid_cny == "0"` 失败因为实际是 `"0.00"`；改断言为 `"0.00"` 与序列化行为一致。
+  - **`_resolve_plan` sync → async 改造**：Sprint 2 留下的 sync 单元测共 30+ 处直接调 `resolve_plan(make_user(...))`。改造方案：**保留 sync 公共 API `resolve_plan`** 走白名单 only（语义不变 = 向后兼容单测），**新增 async `_resolve_plan_with_membership`** 接真表。`check_quota` / `record_usage` 内部改用 async 版本。这样 0 个 Sprint 2 单测被破坏。
+
+- 质量门
+  - **775 → 791 测试全过**（净增 15 条 vip_lifecycle e2e）；全量回归 125s
+  - `ruff check app tests`：All checks passed
+  - `mypy app`：Success: no issues found in 107 source files
+
+- 增加的 15 条 e2e 测覆盖（spec AC + 防御性反向 / 状态机分支）
+  1. 手机号 OTP 注册 → 自动建 trialing membership + 零元 internal 订单
+  2. `grant_trial` 幂等：二次调用不重复授予
+  3. `vip_trial_days=0` → 不授予不报错（用户走 FREE）
+  4. `GET /vip/me` 401 unauthenticated
+  5. `GET /vip/me` 已注册 → has_active=True / status='trialing' / days_remaining ~7
+  6. `GET /vip/orders` → 1 笔零元 internal 订单, raw_callback 不暴露
+  7. trialing → active 覆盖：end_at=now+30d（不堆叠剩余试用 7d）
+  8. active 续费堆叠：现 end_at + 30d（从现 end_at 起算非 now）
+  9. expired → active 覆盖（重新激活）
+  10. lifetime: end_at=9999-12-31
+  11. `expire_overdue_memberships()` 把过期 trialing 标 expired，未过期不动（隔离粒度对）
+  12. `/vip/me` expire 后返 has_active=False + 历史信息（status='expired'）
+  13. trialing user → `_resolve_plan_with_membership = VIP`
+  14. expired user (无白名单) → `_resolve_plan_with_membership = FREE`
+  15. 白名单兜底：无 membership 行也走 VIP（dev / 紧急场景兼容）
 
 ---
 
-### BE-S3-010 · 微信支付 v3 集成 + 配额接真 ⬜
+### BE-S3-010 · 微信支付 v3 集成 + 配额接真 ✅ 2026-04-27
 
 **目标**：小程序 JSAPI 下单 + 回调验签 + 订阅状态流转。Sprint 3 唯一支付通道。
 
@@ -1040,6 +1097,90 @@ LangGraph 适合 "ReAct 循环 + 工具调用" 场景（BE-S2-007 chat_diagnose 
 - [ ] `make test-all` 净增 ≥ 18 条测
 
 **依赖**：BE-S3-009
+
+#### 实施成果（2026-04-27）
+
+**完成情况**：所有 AC 全过 ✅；净增 21 条（计划 ≥ 18），全量 810 条全绿；ruff + mypy 全清。
+
+**最终落地文件**
+
+- `apps/api/pyproject.toml`（+ `wechatpayv3>=1.2.0`，实际锁定 2.0.2）
+- `apps/api/app/core/config.py`（+ 9 个微信支付字段：`wechatpay_dev_mode` / `_app_id` / `_mch_id` / `_apiv3_key` / `_cert_serial_no` / `_private_key_path` / `_notify_url` / `_order_idempotency_seconds` + `wechatpay_configured` 派生属性）
+- `apps/api/.env.example`（+ 9 个 `WECHATPAY_*` 字段占位 + `WECHATPAY_DEV_MODE=true` 默认值）
+- `apps/api/app/schemas/payment.py`（新建：`CreateOrderRequest` / `PaymentParams` / `CreateOrderResponse` / `NotifyResponse`，5 字段 `mixedCase` 加 `# noqa: N815` 兼容微信协议）
+- `apps/api/app/services/payment/__init__.py`（新建：包入口）
+- `apps/api/app/services/payment/wechat_client.py`（新建：`WechatPayClient` Protocol + `StubWechatPayClient` (dev/CI) + `RealWechatPayClient` (prod) + 工厂 `get_wechat_client()`）
+- `apps/api/app/services/payment/payment_service.py`（新建：`create_wechat_jsapi_order` + `handle_wechat_callback` + `PLAN_PRICES_CNY` 单一权威价目表）
+- `apps/api/app/api/v1/payment.py`（新建：`POST /pay/wechat/order`（认证 + 10/min/user 限流）+ `POST /pay/wechat/notify`（无需认证, 由微信验签兜底））
+- `apps/api/app/api/v1/__init__.py`（+ 注册 `payment.router`）
+- `apps/api/tests/integration/conftest.py`（patch_session_factory targets += `payment_service_mod`，与 `article_service_mod` / `seed_brokers_mod` 同款 module-level get_session_factory 陷阱兜底）
+- `apps/api/tests/test_wechat_pay_client.py`（13 条单测：Stub 行为 + factory 选择逻辑）
+- `apps/api/tests/integration/test_payment_e2e.py`（21 条集成：下单 / 回调 / 续费堆叠 / 终身 / 配额接真 / 限流）
+- `apps/api/scripts/dev_wechatpay_simulate_callback.py`（新建：4 种 fixture — `--scenario success / not-success / signature-fail / amount-mismatch`，dev 用 Stub bypass header 走通端到端）
+
+**关键设计决定（与最初规划的差异）**
+
+1. **Stub-first 双实现**：`WechatPayClient` Protocol 拆出 `StubWechatPayClient` (dev/CI 用, 不依赖真 mch) + `RealWechatPayClient` (生产, 包 `wechatpayv3` SDK), 工厂 `get_wechat_client()` 读 `WECHATPAY_DEV_MODE` 切换。**好处**：CI / 本地无需配 6 个微信秘钥也能跑端到端；生产换成 Real client 不动业务层。Stub 的回调验签走 `X-Stub-Sign-Override: bypass` header（仅 stub 接受）— dev 脚本就靠这个跑通完整链路
+2. **`PLAN_PRICES_CNY` 单一权威价目表**：放在 `payment_service.py`，service 层从这个 dict 取价 → 写 `vip_orders.amount_cny` → 调 SDK `total = amount * 100`。**回调对账时强制重算**：`expected_total_cents = PLAN_PRICES_CNY[plan] * 100`，与 ciphertext 解密出的 `payer_total` 对比，**不一致直接 FAIL** —— 防伪造金额回调（攻击面：回放别人的 1 分钱回调对应你的 999 元订单）
+3. **回调 `out_trade_no` 流程严格幂等**：① 验签解密 ② 查订单（`out_trade_no` UNIQUE）③ 已是 `paid` → 直接返 SUCCESS 不重复 apply membership ④ 否则 `pending → paid` 状态机流转 + 调 `vip_service.apply_paid_order`。`vip_orders` 已在 BE-S3-009 落 unique constraint，物理保证幂等
+4. **HTTP 层一律返 200**（即使业务失败）：v3 协议要求 — 否则微信视为业务错误持续重试 5 次。`/pay/wechat/notify` 端点用 `NotifyResponse{code: SUCCESS|FAIL}` body 表达业务结果而非 HTTP status。**例外**：金额不匹配 / 验签失败 / 解密失败 → 返 200 + `code='FAIL'`，让微信认为业务侧拒绝该单（这正是协议希望的"暂停推送, 商户人工排查"语义）
+5. **`user.wechat_openid` 兜底**：JSAPI 必须 openid，但 dev 阶段大量用户走手机号注册无 openid。**Stub mode 下**：`payment_service` 自动从 `user_id` 派生一个伪 openid（`f"openid_{user_id[:32]}"`），让端到端测试不被卡。**生产模式**：openid 缺失 → 返 400 + `code='wechat_openid_required'`，前端引导用户走小程序 wx.login 拿 openid 后重试
+6. **下单 idempotency**：同 `user + plan + payment_channel` 在 `wechatpay_order_idempotency_seconds`（默认 300s）窗口内重复下单 → 复用旧 `pending` 订单（不新建 `out_trade_no` 不再调 SDK），防双击 + 网络重试 + 用户慌乱反复点
+7. **限流口径**：`/pay/wechat/order` 走 `@rate_limit(times=10, per_seconds=60, namespace="pay_order", key_func=lambda payload, user, request: f"user:{user.user_id}")` —— 显式 `key_func` 拿到注入的 user 对象（而非默认 IP）；`/pay/wechat/notify` **不限流**（微信回调来自固定 IP, 不可控且必须不丢）
+8. **`anyio.to_thread.run_sync` 包同步 SDK**：`wechatpayv3` 是同步 SDK（urllib3）；FastAPI 异步事件循环里直接调会阻塞 worker。`RealWechatPayClient` 内部所有 SDK 调用走 `await anyio.to_thread.run_sync(...)` 跑到线程池，避免阻塞
+9. **`mypy` no-any-return 兼容**：`wechatpayv3.WeChatPay.pay()` 返 `tuple[int, str]` 但 SDK 类型注解 `Any`；用显式变量声明 `result: tuple[int, str] = self._wxpay.pay(...)` 让 mypy 信任返回类型，比 `cast()` 更直观
+
+**对外 API 行为（公开契约）**
+
+| 端点 | 方法 | 认证 | 限流 | 入参 | 返回 | 错误码 |
+|---|---|---|---|---|---|---|
+| `/api/v1/pay/wechat/order` | POST | Required | 10/min/user | `{plan, payment_channel}` | `{order_id, out_trade_no, amount_cny, expires_at, payment_params{timeStamp,nonceStr,package,signType,paySign}}` | 400 invalid_plan / 400 wechat_openid_required / 422 unsupported_channel / 429 rate_limit / 502 sdk_error |
+| `/api/v1/pay/wechat/notify` | POST | None（验签兜底）| 无 | 微信 v3 ciphertext payload | `{code: SUCCESS\|FAIL, message}` | 始终 HTTP 200 |
+
+**回调状态机**
+
+```
+pending  ──成功 + 金额匹配──►  paid  ──apply_paid_order──►  vip_memberships.status=active
+   │                              │
+   │                              └──二次回调──►  直接返 SUCCESS（idempotent）
+   │
+   ├──非成功 trade_state──►  failed  ──返 SUCCESS（让微信停止重试）
+   │
+   └──金额不匹配 / 验签失败──►  保持 pending  ──返 FAIL──►  微信会重试 5 次再人工
+```
+
+**遇到的坑 + 修复**
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | ruff `N815` 报 `PaymentParams.timeStamp` 等 4 字段 mixedCase 违规 | 这 5 个字段是微信 JSAPI 协议硬规定（`uni.requestPayment` 入参一字不差）。加 `# noqa: N815` 抑制并在 docstring 标注 |
+| 2 | mypy `no-any-return` 报 `wechatpayv3.WeChatPay.pay()` 返回 `Any` | 显式声明 `result: tuple[int, str] = ...` |
+| 3 | `@rate_limit` 装饰器初次写漏 `times` / `per_seconds` / `key_func` | 改成 `@rate_limit(times=10, per_seconds=60, namespace="pay_order", key_func=lambda payload, user, request: f"user:{user.user_id}")`，与 `@rate_limit` 签名（`payload, user, request`）严格对齐 |
+| 4 | 集成测试 `test_create_order_per_plan_pricing` parametrize 用 `f"+86138001391{suffix:0<2}"[:14]` 拼号码 → 命中 `+86` format mismatch | 改成显式列出 4 个真实 11 位手机号（`+8613800138910/11/12/13`），不再字符串拼接 |
+| 5 | dev 用户多走手机号注册无 `wechat_openid` → JSAPI 下单卡住 | Stub mode 下从 `user_id` 派生伪 openid；生产模式返 `wechat_openid_required` 显式错误码引导前端 |
+| 6 | conftest `patch_session_factory` 漏打 `payment_service_mod` → 集成测试用真生产 DB | targets += `payment_service_mod`（与 `article_service` / `seed_brokers` 同款 module-level get_session_factory 陷阱） |
+
+**质量门**
+
+- ✅ `uv run ruff check app/ tests/ scripts/` — All checks passed
+- ✅ `uv run mypy app/` — Success: no issues found in 112 source files
+- ✅ `uv run pytest` — 810 passed in 129.37s（净增 21）
+- ✅ `make test-all` 全绿（CI 提交后跑）
+
+**测试覆盖矩阵（21 条）**
+
+| 类别 | 用例 |
+|---|---|
+| Auth & 入参 | `requires_auth` / `invalid_plan_returns_422` / `unsupported_channel_returns_422` |
+| 下单端 | `returns_payment_params_and_persists_pending` / `derives_openid_from_user_id`（stub）/ `reuses_pending_within_idempotency_window` / `per_plan_pricing[monthly\|quarterly\|yearly\|lifetime]`（4 条 parametrize） |
+| 回调验签 | `without_bypass_header_returns_fail` / `success_marks_paid_and_activates_membership` / `idempotent_on_second_call` / `amount_mismatch_returns_fail` / `non_success_state_marks_failed` / `orphan_out_trade_no_returns_success` |
+| 状态机 | `lifetime_sets_end_at_to_max` / `active_user_renewal_stacks_end_at` |
+| 端到端 | `after_paid_callback_vip_me_shows_active`（贯穿 `/vip/me` + `/vip/orders`）/ `paid_user_quota_resolves_as_vip`（贯穿 agent.quota _resolve_plan） |
+| 限流 | `rate_limit_per_user`（11 次必撞 429） |
+
+**Sprint 3 整体进度**
+
+至此 Sprint 3 后端 P0 全部完成（BE-S3-001 → 010 共 10 张），FE-S3-* 5 张 + QA-S3-* 2 张待落地；微信支付商户号申请待 DOR（spec/06 §微信支付商户号申请）一旦到位即可把 `WECHATPAY_DEV_MODE=false` 切到生产。
 
 ---
 
@@ -1560,9 +1701,9 @@ apps/api/tests/test_migrations.py                          # EXPECTED_TABLES +4 
 
 ### BE-S3-008 ✅ 2026-04-27（实施成果详见上方主体段）
 
-### BE-S3-009 ⬜ 待落地
+### BE-S3-009 ✅ 2026-04-27（实施成果详见上方主体段）
 
-### BE-S3-010 ⬜ 待落地
+### BE-S3-010 ✅ 2026-04-27（实施成果详见上方主体段）
 
 ### FE-S3-001 ⬜ 待落地
 

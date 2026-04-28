@@ -561,6 +561,42 @@ class Settings(BaseSettings):
         le=24 * 3600,
     )
 
+    # ─── BE-S3-009 VIP 订阅 / 试用 / 过期 scheduler ─────────────────
+    vip_trial_days: int = Field(
+        default=7,
+        description=(
+            "新注册用户自动获赠的 VIP 试用天数. spec/06 §2.3 默认 7 天; 改为 0 关闭试用. "
+            "改这个不影响已发出的试用 (vip_memberships.end_at 直接落库)."
+        ),
+        ge=0,
+        le=30,
+    )
+    vip_membership_expire_initial_delay_seconds: int = Field(
+        default=20,
+        description=(
+            "VIP 过期 scheduler 启动后延迟秒数. 0 = 关闭立即跑仅依赖 cron. "
+            "建议 > 15s 让 article_ingest 等其它启动 job 先跑完, 不抢锁."
+        ),
+        ge=0,
+    )
+    vip_membership_expire_cron_hours: str = Field(
+        default="*",
+        description=(
+            "VIP 过期 scheduler cron 小时表达式. 默认 ``*`` = 每小时跑一次, 让"
+            "试用 / 订阅在到期 1h 内被标 expired (用户体验: 不会让人多用 1d). "
+            "APScheduler CronTrigger.hour 兼容."
+        ),
+    )
+    vip_membership_expire_cron_minute: int = Field(
+        default=15,
+        description=(
+            "VIP 过期 scheduler 整点偏移分钟, 默认 15 错开整点 ingest 任务高峰. "
+            "0 = 整点; 不应设大于 59."
+        ),
+        ge=0,
+        le=59,
+    )
+
     wechat_mp_app_id: str = Field(
         default="",
         description="微信小程序 AppID. 留空则 /auth/login/wechat-mp 直接 503.",
@@ -577,6 +613,78 @@ class Settings(BaseSettings):
     @property
     def wechat_mp_configured(self) -> bool:
         return bool(self.wechat_mp_app_id and self.wechat_mp_app_secret)
+
+    # ─── BE-S3-010 微信支付 v3 ────────────────────────────────────────
+    wechatpay_dev_mode: bool = Field(
+        default=True,
+        description=(
+            "微信支付 dev 模拟模式开关. true = 走 StubWechatPayClient (无需真商户号 / 私钥, "
+            "下单返伪 paySign, 回调凭 X-Stub-Sign-Override: bypass header 直通); "
+            "false = 走真 wechatpayv3 SDK (要求 mch_id / v3_key / private_key_path / serial_no 全配齐). "
+            "生产强制 false; 开发 / CI 默认 true."
+        ),
+    )
+    wechatpay_mch_id: str = Field(
+        default="",
+        description="微信支付商户号 (mchid), 微信支付商户平台 → 账户中心 → 商户信息. dev_mode=true 时可留空.",
+    )
+    wechatpay_apiv3_key: str = Field(
+        default="",
+        description=(
+            "APIv3 密钥 (32 位字符串), AES-GCM 解密回调 resource 用. "
+            "微信支付商户平台 → 账户中心 → API 安全 → 设置 APIv3 密钥. dev_mode=true 时可留空."
+        ),
+    )
+    wechatpay_cert_serial_no: str = Field(
+        default="",
+        description=(
+            "商户 API 证书序列号, 走商户私钥签名时附带在请求头 Wechatpay-Serial. "
+            "微信支付商户平台 → 账户中心 → API 安全 → 应用 API 证书 → 序列号. "
+            "dev_mode=true 时可留空."
+        ),
+    )
+    wechatpay_private_key_path: str = Field(
+        default="",
+        description=(
+            "商户 API 证书私钥 (apiclient_key.pem) 文件绝对路径, dev_mode=false 时必填. "
+            "私钥严禁入 git, 部署时挂载至容器内不可读路径 (chmod 600). dev_mode=true 时忽略."
+        ),
+    )
+    wechatpay_notify_url: str = Field(
+        default="",
+        description=(
+            "微信支付回调 URL (公网可访问, HTTPS). 例: https://api.xgzh.com/api/v1/pay/wechat/notify. "
+            "dev_mode=true 时填本地 ngrok URL 或留空 (Stub 不走真回调)."
+        ),
+    )
+    wechatpay_app_id: str = Field(
+        default="",
+        description=(
+            "微信支付绑定的小程序 / 公众号 AppID. 与 wechat_mp_app_id 通常一致 (小程序内支付场景), "
+            "但允许独立 — 例: 公众号支付走另一个 appid. dev_mode=true 时可留空 (Stub 用 'wxstubappid')."
+        ),
+    )
+    wechatpay_order_idempotency_seconds: int = Field(
+        default=300,
+        description=(
+            "下单幂等时间窗 (秒). 同用户 + 同 plan 在此窗口内重复下单 → 复用旧 pending 订单 (防双击). "
+            "默认 5 min, 与微信预支付单 TTL 2h 不同 — 我们更短一些, 让用户改主意可重新下单."
+        ),
+        ge=0,
+        le=7200,
+    )
+
+    @property
+    def wechatpay_configured(self) -> bool:
+        """生产模式下必须全配齐才能下单 / 收回调."""
+        return bool(
+            self.wechatpay_mch_id
+            and self.wechatpay_apiv3_key
+            and self.wechatpay_cert_serial_no
+            and self.wechatpay_private_key_path
+            and self.wechatpay_notify_url
+            and self.wechatpay_app_id
+        )
 
     @property
     def cors_origin_list(self) -> list[str]:

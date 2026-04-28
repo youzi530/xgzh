@@ -32,6 +32,7 @@ from app.services import ipo_ingest_service
 from app.services.article_ingest import run_ingest_articles_job
 from app.services.article_ingest.dedup import run_recluster_job
 from app.services.article_ingest.sentiment_tagger import run_sentiment_tag_job
+from app.services.vip_service import run_expire_overdue_job as run_vip_expire_job
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -78,6 +79,8 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         "article_topic_recluster_cron",
         "article_sentiment_tag_initial",
         "article_sentiment_tag_cron",
+        "vip_membership_expire_initial",
+        "vip_membership_expire_cron",
     ):
         with contextlib.suppress(Exception):
             scheduler.remove_job(job_id)
@@ -213,13 +216,44 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         ),
     )
 
+    # ─── VIP 订阅过期清扫 (BE-S3-009) ────────────────────────────────
+    # 每 1h 跑一次, 把 status IN ('trialing','active') AND end_at < now 的标 expired,
+    # 与 spec/10 §BE-S3-009 "用户体验: 不会让人多用 1d" 一致.
+    # 启动延迟比 article_ingest 大 (默认 20s), 让 article_ingest 先跑不抢锁.
+    vip_delay = settings.vip_membership_expire_initial_delay_seconds
+    if vip_delay > 0:
+        run_date_vip = datetime.now(scheduler.timezone) + timedelta(seconds=vip_delay)
+        scheduler.add_job(
+            run_vip_expire_job,
+            trigger=DateTrigger(run_date=run_date_vip, timezone=scheduler.timezone),
+            id="vip_membership_expire_initial",
+            name="VIP Membership Expire — initial after startup",
+        )
+
+    vip_hours = settings.vip_membership_expire_cron_hours.strip() or "*"
+    vip_minute = settings.vip_membership_expire_cron_minute
+    scheduler.add_job(
+        run_vip_expire_job,
+        trigger=CronTrigger(
+            hour=vip_hours,
+            minute=vip_minute,
+            timezone=settings.ipo_ingest_timezone,
+        ),
+        id="vip_membership_expire_cron",
+        name=(
+            f"VIP Membership Expire — cron hour={vip_hours} minute={vip_minute} "
+            f"tz={settings.ipo_ingest_timezone}"
+        ),
+    )
+
     logger.info(
         f"scheduler.jobs_registered "
         f"a:initial_delay={delay}s cron={hours} tz={settings.ipo_ingest_timezone} | "
         f"hk:initial_delay={hk_delay}s cron={hk_hours} tz={settings.ipo_ingest_hk_timezone} | "
         f"article:initial_delay={art_delay}s cron_minute={art_minute} | "
         f"article_recluster:initial_delay={re_delay}s cron_hour={re_hours} | "
-        f"article_sentiment:initial_delay={st_delay}s cron_minute={st_minute}"
+        f"article_sentiment:initial_delay={st_delay}s cron_minute={st_minute} | "
+        f"vip_expire:initial_delay={vip_delay}s cron_hour={vip_hours} minute={vip_minute}"
     )
 
 

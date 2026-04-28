@@ -30,6 +30,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "pypdf>=5.0.0",
     "feedparser>=6.0.11",
+    "wechatpayv3>=1.2.0",
 ]
 
 [dependency-groups]

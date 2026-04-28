@@ -10,7 +10,9 @@ from app.api.v1 import (
     invite,
     ipos,
     me,
+    payment,
     push,
+    vip,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -25,5 +27,7 @@ router.include_router(push.router)
 router.include_router(articles.router)
 router.include_router(articles.search_router)
 router.include_router(brokers.router)
+router.include_router(vip.router)
+router.include_router(payment.router)
 
 __all__ = ["router"]

@@ -36,7 +36,7 @@ from app.security import (
     decode_token,
     is_jti_blacklisted,
 )
-from app.services import invite_service, otp_service, user_service
+from app.services import invite_service, otp_service, user_service, vip_service
 from app.utils.phone import mask_phone
 
 INVITE_CODE_ALPHABET = string.ascii_uppercase + string.digits  # 去歧义留待 BE-006 优化
@@ -106,6 +106,14 @@ async def _create_user_with_phone(session: AsyncSession, phone: str) -> User:
             continue
         # BE-006: user.invite_code 同事务镜像到 invite_codes 表 (PK = code, 同样唯一)
         await invite_service.register_invite_code_for_user(session, user)
+        # BE-S3-009: 注册成功同事务赠 7d VIP 试用 (零元订单 + trialing membership)
+        # 失败兜底走 try: 试用授予不应阻塞注册主路径 (用户无 VIP 也能用免费档)
+        try:
+            await vip_service.grant_trial(session, user)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"vip.grant_trial.fail_phone user_id={user.user_id} err={e!r}"
+            )
         await session.refresh(user)
         return user
 
@@ -148,6 +156,13 @@ async def _create_user_with_wechat(
             continue
         # BE-006: 镜像到 invite_codes 表
         await invite_service.register_invite_code_for_user(session, user)
+        # BE-S3-009: 微信注册同样赠 7d VIP 试用; 失败兜底, 不阻塞注册
+        try:
+            await vip_service.grant_trial(session, user)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"vip.grant_trial.fail_wechat user_id={user.user_id} err={e!r}"
+            )
         await session.refresh(user)
         return user
 

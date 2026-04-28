@@ -187,6 +187,8 @@ async def patch_session_factory(
     import app.services.conversion_service as conversion_service_mod
     import app.services.ipo_ingest_service as ingest_mod
     import app.services.ipo_service as ipo_service_mod
+    import app.services.payment.payment_service as payment_service_mod
+    import app.services.vip_service as vip_service_mod
     import scripts.seed_brokers as seed_brokers_mod
 
     # 多处都要 patch: 各 module 在 import 时把 ``get_session_factory`` 拷到自己
@@ -209,6 +211,8 @@ async def patch_session_factory(
         article_service_mod,
         broker_service_mod,
         conversion_service_mod,
+        vip_service_mod,
+        payment_service_mod,
         seed_brokers_mod,
     ]
     originals: list[object] = [
