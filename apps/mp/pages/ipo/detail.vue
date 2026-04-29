@@ -26,6 +26,10 @@ import { storeToRefs } from 'pinia'
 import { computed, defineAsyncComponent, ref } from 'vue'
 
 import {
+  type ArticleListItem,
+  fetchArticleList,
+} from '@/api/article'
+import {
   fetchIPODetail,
   fetchPeerAggregate,
   type IPODetail,
@@ -47,7 +51,7 @@ const PeerStatsBars = defineAsyncComponent(
 import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'
 
-type Tab = 'fundamental' | 'peer' | 'sponsor' | 'highlights' | 'risks'
+type Tab = 'fundamental' | 'peer' | 'sponsor' | 'highlights' | 'risks' | 'articles'
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'fundamental', label: '基本面' },
@@ -55,6 +59,9 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'sponsor', label: '保荐承销' },
   { key: 'highlights', label: '投资亮点' },
   { key: 'risks', label: '主要风险' },
+  // BUG-S6.5-004a: 市场文章入口从首页右上角迁到这里, 让用户看 IPO 详情时
+  // 直接看到关联文章, 比"首页右上角小按钮"更明显也更顺手。
+  { key: 'articles', label: '市场文章' },
 ]
 
 const code = ref('')
@@ -73,6 +80,13 @@ const peerData = ref<IPOPeerAggregate | null>(null)
 const peerLoading = ref(false)
 const peerError = ref('')
 const peerErrorCode = ref('')
+
+// BUG-S6.5-004a: 与 peer 同款懒加载策略, 切到 'articles' tab 才打。
+// 不在 onLoad 拉, 避免没人看 articles 的详情页多打 1 次 API。
+const articlesData = ref<ArticleListItem[]>([])
+const articlesLoading = ref(false)
+const articlesError = ref('')
+const articlesLoaded = ref(false)
 
 const authStore = useAuthStore()
 const { loggedIn } = storeToRefs(authStore)
@@ -192,9 +206,36 @@ async function loadPeer() {
   }
 }
 
+/**
+ * BUG-S6.5-004a: 切到"市场文章"懒加载关联文章。
+ *
+ * - 后端 ``GET /api/v1/articles?ipo_code=...`` 已支持按 IPO 过滤 (FE-S3-001 字段)
+ * - 5min Redis 缓存; 同 IPO 多次切 tab 命中缓存不肉
+ * - 错误兜底: 网络错给 "重试" 按钮; 空列表是合法 (新 IPO 还没有文章)
+ */
+async function loadArticles() {
+  if (articlesLoading.value || articlesLoaded.value) return
+  articlesLoading.value = true
+  articlesError.value = ''
+  try {
+    const resp = await fetchArticleList({ ipo_code: code.value, size: 20 })
+    articlesData.value = resp.items
+    articlesLoaded.value = true
+  } catch (e) {
+    articlesError.value = (e as Error).message
+  } finally {
+    articlesLoading.value = false
+  }
+}
+
+function openArticleDetail(item: ArticleListItem) {
+  void navigateWithParams('/pages/article/detail', { id: item.article_id })
+}
+
 function onTabSelect(t: Tab) {
   activeTab.value = t
   if (t === 'peer') loadPeer()
+  if (t === 'articles') loadArticles()
 }
 
 function gotoAgent() {
@@ -389,6 +430,50 @@ function openProspectus() {
             <view v-for="(r, idx) in item.risks" :key="idx" class="bullet-item">
               <text class="bullet-dot bullet-dot-neg">!</text>
               <text class="bullet-text">{{ r }}</text>
+            </view>
+          </view>
+        </view>
+
+        <!-- BUG-S6.5-004a: 市场文章 (从首页右上角迁来, 按 IPO 过滤) -->
+        <view v-else-if="activeTab === 'articles'">
+          <view v-if="articlesLoading && articlesData.length === 0" class="empty">
+            <text>加载市场文章…</text>
+          </view>
+          <view v-else-if="articlesError" class="empty empty-warn">
+            <text>{{ articlesError }}</text>
+            <view class="peer-retry" hover-class="peer-retry-hover" :hover-stay-time="80" @tap="loadArticles">
+              <text class="peer-retry-text">点击重试</text>
+            </view>
+          </view>
+          <view v-else-if="articlesData.length === 0" class="empty">
+            <text>暂无与「{{ item.name || code }}」相关的市场文章</text>
+          </view>
+          <view v-else class="article-list">
+            <view
+              v-for="a in articlesData"
+              :key="a.article_id"
+              class="article-card"
+              hover-class="article-card-hover"
+              :hover-stay-time="80"
+              @tap="openArticleDetail(a)"
+            >
+              <view class="article-head">
+                <text class="article-title">{{ a.title }}</text>
+                <view
+                  v-if="a.sentiment"
+                  :class="['article-sent', `article-sent-${a.sentiment}`]"
+                >
+                  <text>
+                    {{ a.sentiment === 'bullish' ? '看多' : a.sentiment === 'bearish' ? '看空' : '中性' }}
+                  </text>
+                </view>
+              </view>
+              <text v-if="a.summary" class="article-summary">{{ a.summary }}</text>
+              <view class="article-foot">
+                <text class="article-source">{{ a.source_name }}</text>
+                <text class="article-dot">·</text>
+                <text class="article-time">{{ a.published_at?.slice(0, 10) }}</text>
+              </view>
             </view>
           </view>
         </view>
@@ -681,6 +766,77 @@ function openProspectus() {
   font-size: 26rpx;
   color: var(--color-text);
   line-height: 1.5;
+}
+
+/* BUG-S6.5-004a: 市场文章 tab 样式 (article-list) */
+.article-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+.article-card {
+  padding: 20rpx;
+  background: var(--color-surface);
+  border: 1rpx solid var(--color-border);
+  border-radius: 16rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+.article-card-hover {
+  background: rgba(79, 139, 255, 0.08);
+}
+.article-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+.article-title {
+  flex: 1;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text);
+  line-height: 1.4;
+}
+.article-sent {
+  flex-shrink: 0;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  font-size: 22rpx;
+  font-weight: 600;
+}
+.article-sent-bullish {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+.article-sent-bearish {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.article-sent-neutral {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--color-text-muted);
+}
+.article-summary {
+  font-size: 24rpx;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.article-foot {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-text-muted);
+}
+.article-dot {
+  opacity: 0.6;
 }
 
 .cta-block {

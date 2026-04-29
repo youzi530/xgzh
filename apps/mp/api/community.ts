@@ -81,16 +81,18 @@ export interface ListPostsParams {
 }
 
 export function listPosts(params: ListPostsParams = {}) {
-  const qs = new URLSearchParams()
-  if (params.category) qs.append('category', params.category)
-  if (params.related_ipo_code) qs.append('related_ipo_code', params.related_ipo_code)
-  if (params.user_id) qs.append('user_id', params.user_id)
-  if (params.page !== undefined) qs.append('page', String(params.page))
-  if (params.page_size !== undefined) qs.append('page_size', String(params.page_size))
-  const query = qs.toString()
+  // 不用 URLSearchParams: 微信小程序 JSCore 没暴露这个全局 (H5/App 才有);
+  // 同款规避见 ``api/ipo.ts:fetchIPOList``.
+  const data: Record<string, string | number> = {}
+  if (params.category) data.category = params.category
+  if (params.related_ipo_code) data.related_ipo_code = params.related_ipo_code
+  if (params.user_id) data.user_id = params.user_id
+  if (params.page !== undefined) data.page = params.page
+  if (params.page_size !== undefined) data.page_size = params.page_size
   return request<PostListResponse>({
-    url: `/api/v1/community/posts${query ? `?${query}` : ''}`,
+    url: '/api/v1/community/posts',
     method: 'GET',
+    data,
     skipAuth: true,
   })
 }
@@ -151,14 +153,16 @@ export interface ListCommentsParams {
 }
 
 export function listComments(postId: string, params: ListCommentsParams = {}) {
-  const qs = new URLSearchParams()
-  if (params.parent_comment_id) qs.append('parent_comment_id', params.parent_comment_id)
-  if (params.page !== undefined) qs.append('page', String(params.page))
-  if (params.page_size !== undefined) qs.append('page_size', String(params.page_size))
-  const query = qs.toString()
+  // 不用 URLSearchParams: 微信小程序 JSCore 没暴露这个全局 (H5/App 才有);
+  // 同款规避见 ``api/ipo.ts:fetchIPOList``.
+  const data: Record<string, string | number> = {}
+  if (params.parent_comment_id) data.parent_comment_id = params.parent_comment_id
+  if (params.page !== undefined) data.page = params.page
+  if (params.page_size !== undefined) data.page_size = params.page_size
   return request<CommentListResponse>({
-    url: `/api/v1/community/posts/${postId}/comments${query ? `?${query}` : ''}`,
+    url: `/api/v1/community/posts/${postId}/comments`,
     method: 'GET',
+    data,
     skipAuth: true,
   })
 }

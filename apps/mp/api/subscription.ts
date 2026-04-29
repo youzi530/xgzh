@@ -144,15 +144,17 @@ export interface ListRecordsParams {
 }
 
 export function listRecords(params: ListRecordsParams = {}) {
-  const qs = new URLSearchParams()
-  if (params.account_id) qs.append('account_id', params.account_id)
-  if (params.region) qs.append('region', params.region)
-  if (params.limit !== undefined) qs.append('limit', String(params.limit))
-  if (params.offset !== undefined) qs.append('offset', String(params.offset))
-  const query = qs.toString()
+  // 不用 URLSearchParams: 微信小程序 JSCore 没暴露这个全局 (H5/App 才有);
+  // 同款规避见 ``api/ipo.ts:fetchIPOList``.
+  const data: Record<string, string | number> = {}
+  if (params.account_id) data.account_id = params.account_id
+  if (params.region) data.region = params.region
+  if (params.limit !== undefined) data.limit = params.limit
+  if (params.offset !== undefined) data.offset = params.offset
   return request<SubscriptionRecordListResponse>({
-    url: `/api/v1/subscriptions${query ? `?${query}` : ''}`,
+    url: '/api/v1/subscriptions',
     method: 'GET',
+    data,
   })
 }
 
@@ -210,13 +212,17 @@ export interface SummaryParams {
 }
 
 export function getSummary(params: SummaryParams = {}) {
-  const qs = new URLSearchParams()
-  qs.append('group_by', params.group_by ?? 'month')
-  if (params.account_id) qs.append('account_id', params.account_id)
-  if (params.region) qs.append('region', params.region)
+  // 不用 URLSearchParams: 微信小程序 JSCore 没暴露这个全局 (H5/App 才有);
+  // 同款规避见 ``api/ipo.ts:fetchIPOList``.
+  const data: Record<string, string | number> = {
+    group_by: params.group_by ?? 'month',
+  }
+  if (params.account_id) data.account_id = params.account_id
+  if (params.region) data.region = params.region
   return request<SubscriptionSummaryResponse>({
-    url: `/api/v1/subscriptions/summary?${qs.toString()}`,
+    url: '/api/v1/subscriptions/summary',
     method: 'GET',
+    data,
   })
 }
 

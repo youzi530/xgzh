@@ -41,7 +41,6 @@ const UpgradeVipModal = defineAsyncComponent(
 )
 import { useUpgradeModal } from '@/composables/upgradeModal'
 import { useAuthStore } from '@/stores/auth'
-import { useFavoritesStore } from '@/stores/favorites'
 import { type ThemeMode, useThemeStore } from '@/stores/theme'
 
 const KEY_BOUND_REFERRER = 'xgzh.invite.bound_referrer'
@@ -72,10 +71,9 @@ function selectTheme(t: ThemeMode) {
   themeStore.setMode(t)
 }
 
-// 自选数量徽标; 进个人中心时若已登录顺手 loadOnce, 列表入口立刻能看到 N
-const favStore = useFavoritesStore()
-const { items: favoriteItems } = storeToRefs(favStore)
-const favoriteCount = computed(() => favoriteItems.value.length)
+// BUG-S6.5-006: 我的自选下沉到首页 segment-tab 后, 我的页不再展示自选 entry
+// 也不再需要预热 favorites store (首页 segment 自己会 loadOnce)。
+// favStore 引用保留用于其它跨页可能的复用 (如 IPO 详情页 FavoriteButton 已自带 loadOnce)。
 
 const inviteForm = reactive({ code: '' })
 const inviteSubmitting = ref(false)
@@ -114,10 +112,8 @@ function refreshAuthGate() {
   upgrade.close()
   const cached = uni.getStorageSync(KEY_BOUND_REFERRER) as string | ''
   boundReferrer.value = cached || null
-  // 预热自选列表; 失败不阻塞页面渲染, FE-006 列表页内还会再 ensure 一次
-  favStore.loadOnce().catch(() => {
-    // 忽略, 进自选 Tab 时还会再调
-  })
+  // BUG-S6.5-006: 自选下沉到首页, 不再在我的页预热; 首页 segment 切到"我的自选"
+  // 时由 useFavoritesStore.ensureLoaded() 自己处理。
   // 刷新 VIP 状态; 失败也不影响页面渲染, 卡片走 fallback 文案
   void authStore.refreshMembership()
 }
@@ -259,12 +255,14 @@ function showManageSubscription() {
   })
 }
 
-function gotoFavorites() {
-  uni.navigateTo({ url: '/pages/me/favorites' })
-}
-
 function gotoFeedback() {
   uni.navigateTo({ url: '/pages/me/feedback' })
+}
+
+// BUG-S6.5-004b: 券商对比从首页右上角图标按钮迁到这里 — 用户视券商为
+// "我的工具" 比"首页公开入口"更合适, 也清空首页 hero 视觉负担。
+function gotoBrokers() {
+  uni.navigateTo({ url: '/pages/broker/index' })
 }
 
 function copyInviteCode() {
@@ -470,16 +468,22 @@ onUnmounted(() => {
     </view>
 
     <view class="entry-list">
-      <view class="entry-item" @tap="gotoFavorites">
+      <!--
+        BUG-S6.5-006: 我的自选已下沉到首页 segment-tab; 这里完全移除入口
+        避免一处功能两个入口造成认知负担。favorites.vue 全屏页保留 (从
+        首页 segment 内卡片仍可 navigateTo, 高级操作如设置提醒还在那里)。
+      -->
+
+      <!-- BUG-S6.5-004b: 券商对比从首页右上角迁来 (用户相关工具集中放"我的") -->
+      <view class="entry-item" @tap="gotoBrokers">
         <view class="entry-left">
-          <text class="entry-icon">★</text>
+          <text class="entry-icon entry-icon-broker">🏦</text>
           <view class="entry-text">
-            <text class="entry-title">我的自选</text>
-            <text class="entry-desc">关注新股 + 申购窗口提醒</text>
+            <text class="entry-title">券商对比</text>
+            <text class="entry-desc">港 A 主流券商佣金 / 孖展利率 / 评分</text>
           </view>
         </view>
         <view class="entry-right">
-          <text v-if="favoriteCount > 0" class="entry-badge">{{ favoriteCount }}</text>
           <text class="entry-arrow">›</text>
         </view>
       </view>
@@ -801,6 +805,11 @@ onUnmounted(() => {
   background: rgba(79, 139, 255, 0.15);
   border-color: rgba(79, 139, 255, 0.4);
   color: var(--color-primary, #4f8bff);
+}
+.entry-icon-broker {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #22c55e;
 }
 .entry-left {
   flex: 1;

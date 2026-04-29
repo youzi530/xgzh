@@ -207,23 +207,33 @@
         "list": [
             {
                 "pagePath": "pages/index/index",
-                "text": "首页"
-            },
-            {
-                "pagePath": "pages/subscriptions/index",
-                "text": "中签"
-            },
-            {
-                "pagePath": "pages/knowledge/index",
-                "text": "知识"
+                "text": "首页",
+                "iconPath": "static/tabbar/home-normal.png",
+                "selectedIconPath": "static/tabbar/home-active.png"
             },
             {
                 "pagePath": "pages/community/index",
-                "text": "社区"
+                "text": "社区",
+                "iconPath": "static/tabbar/community-normal.png",
+                "selectedIconPath": "static/tabbar/community-active.png"
+            },
+            {
+                "pagePath": "pages/subscriptions/index",
+                "text": "中签",
+                "iconPath": "static/tabbar/subscriptions-normal.png",
+                "selectedIconPath": "static/tabbar/subscriptions-active.png"
+            },
+            {
+                "pagePath": "pages/knowledge/index",
+                "text": "知识",
+                "iconPath": "static/tabbar/knowledge-normal.png",
+                "selectedIconPath": "static/tabbar/knowledge-active.png"
             },
             {
                 "pagePath": "pages/me/index",
-                "text": "我的"
+                "text": "我的",
+                "iconPath": "static/tabbar/me-normal.png",
+                "selectedIconPath": "static/tabbar/me-active.png"
             }
         ]
     },

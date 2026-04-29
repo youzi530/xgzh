@@ -68,16 +68,19 @@ export interface ListKnowledgeParams {
 }
 
 export function listKnowledge(params: ListKnowledgeParams = {}) {
-  const qs = new URLSearchParams()
-  if (params.category) qs.append('category', params.category)
-  if (params.level !== undefined) qs.append('level', String(params.level))
-  if (params.tag) qs.append('tag', params.tag)
-  if (params.page !== undefined) qs.append('page', String(params.page))
-  if (params.page_size !== undefined) qs.append('page_size', String(params.page_size))
-  const query = qs.toString()
+  // 不用 URLSearchParams: 微信小程序 JSCore 没暴露这个全局 (H5/App 才有);
+  // uni.request GET + data 会自动序列化为 query string, 跨三端兼容。
+  // 同款规避见 ``api/ipo.ts:fetchIPOList`` / ``api/broker.ts:buildRedirectUrl``.
+  const data: Record<string, string | number> = {}
+  if (params.category) data.category = params.category
+  if (params.level !== undefined) data.level = params.level
+  if (params.tag) data.tag = params.tag
+  if (params.page !== undefined) data.page = params.page
+  if (params.page_size !== undefined) data.page_size = params.page_size
   return request<KnowledgeListResponse>({
-    url: `/api/v1/knowledge${query ? `?${query}` : ''}`,
+    url: '/api/v1/knowledge',
     method: 'GET',
+    data,
     skipAuth: true,
   })
 }

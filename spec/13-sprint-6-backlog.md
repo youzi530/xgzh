@@ -1286,3 +1286,27 @@ POST /api/v1/admin/community/posts/{id}/review  # 留 P1
 - ✅ **alembic head=0014_community**（0012 中签 + 0013 知识 + 0014 社区）
 
 **结论**：代码层 Sprint 6 ✅ 收口；**发版阻塞项 = 法务 + 运营 2 项**，工程团队可继续 Sprint 6.5 / 7 推进。
+
+---
+
+## 📎 Sprint 6 已知问题 → Sprint 6.5 修复清单
+
+> 用户在 2026-04-29 验证 Sprint 6 时上报了 6 类问题，工程类全部已在 Sprint 6.5 修完。
+> 详见 `spec/14-sprint-6.5-bug-fix-backlog.md`。
+
+| # | 问题 | Sprint 6.5 卡 | 状态 |
+|:-:|------|--------------|:----:|
+| 1 | mp-weixin 端"中签 / 知识"tab `URLSearchParams is not defined` | BUG-S6.5-001 | ✅ |
+| 2 | 同 #1（同 root cause） | BUG-S6.5-001 | ✅ |
+| 3a | 市场文章入口 → IPO 详情页第 6 个 sub-tab | BUG-S6.5-004a | ✅ |
+| 3b | 券商对比入口 → "我的"页 entry-list 卡 | BUG-S6.5-004b | ✅ |
+| 3c | 历史新股入口 → "中签"页入口卡 | BUG-S6.5-004c | ✅ |
+| 4 | tabBar 顺序改首页 / 社区 / 中签 / 知识 / 我的 | BUG-S6.5-002 | ✅ |
+| 5 | tabBar 加图标（Tabler Icons 5 tab × 2 状态 = 10 张 PNG） | BUG-S6.5-003 | ✅ |
+| 6 | 我的自选剥离到首页 segment-tab | BUG-S6.5-006 | ✅ |
+
+### 关键 retro 沉淀
+
+1. **`apps/mp/api/CONVENTIONS.md` 新建**：明确禁用 `URLSearchParams` / `fetch` / `Headers` 等浏览器原生 Web API（mp-weixin JSCore 不存在），Sprint 6 我引入回归的根因写到了真实事故记录里。
+2. **跨端验证 SOP**：以后写新 API 文件 **必须** 先 grep 现有 api 文件的"不用 X 因为..."注释；只在 H5 测过就合 PR 是 Sprint 6.5 的事故现场。
+3. **信息架构二轮调整成本**：Sprint 6 的"tabBar 改造"+"右上角 3 入口"原本可在 FE-S6-001 一起锁，事后调整额外耗费 ~3.5 工作日(spec/14 工作量)。下次同类工程必须把"信息架构 review with PM"放进 spec lock 阶段。
