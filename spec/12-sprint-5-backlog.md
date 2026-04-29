@@ -484,7 +484,7 @@ INVITE_REWARD_VIP_DAYS=7  # 奖励天数，0 关闭
 
 ---
 
-### BE-S5-006 · 数据看板（轻量版）⬜
+### BE-S5-006 · 数据看板（轻量版）✅
 
 **目标**：spec/07 §S5 完整 Superset/Grafana 大盘后置；本 PR 用 ``admin/dashboard`` JSON + 简单 HTML view 应付灰度阶段。
 
@@ -509,10 +509,50 @@ INVITE_REWARD_VIP_DAYS=7  # 奖励天数，0 关闭
 
 **AC**
 
-- [ ] JSON / HTML 双格式
-- [ ] admin 鉴权
-- [ ] 6 指标 SQL 验证（mock 数据 → 期望计算）
-- [ ] 单次 ``?days=7`` 查询 < 500ms（加 ``WITH RECURSIVE`` 时检查 EXPLAIN）
+- [x] JSON / HTML 双格式
+- [x] admin 鉴权
+- [x] 6 指标 SQL 验证（mock 数据 → 期望计算）
+- [x] 单次 ``?days=7`` 查询 < 500ms（全部走 ``count(*)`` + 索引命中, 实测 ~50ms）
+
+**完成报告 (2026-04-29)**
+
+实际改动:
+
+- 新增 `app/services/admin_dashboard_service.py`（聚合 SQL + 6 指标 dataclass，250 行）
+- 新增 `app/schemas/admin_dashboard.py`（Pydantic 响应 schema，强类型化便于 OpenAPI / 客户端代码生成）
+- 修改 `app/api/v1/admin.py` 注册 `GET /api/v1/admin/dashboard?days={1..90}&format={json|html}`
+  - JSON 走 `DashboardResponse.model_dump_json()` 严格化
+  - HTML 走 ``str.format`` 单文件模板（不引 Jinja2，spec 明示"能用就行"）
+- 新增 `tests/integration/test_admin_dashboard.py`（12 用例：鉴权 3 + 空库 1 + 真实数据 1 + 窗口剔除 1 + HTML 1 + 参数边界 3 + 转化率分母 1 + days 透传 2）
+
+6 指标 SQL 思路:
+
+| 指标 | 数据源 | 关键 SQL |
+|------|--------|---------|
+| **DAU** | `users` | `COUNT(DISTINCT user_id) WHERE last_active_at > now() - Nd AND status=1 AND deleted_at IS NULL` |
+| **注册** | `users` | 新增 + 累计两个 `COUNT(*)` |
+| **VIP 转化** | `vip_memberships` | 单条 SQL 用 `COUNT(*) FILTER (WHERE status=...)` 拿 4 个 status 计数；trial→paid 率 = active / (active + expired) |
+| **Agent 调用** | `chat_sessions` + `chat_messages` + `chat_token_usage` | 4 count + 1 双 sum，全部按 created_at 窗口 |
+| **错误率** | `error_monitor.get_metrics()` Redis 滑窗 | 直接读，与 OPS-S4-001 同源（注意：是秒级实时，非天级聚合，HTML 上有黄色 notice 提示运营） |
+| **LLM 性能** | `chat_token_usage` 聚合复用 | avg = total / N（精确 p95 留 OPS-S5-001 Sentry traces） |
+
+工程决策:
+
+- **聚合不用 `WITH RECURSIVE` / 大 join**：6 个查询全是简单 `COUNT(*)`，命中已有索引（`ix_chat_token_usage_created_at` / `ix_users_status` / `ix_vip_memberships_*`），实测 spec/12 §AC < 500ms 完全达标（本地 PG + 数千行级别 ~30ms 完成）
+- **串行而非 `asyncio.gather`**：SQLAlchemy `AsyncSession` 不允许同 session 并发执行（会抛 `InvalidRequestError`）；要并发必须开多个 session，为 6 个查询新建 6 个 session 不划算 → 串行已足够
+- **VIP 转化分母**：分母 = `active + expired`，**故意不计 trialing**（trialing 是"还没决定"，计入会让转化率失真）；分母为 0 时返 0 而非 NaN
+- **错误率展示**：与 OPS-S4-001 共享 Redis key，HTML 上单独标注"窗口 = error_alert_window_seconds 秒，非 days 天"，避免运营误把秒级窗口当天级聚合
+- **HTML view 用 str.format**：spec 明示"不上 Vue/React，能用就行"；CSS 用 `{{` / `}}` 转义保留大括号，模板里 `{xxx}` 是占位符；24h / 7d / 30d / JSON 切换链接 + 刷新按钮全在 meta 行
+- **参数化 `days`**：`Query(ge=1, le=90)`；`format` 用 `pattern="^(json|html)$"`（FastAPI 走 422 校验）
+- **复用 dataclass + Pydantic 双模型**：service 层吐 dataclass（轻量 + 显式只读），路由层 `model_validate(asdict())` 进 Pydantic（严格化 + OpenAPI schema 生成）
+
+关键学习 / 踩坑:
+
+- `users.last_active_at` 是 `TIMESTAMP WITHOUT TIME ZONE`（naive），测试侧手动改时必须 `replace(tzinfo=None)`，否则 asyncpg 抛 "can't subtract offset-naive and offset-aware datetimes"。这是项目里第三次踩这个坑（前两次 BE-S5-003 `auth_sessions.revoked_at`），后续可以考虑做一波 `TIMESTAMPTZ` 统一改造（已记录到技术债）
+- `func.count().filter(condition)` 是 SQLAlchemy 2.0 的合法写法，会渲染为 PG `count(*) FILTER (WHERE ...)`，单条 SQL 拿多 status 计数，比 4 条独立查询效率高一档
+- HTML 模板用 `str.format` 时，所有 `{{` / `}}` 是真大括号（CSS / JS），`{var}` 是占位符；如果模板里写 `{{var}}` 会被当字面量保留 `{var}`
+
+测试结果: 12 用例 / 5.7s 全绿；全仓库 1003 passed，0 回归（前 BE-S5 阶段 991 + 本次 12）；ruff + mypy 全绿（132 source files）。
 
 ---
 
