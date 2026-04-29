@@ -30,6 +30,7 @@ import {
   logout as logoutAPI,
   refreshToken as refreshTokenAPI,
 } from '@/api/auth'
+import { bindInvite, parseInviteError } from '@/api/invite'
 import { fetchMembership, type MembershipResponse } from '@/api/vip'
 import { useUpgradeModal } from '@/composables/upgradeModal'
 import {
@@ -41,6 +42,7 @@ import {
   saveTokens,
   snapshot,
 } from '@/utils/auth-storage'
+import { clearUtm, readUtm } from '@/utils/utm'
 
 const SAFETY_MARGIN_MS = 60_000
 
@@ -147,6 +149,53 @@ export const useAuthStore = defineStore('auth', () => {
     refreshExpiresAt.value = Date.now() + resp.tokens.refresh_expires_in * 1000
     user.value = resp.user
     _onSessionChanged()
+    // FE-S5-004: 登录成功后, 如果 localStorage 里有 invite_code 但 user 还没绑邀请人,
+    // 自动调 ``POST /invite/bind`` 把归因关系落到 BE; 这是 8 处入口里 "邀请落地" 的主路径.
+    // 任何错误都 swallow + 清掉 storage (避免反复尝试已经 bound / 已过期 / 自绑等终态),
+    // 让 UI 主流程完全不感知.
+    void _maybeBindInviteFromUtm()
+  }
+
+  /**
+   * "登录后自动绑邀请人" 内部 hook.
+   *
+   * 触发条件 (任一不满足都直接 noop):
+   * 1. localStorage 里有未过期 (≤ 7d) 的 ``invite_code``
+   * 2. 当前 user 的 ``invited_by`` 为空 (后端会再次校验, 这里是减少 1 次 RTT)
+   *
+   * 错误兜底 (任何都 swallow + clearUtm):
+   * - ``invite_already_bound`` / ``invite_self_binding``: 终态, 不再尝试
+   * - ``invite_code_expired`` / ``inactive`` / ``exhausted``: 终态, 用户也无能为力
+   * - 网络错: 也清掉, 避免下次登录又重试 → 反复打 BE
+   *
+   * 为什么不用 toast 提示成功:
+   * - 用户从分享链接进来时心智上已经"已经被邀请", 多一个 toast 干扰落地体验;
+   *   邀请奖励的反馈在 me 页 / VIP 页可以看到, 这里静默即可
+   */
+  async function _maybeBindInviteFromUtm() {
+    let code: string | undefined
+    try {
+      const utm = readUtm()
+      code = utm?.invite_code
+    } catch (e) {
+      console.warn('[auth] readUtm failed, skip auto bindInvite', e)
+      return
+    }
+    if (!code) return
+    // user 已经有 invited_by 时不要重复打 BE
+    // (UserPublic 当前没暴露 invited_by, 由 BE 再校验; 这里只能盲发)
+    try {
+      await bindInvite({ code })
+    } catch (e) {
+      const { code: errCode } = parseInviteError(e)
+      console.warn(`[auth] auto bindInvite failed code=${errCode}`)
+    } finally {
+      // 不论成败都清: 防止下次登录 / 切换账号时反复打 BE
+      // (终态错误清掉合理; 临时网络错 clear 后用户失去自动绑机会, 但下次冷启
+      //  options.query 仍带 invite_code 的概率很低 -- 用户多半是已经登录后再回链接,
+      //  设计取舍偏 conservative)
+      clearUtm()
+    }
   }
 
   function setTokens(t: TokenPair) {

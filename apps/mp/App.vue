@@ -1,14 +1,36 @@
 <script setup lang="ts">
-import { onLaunch } from '@dcloudio/uni-app'
+import { onLaunch, onShow } from '@dcloudio/uni-app'
 
 import { useThemeStore } from '@/stores/theme'
+import { captureUtmFromQuery } from '@/utils/utm'
 
-onLaunch(() => {
+onLaunch((options) => {
   // FE-S4-004: 冷启动恢复主题; 必须放 onLaunch 而非组件 setup 顶层 —
   // setup 期 H5 documentElement 已 ready, 但 mp-weixin onLaunch 比 setup 顺序更"早",
   // 用户从 storage 切深/浅时, App.vue setup 已挂, 不会重跑 — 只能靠 store init.
   const theme = useThemeStore()
   theme.init()
+
+  // FE-S5-004: 冷启动时把 launchOptions.query 落 localStorage, 给登录态成功后
+  // bindInvite / conversion_event 上报兜底. uni-app 标准化后 ``options.query``
+  // 在 mp-weixin / H5 / app-plus 三端都是 ``Record<string,string>``; 缺失字段
+  // captureUtmFromQuery 自己判空不写, 不需要外层判断.
+  try {
+    captureUtmFromQuery(options?.query)
+  } catch (e) {
+    // UTM 是软记录, 任何异常 (e.g. storage quota) 都 swallow, 不影响主流程
+    console.warn('[utm] capture on launch failed', e)
+  }
+})
+
+// FE-S5-004: H5 多入口场景 (用户直接打开 https://xgzh.com/#/pages/article/detail?id=xx&utm_source=zhihu)
+// onLaunch 不一定带 query, 兜底在 onShow 再捕获一次. 同 ts 多次写不会污染 (persistUtm 是 LWW + merge).
+onShow((options) => {
+  try {
+    captureUtmFromQuery(options?.query)
+  } catch (e) {
+    console.warn('[utm] capture on show failed', e)
+  }
 })
 </script>
 
