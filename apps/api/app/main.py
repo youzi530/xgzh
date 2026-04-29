@@ -15,6 +15,7 @@ from app.api.v1 import router as v1_router
 from app.cache import RateLimitExceeded
 from app.core.config import get_settings
 from app.core.logging import logger, setup_logging
+from app.observability import init_sentry
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.services import error_monitor, feature_flags
 
@@ -24,6 +25,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     setup_logging(settings.log_level)
     logger.info(f"app.start name={settings.app_name} env={settings.app_env}")
+
+    # OPS-S5-001: Sentry SDK 初始化要先于 scheduler / 业务 bootstrap, 这样下游
+    # 任何异常 / unhandled exception 都被 Sentry 捕获. DSN 留空时直接 skip.
+    init_sentry(settings)
+
     if not settings.has_llm_credential:
         logger.warning(
             "no LLM credential configured. /agent endpoints will return a hint message."

@@ -556,7 +556,7 @@ INVITE_REWARD_VIP_DAYS=7  # 奖励天数，0 关闭
 
 ---
 
-### OPS-S5-001 · 真 Sentry SDK 接入 ⬜
+### OPS-S5-001 · 真 Sentry SDK 接入 ✅
 
 **目标**：替换 OPS-S4-001 的"仅 logger.error"占位，让生产 5xx + unhandled exception 能在 Sentry 仪表板看到 trace。
 
@@ -578,10 +578,59 @@ INVITE_REWARD_VIP_DAYS=7  # 奖励天数，0 关闭
 
 **AC**
 
-- [ ] Sentry SDK 启动时 logger 看到 init 成功
-- [ ] 故意 raise → Sentry 仪表板能看到（dev 用真 DSN 验一次）
-- [ ] PII 不上传（验 scrub 配置）
-- [ ] DSN 空时不初始化、不报错
+- [x] Sentry SDK 启动时 logger 看到 init 成功（lifespan 里 `logger.info("sentry.init_ok env=... traces=... profiles=...")`）
+- [x] DSN 空时不初始化、不报错（直接 `logger.info("sentry.skipped (SENTRY_DSN 未配置, 不初始化)")`）
+- [x] PII 不上传（`send_default_pii=False` + `before_send=_scrub_event` 主动 redact 13 个 PII 字段名为 `[REDACTED]`，单测 case-insensitive / 嵌套结构 / fail-soft 全覆盖）
+- [ ] 故意 raise → Sentry 仪表板能看到（**留给 dev/staging 真 DSN 一次性人工冒烟**，本 PR 仅做代码 + 单测）
+
+**完成报告 (2026-04-29)**
+
+实际改动:
+
+- `pyproject.toml`：加 `sentry-sdk[fastapi]>=2.0.0`（实际装到 2.58.0）
+- `app/core/config.py`：加 5 个字段
+  - `sentry_dsn`（默认空 = 关）
+  - `sentry_environment`（留空 fallback 到 `app_env`）
+  - `sentry_traces_sample_rate=0.1` / `sentry_profiles_sample_rate=0.1`
+  - `sentry_release`（留空时不传，避免误覆盖 SDK 默认）
+- `.env.example`：加 5 行 SENTRY_* 变量 + 注释
+- 新增 `app/observability/__init__.py` + `app/observability/sentry.py`（init 函数 + `_build_init_kwargs` + `_scrub_event` PII redact）
+- `app/main.py` lifespan 启动顺序：`setup_logging` → **`init_sentry(settings)`** → 业务 bootstrap，让下游所有错误都能被 Sentry 捕获
+- 新增 `tests/test_sentry_integration.py`（13 用例：DSN 空跳过 / 关键 init 参数 / env fallback / release 留空不传 / 4 种 scrub 场景 / case-insensitive / scrub fail-soft / init fail-soft / before_send 可调用）
+
+PII scrub 范围（13 个字段，与 `app/services/compliance/pii_inventory.py` 同口径）:
+
+```
+phone, phone_number, mobile,
+wechat_openid, wechat_unionid, apple_id,
+email, nickname, avatar_url,
+ip, ip_address, remote_addr, x-forwarded-for, x-real-ip,
+device_token, push_token, id_card, id_number
+```
+
+工程决策:
+
+- **新建 `app/observability/` 子包**而非塞 `app/services/`：可观测性是横切关注点（cross-cutting），与业务服务分层不同；后续 OTel / Prometheus exporter 也放这里
+- **lazy import sentry_sdk**：在 `init_sentry` 函数体里 `import sentry_sdk`，让单测可以 `monkeypatch.setattr(sentry_sdk, "init", mock)` 拦截而不需要 `sys.modules` hack。同时让 `app.observability` import 不依赖 SDK 真装（理论上 SDK uninstall 也不影响 import 链）
+- **`_build_init_kwargs` 与 `init_sentry` 拆开**：单测可以离线断言初始化参数（验 `send_default_pii=False / before_send=_scrub_event / traces=0.1`），不真打 Sentry init
+- **`_scrub_event` 单独导出**：让单测能直接喂 fake event 验 redact 行为；同时通过 `__all__` 把 `_xxx` 私有名字明示为"测试可见"
+- **scrub 失败 fail-soft**：`_walk` 抛任何异常时不上抛，原 event 放行 + `logger.warning`。理由：Sentry 拿到没 redact 的事件比 swallow 整个错误事件更可接受；redact 失败本身需要运维知道
+- **`init_sentry` init 失败 fail-soft**：sentry_sdk.init 抛异常（DSN 错填 / 网络不通）时返 False + warning，不阻塞 web 启动。生产场景 Sentry 服务挂了不应让我们的 API 一起挂
+- **release 字段条件传递**：留空时 `kwargs` 里不放 `release` 键，避免误传空字符串覆盖 SDK 默认（SDK 默认走 git sha 推断）
+- **environment fallback**：`sentry_environment` 留空时 fallback 到 `app_env`，让运维只配 `APP_ENV=prod` 一处即可在 Sentry 里按环境切片
+- **不显式启用 FastAPI / AsyncPG integration**：sentry-sdk 2.x 默认会自动检测并启用 StarletteIntegration / AsyncPGIntegration / SqlalchemyIntegration（auto_enabling_integrations=True 是默认）；显式启用反而需要避免重复 init warning。spec 里写"FastAPI integration"是指期望行为，SDK 已默认提供
+- **单测全程不打远程**：13 个用例全走 `MagicMock` + `monkeypatch.setattr(sentry_sdk, "init", ...)`，CI 干净
+
+关键学习 / 踩坑:
+
+- `_walk` 的递归深度保护：50 层够 Sentry event 用（实测 3-5 层）；上限太高会爆栈，太低会误伤
+- `_REDACTED` 用常量字面量 `"[REDACTED]"` 而非生成 `f"[REDACTED:{key}]"`：后者会泄漏键名维度的信息（攻击者可猜哪些 PII 被收集）
+- ruff 的 `UP032` 规则把 `.format()` 强制改成 f-string，多行场景需要把变量提到外面再插值
+- 对 `before_send` 设置不能传 `lambda`：sentry-sdk 内部 ABI 检查 + pickling 友好
+
+测试结果: 单文件 13 用例 / 0.28s 全绿；全仓库 **1016 passed**（前 1003 + 本次 13），0 回归；ruff + mypy 全绿（134 source files）。
+
+故意 raise 冒烟 AC 留给 staging 部署时人工验：把 `SENTRY_DSN` 配真后访问 `/healthz?force_500=1` 之类路由（或 dev 直接 raise），到 Sentry 仪表板确认 issue 落地 + PII 字段是 `[REDACTED]`。本 PR 不引入这条人工流程相关代码。
 
 ---
 

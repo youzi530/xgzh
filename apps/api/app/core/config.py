@@ -791,6 +791,48 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── OPS-S5-001 Sentry SDK ────────────────────────────────────────
+    sentry_dsn: str = Field(
+        default="",
+        description=(
+            "Sentry DSN. 留空 = 不初始化 Sentry SDK (dev / CI 默认). 生产填真实 DSN. "
+            "与 OPS-S4-001 ``error_monitor`` 分工: error_monitor 做'实时错误率告警', "
+            "Sentry 做'事后 trace + 调用栈分析'."
+        ),
+    )
+    sentry_environment: str = Field(
+        default="",
+        description=(
+            "Sentry environment 标签. 留空时 fallback 到 ``app_env`` (dev/staging/prod). "
+            "Sentry 仪表板按 environment 切片错误."
+        ),
+    )
+    sentry_traces_sample_rate: float = Field(
+        default=0.1,
+        description=(
+            "Sentry performance traces 采样率 (0.0-1.0). 默认 10% — spec/07 §6.2 性能预算监测. "
+            "生产可调 0.05; dev 调到 1.0 看完整 trace."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    sentry_profiles_sample_rate: float = Field(
+        default=0.1,
+        description=(
+            "Sentry profiling 采样率 (0.0-1.0). 默认 10%, 性能瓶颈定位. "
+            "依赖 traces_sample_rate > 0; profile 是 trace 的子采样."
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    sentry_release: str = Field(
+        default="",
+        description=(
+            "Release 标签 (建议 git sha 或 SemVer), 让 Sentry 把错误归到具体 release. "
+            "留空时不传, Sentry 会用 ``app_name`` fallback."
+        ),
+    )
+
     @property
     def cors_origin_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":
