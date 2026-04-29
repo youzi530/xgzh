@@ -75,6 +75,31 @@ export function sendOtp(req: OtpSendRequest) {
 }
 
 /**
+ * BUG-S6.8-002: ``PATCH /api/v1/me`` 编辑当前用户资料.
+ *
+ * 当前仅支持改昵称 (1-20 字, 自动 strip 首尾空白). 后续扩展 avatar_url /
+ * region 时只需在 ``UpdateMeRequest`` 加字段, 这里加 optional 即可.
+ *
+ * 错误码 (后端 detail.code):
+ * - 400 ``no_change``: 请求体空
+ * - 400 ``nickname_empty``: 昵称仅含空白
+ * - 400 ``nickname_too_long``: 昵称 > 20 字
+ * - 422: Pydantic 校验失败 (空 / 超长)
+ * - 401: 未登录
+ */
+export interface UpdateMeRequest {
+  nickname?: string
+}
+
+export function updateMe(req: UpdateMeRequest) {
+  return request<UserPublic>({
+    url: '/api/v1/me',
+    method: 'PATCH',
+    data: req,
+  })
+}
+
+/**
  * 手机号 + OTP 登录 / 自动注册.
  *
  * 错误码 (BE-002):

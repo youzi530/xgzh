@@ -118,6 +118,17 @@ const todayHotItems = computed<IPOItem[]>(() => {
   return list.value.filter((i) => i.status === 'subscribing').slice(0, 3)
 })
 
+/**
+ * BUG-S6.8-006: 主列表过滤掉 hero 已用 codes, 防止可孚 / 天星等
+ * subscribing IPO 在同一页面被渲染两次 (hero 卡 + 主列表 = 视觉重复).
+ * 日历视图不去重 — 日历按上市日排, 用户期望看全量.
+ */
+const heroCodes = computed(() => new Set(todayHotItems.value.map((i) => i.code)))
+const mainList = computed<IPOItem[]>(() => {
+  if (viewMode.value !== 'list') return list.value
+  return list.value.filter((i) => !heroCodes.value.has(i.code))
+})
+
 function gotoLogin() {
   uni.navigateTo({ url: '/pages/auth/login' })
 }
@@ -321,7 +332,7 @@ onReachBottom(() => {
       <template v-else>
         <view v-if="viewMode === 'list'" class="list">
           <IPOCard
-            v-for="item in list"
+            v-for="item in mainList"
             :key="item.code"
             :item="item"
             @select="openDetail"
@@ -329,7 +340,7 @@ onReachBottom(() => {
           <view v-if="hasMore && loading" class="more-state">
             <text>加载更多...</text>
           </view>
-          <view v-else-if="!hasMore && list.length > 0" class="more-state">
+          <view v-else-if="!hasMore && mainList.length > 0" class="more-state">
             <text>—— 已经到底啦 ——</text>
           </view>
         </view>

@@ -38,6 +38,16 @@ export function saveAuth(resp: LoginResponse): void {
 }
 
 /**
+ * BUG-S6.8-002: 单独刷 ``user`` storage (PATCH /me 后用); 不动 token.
+ *
+ * 与 :func:`saveTokens` 同类型的"局部刷新"helper, 让 store 在改昵称后能
+ * 把最新 user 字段持久化, hydrate 时不会拿到老昵称。
+ */
+export function saveUser(user: UserPublic): void {
+  uni.setStorageSync(KEY_USER, user)
+}
+
+/**
  * 仅写 token + 过期时间, 保留 user (refresh rotation 用).
  * BE-004 ``/auth/refresh`` 返回 ``TokenPair`` 不带 user, 用这个 helper 落 storage。
  */

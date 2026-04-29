@@ -19,6 +19,19 @@ export interface IPOItem {
   market: Market
   industry?: string | null
   issue_price?: number | null
+  /**
+   * BUG-S6.8-004: 招股价区间 — 港股 ``ipolist`` 50/50 行都是 ``"x-y"`` 格式.
+   *
+   * - ``price_min == price_max`` → 单值 IPO (``"24.86-24.86"``); UI 显示单值
+   * - ``price_min < price_max`` → 真区间 (``"166.60-183.20"``); UI 显示
+   *   ``"166.60-183.20 港元"``
+   * - 都为 ``null`` (AA 上的 ``N/A``, 招股截止前未定价) → UI 显示 ``"--"``
+   *
+   * 老 ``issue_price = price_max`` (升限价) 仍保留, 非区间场景能直接用,
+   * 老 client 不感知 min/max 也不破坏。
+   */
+  price_min?: number | null
+  price_max?: number | null
   issue_currency?: string | null
   listing_date?: string | null
   subscribe_start?: string | null

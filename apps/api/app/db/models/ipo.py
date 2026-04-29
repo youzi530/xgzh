@@ -55,6 +55,11 @@ class IPO(Base, TimestampMixin):
     industry_l2: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     issue_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    # BUG-S6.8-004: 招股价区间 (港股 ipolist 50/50 行都是 "x-y" 格式).
+    # ``price_max == legacy issue_price`` (升限价, 历史 raised_amount 计算口径);
+    # FE 检测 ``price_min != price_max`` 显示区间, 否则显示单值.
+    price_min: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    price_max: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     issue_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     listing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     subscribe_start: Mapped[datetime | None] = mapped_column(nullable=True)

@@ -72,6 +72,25 @@ XGZH (新股智汇) UniApp 客户端 — 第一刀。
 2. 顶部菜单 `运行 → 运行到小程序模拟器 → 微信开发者工具`
 3. 自动构建到 `unpackage/dist/dev/mp-weixin/`，微信开发者工具会被唤起
 
+### 方式 1b：微信开发者工具直接打开（CLI build 后）
+
+> ⚠️ **BUG-S6.8-001 修复**：用户报启动报错 `app.json is not found in the project root directory`。
+> 根因 = 微信开发者工具的"项目目录"指错。
+
+1. CLI build：`pnpm dev:mp-weixin`（或 HBuilderX `运行→小程序`），实际编译产物到 `xgzh/apps/mp/dist/dev/mp-weixin/`（含 `app.json` / `project.config.json` / `pages/` / `components/` 等）
+2. 打开微信开发者工具，**新建 / 导入项目时**，"项目根目录"必须填：
+
+   ```
+   <仓库绝对路径>/xgzh/apps/mp/dist/dev/mp-weixin/
+   ```
+
+   **不要**填 `xgzh/apps/mp/`（uniapp 源码根，不含编译产物）—— 那个路径下没有 `app.json`，所以微信工具会报 `app.json is not found`。
+
+3. 工具识别到 `app.json` + `project.config.json` 后，AppID 自动从 `wxe525868b30a43b96` 读，无需手填。
+
+> ❌ **不要**在源码根 `xgzh/apps/mp/project.config.json` 加 `"miniprogramRoot"` 字段
+> —— uniapp build 会把它复制到 `dist/`，然后路径**嵌套两层**（`dist/dev/mp-weixin/dist/dev/mp-weixin/`）反而崩。
+
 ### 方式 2：CLI（H5 调试最快）
 
 ```bash

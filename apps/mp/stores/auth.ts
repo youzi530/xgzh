@@ -40,6 +40,7 @@ import {
   getStoredUser,
   saveAuth,
   saveTokens,
+  saveUser,
   snapshot,
 } from '@/utils/auth-storage'
 import { clearUtm, readUtm } from '@/utils/utm'
@@ -302,6 +303,15 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * BUG-S6.8-002: PATCH /me 后用. 把最新 user 同步到 store + storage,
+   * 不动 token. 跨页面 (我的 / 自选 / 详情) 立即响应式生效。
+   */
+  function setUser(u: UserPublic): void {
+    user.value = u
+    saveUser(u)
+  }
+
   return {
     accessToken,
     refreshToken: refreshTokenRef,
@@ -316,6 +326,7 @@ export const useAuthStore = defineStore('auth', () => {
     isRefreshFresh,
     setSession,
     setTokens,
+    setUser,
     clearSession,
     refresh,
     refreshMembership,

@@ -318,6 +318,90 @@ async def test_me_with_token_for_nonexistent_uuid_returns_401(
     assert r.json()["detail"]["code"] == "user_not_found"
 
 
+# ------------------- PATCH /me (BUG-S6.8-002) -------------------
+
+
+async def test_patch_me_updates_nickname(client: httpx.AsyncClient) -> None:
+    body = await _login_and_get_tokens(client)
+    access = body["tokens"]["access_token"]
+
+    r = await client.patch(
+        "/api/v1/me",
+        headers=_bearer(access),
+        json={"nickname": "智汇老张"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["nickname"] == "智汇老张"
+
+    # GET /me 同步生效
+    r = await client.get("/api/v1/me", headers=_bearer(access))
+    assert r.json()["nickname"] == "智汇老张"
+
+
+async def test_patch_me_strips_whitespace(client: httpx.AsyncClient) -> None:
+    body = await _login_and_get_tokens(client)
+    access = body["tokens"]["access_token"]
+
+    r = await client.patch(
+        "/api/v1/me",
+        headers=_bearer(access),
+        json={"nickname": "  好昵称  "},
+    )
+    assert r.status_code == 200
+    assert r.json()["nickname"] == "好昵称"
+
+
+async def test_patch_me_rejects_empty_nickname(client: httpx.AsyncClient) -> None:
+    body = await _login_and_get_tokens(client)
+    access = body["tokens"]["access_token"]
+
+    # Pydantic min_length=1 拦截
+    r = await client.patch(
+        "/api/v1/me", headers=_bearer(access), json={"nickname": ""}
+    )
+    assert r.status_code == 422
+
+
+async def test_patch_me_rejects_whitespace_only_nickname(
+    client: httpx.AsyncClient,
+) -> None:
+    body = await _login_and_get_tokens(client)
+    access = body["tokens"]["access_token"]
+
+    r = await client.patch(
+        "/api/v1/me", headers=_bearer(access), json={"nickname": "   "}
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "nickname_empty"
+
+
+async def test_patch_me_rejects_too_long_nickname(client: httpx.AsyncClient) -> None:
+    body = await _login_and_get_tokens(client)
+    access = body["tokens"]["access_token"]
+
+    # Pydantic max_length=20 优先拦截 (422)
+    r = await client.patch(
+        "/api/v1/me",
+        headers=_bearer(access),
+        json={"nickname": "x" * 25},
+    )
+    assert r.status_code == 422
+
+
+async def test_patch_me_with_empty_body_400(client: httpx.AsyncClient) -> None:
+    body = await _login_and_get_tokens(client)
+    access = body["tokens"]["access_token"]
+
+    r = await client.patch("/api/v1/me", headers=_bearer(access), json={})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "no_change"
+
+
+async def test_patch_me_requires_auth(client: httpx.AsyncClient) -> None:
+    r = await client.patch("/api/v1/me", json={"nickname": "x"})
+    assert r.status_code == 401
+
+
 # ------------------- get_optional_user -------------------
 
 

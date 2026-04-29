@@ -24,7 +24,12 @@ class IPOItem(BaseModel):
     name: str
     market: Market
     industry: str | None = None
-    issue_price: Decimal | None = Field(default=None, description="发行价")
+    issue_price: Decimal | None = Field(default=None, description="发行价 (== price_max, 升限价兼容老接口)")
+    # BUG-S6.8-004: 招股价区间. 港股 ipolist 50/50 行都是 ``"x-y"`` 格式 (区间 / 单值).
+    # FE 检测 ``price_min != price_max`` 显示区间 ``"166.60 - 183.20 港元"``,
+    # 否则显示单值 ``issue_price``. 老 client 不感知 min/max 时仍能用 issue_price.
+    price_min: Decimal | None = Field(default=None, description="招股价下限 (港股区间下端)")
+    price_max: Decimal | None = Field(default=None, description="招股价上限 (== legacy issue_price)")
     issue_currency: str | None = Field(default=None, description="ISO 4217, e.g. HKD/CNY")
     listing_date: Date | None = None
     subscribe_start: datetime | None = None
@@ -39,7 +44,12 @@ class IPOItem(BaseModel):
     updated_at: datetime | None = None
 
     @field_serializer(
-        "issue_price", "pe_ratio", "raised_amount", "one_lot_winning_rate",
+        "issue_price",
+        "price_min",
+        "price_max",
+        "pe_ratio",
+        "raised_amount",
+        "one_lot_winning_rate",
         when_used="json",
     )
     def _ser_decimal(self, v: Decimal | None) -> float | None:

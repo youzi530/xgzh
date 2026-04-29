@@ -126,23 +126,52 @@ def _normalize_code(raw: str) -> str | None:
     return None
 
 
-def _parse_issue_price(raw: str) -> Decimal | None:
-    """招股价:
+def _parse_issue_price_range(raw: str) -> tuple[Decimal | None, Decimal | None]:
+    """招股价 → ``(price_min, price_max)``.
 
-    - ``"24.86-24.86"`` / ``"166.60-183.20"`` → 取上限 (区间下端是不少股票
-      最终定价高位, 用上限对齐 ``raised_amount`` 算的口径)
-    - ``"77.7"`` → 直接取
-    - ``"-"`` / ``""`` / 文本含异常 → None
+    BUG-S6.8-004: 港股 ``ipolist.html`` 招股价 50/50 行都是 ``"x-y"`` 格式,
+    单值 IPO 写成 ``"24.86-24.86"``, 真区间写成 ``"166.60-183.20"``.
+
+    - ``"166.60-183.20"`` → ``(Decimal('166.60'), Decimal('183.20'))``
+    - ``"24.86-24.86"`` → ``(Decimal('24.86'), Decimal('24.86'))`` (单值 IPO)
+    - ``"77.7"`` → ``(Decimal('77.7'), Decimal('77.7'))`` (单值, 无 ``-``)
+    - ``"-"`` / ``""`` / 文本异常 → ``(None, None)``
+    - ``"166.60-"`` / ``"-183.20"`` (半残数据) → 用补全的另一半 fallback,
+      避免一边缺值另一边空着导致 FE 显示 ``"-- - 183.20"``
+
+    上下限**不强制 min < max** — 让上游数据原样保留, 校验留 ingest 层 (后续如果
+    遇到反直觉数据可以加 ``min, max = sorted([a, b])``).
     """
     s = raw.strip()
     if not s or s == "-":
-        return None
-    parts = s.split("-")
-    candidate = parts[-1].strip() if len(parts) >= 2 else parts[0].strip()
-    try:
-        return Decimal(candidate)
-    except (InvalidOperation, ValueError):
-        return None
+        return (None, None)
+    parts = [p.strip() for p in s.split("-")]
+    parsed: list[Decimal | None] = []
+    for p in parts:
+        try:
+            parsed.append(Decimal(p) if p else None)
+        except (InvalidOperation, ValueError):
+            parsed.append(None)
+
+    if len(parsed) == 1:
+        single = parsed[0]
+        return (single, single)
+    # ≥2 段: 取首尾
+    lo, hi = parsed[0], parsed[-1]
+    if lo is None and hi is not None:
+        lo = hi
+    if hi is None and lo is not None:
+        hi = lo
+    return (lo, hi)
+
+
+def _parse_issue_price(raw: str) -> Decimal | None:
+    """legacy 单值兼容: 返 ``price_max`` (升限价对齐 ``raised_amount`` 口径).
+
+    保留此函数避免 spec/ test 引用 churn; 新代码用 :func:`_parse_issue_price_range`.
+    """
+    _, hi = _parse_issue_price_range(raw)
+    return hi
 
 
 _CN_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"^([\d.]+)\s*(亿|万)?\s*$")
@@ -279,8 +308,11 @@ def parse_eastmoney_ipo_html(
             if not name:
                 continue
 
-            issue_price = _parse_issue_price(cells[3].get_text(strip=True))
-            # cells[4] = 招股数 (BUG-S6.7-002 旁路写入 extra)
+            # BUG-S6.8-004: 拆区间 — ipolist 50/50 行都是 ``"x-y"`` 格式.
+            # ``issue_price = price_max`` (升限价对齐 ``raised_amount`` 计算口径,
+            # 老接口不破); ``price_min`` 单独存以便 FE 显示区间.
+            price_min, price_max = _parse_issue_price_range(cells[3].get_text(strip=True))
+            issue_price = price_max
             total_shares = _parse_chinese_amount(cells[4].get_text(strip=True))
             raised_amount = _parse_chinese_amount(cells[5].get_text(strip=True))
             sub_start = _parse_iso_date(cells[6].get_text(strip=True))
@@ -299,6 +331,8 @@ def parse_eastmoney_ipo_html(
                     market="HK",
                     industry=None,  # 东方财富列表页没行业, 留 Sprint 7 详情页补
                     issue_price=issue_price,
+                    price_min=price_min,
+                    price_max=price_max,
                     issue_currency="HKD",
                     listing_date=listing_dt,
                     subscribe_start=(

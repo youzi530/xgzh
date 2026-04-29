@@ -33,7 +33,9 @@ import { onShow, onUnload } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
 import { computed, defineAsyncComponent, onUnmounted, reactive, ref } from 'vue'
 
+import { updateMe } from '@/api/auth'
 import { bindInvite, parseInviteError } from '@/api/invite'
+import type { APIError } from '@/utils/request'
 // PE-S4-001 首屏 lazy-load: VIP 升级 modal 仅在用户点"立即升级" 后弹, 95% 用户
 // 进个人中心不会触发. defineAsyncComponent 让它独立成 chunk, 首屏不下载.
 const UpgradeVipModal = defineAsyncComponent(
@@ -275,6 +277,61 @@ function copyInviteCode() {
   })
 }
 
+/**
+ * BUG-S6.8-002: 修改昵称 — 用 ``uni.showModal`` 的 ``editable`` 模式弹输入框,
+ * 跨三端 (H5 / 微信小程序 / App) 都支持, 不需要自实现 modal 组件.
+ *
+ * 错误码差异化 toast (与 PATCH /me 后端契约对齐):
+ * - ``nickname_empty`` / ``nickname_too_long`` → 直接显示 message
+ * - 422 (Pydantic min_length / max_length) → 兜底 "昵称需 1-20 字"
+ * - 其它 → "保存失败, 稍后重试"
+ */
+async function editNickname() {
+  if (!user.value) return
+  const current = user.value.nickname || ''
+  const ret = await new Promise<{ confirm: boolean; content: string }>((resolve) => {
+    uni.showModal({
+      title: '修改昵称',
+      placeholderText: '1-20 字, 中英文均可',
+      content: current,
+      editable: true,
+      success: (r) => resolve({ confirm: !!r.confirm, content: r.content || '' }),
+      fail: () => resolve({ confirm: false, content: '' }),
+    })
+  })
+  if (!ret.confirm) return
+  const next = ret.content.trim()
+  if (!next) {
+    uni.showToast({ title: '昵称不能为空', icon: 'none' })
+    return
+  }
+  if (next === current) return // 没改 — 静默退出
+  if (next.length > 20) {
+    uni.showToast({ title: '昵称最长 20 字', icon: 'none' })
+    return
+  }
+  try {
+    const updated = await updateMe({ nickname: next })
+    authStore.setUser(updated)
+    uni.showToast({ title: '昵称已更新', icon: 'success' })
+  } catch (e) {
+    const err = e as APIError
+    // 后端 ``HTTPException(detail={"code": ..., "message": ...})`` → request.ts
+    // 把整段挂到 ``err.detail``; Pydantic 422 走 ``detail = [{loc, msg}, ...]``,
+    // 这里只取 dict 形式的 ``code`` 做差异化, 其它走兜底 message。
+    let code: string | undefined
+    if (err.detail && typeof err.detail === 'object' && !Array.isArray(err.detail)) {
+      const d = err.detail as { code?: string }
+      code = d.code
+    }
+    let msg = '保存失败, 稍后重试'
+    if (code === 'nickname_empty') msg = '昵称不能为空'
+    else if (code === 'nickname_too_long') msg = '昵称最长 20 字'
+    else if (err.statusCode === 422) msg = '昵称需 1-20 字'
+    uni.showToast({ title: msg, icon: 'none' })
+  }
+}
+
 async function handleBindInvite() {
   const raw = inviteForm.code.trim().toUpperCase()
   if (raw.length < 4 || raw.length > 16) {
@@ -425,7 +482,10 @@ onUnmounted(() => {
         <text class="avatar-text">{{ nicknameInitial }}</text>
       </view>
       <view class="profile-info">
-        <text class="profile-nickname">{{ displayNickname }}</text>
+        <view class="nickname-row" @tap="editNickname">
+          <text class="profile-nickname">{{ displayNickname }}</text>
+          <text class="nickname-edit">编辑</text>
+        </view>
         <text class="profile-region">{{ displayRegion }}</text>
         <view class="invite-row" @tap="copyInviteCode">
           <text class="invite-label">我的邀请码</text>
@@ -641,10 +701,23 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 8rpx;
 }
+.nickname-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
 .profile-nickname {
   font-size: 36rpx;
   font-weight: 700;
   color: var(--color-text, #e2e8f0);
+}
+/* BUG-S6.8-002: 编辑入口 — 弱视觉的 chip 样式, 不抢主信息 */
+.nickname-edit {
+  font-size: 22rpx;
+  color: var(--color-accent, #4f8bff);
+  padding: 4rpx 14rpx;
+  border-radius: 999rpx;
+  background: rgba(79, 139, 255, 0.12);
 }
 .profile-region {
   font-size: 24rpx;

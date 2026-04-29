@@ -1,10 +1,8 @@
-"""当前用户路由 (BE-003 / BE-S5-003).
+"""当前用户路由 (BE-003 / BE-S5-003 / BUG-S6.8-002).
 
 Sprint 1: ``GET /me``
 Sprint 5 BE-S5-003: ``DELETE /me`` (PIPL §47 注销账号)
-
-后续:
-- 资料编辑 ``PATCH /me`` 进 FE-003 时再加
+Sprint 6.8 BUG-S6.8-002: ``PATCH /me`` (昵称编辑)
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.db.models import User
 from app.schemas.auth import UserPublic
-from app.schemas.me import DeleteMeRequest, DeleteMeResponse
+from app.schemas.me import DeleteMeRequest, DeleteMeResponse, UpdateMeRequest
 from app.security import (
     ACCESS_TOKEN_TYPE,
     AccessTokenPayload,
@@ -42,6 +40,73 @@ router = APIRouter(prefix="/me", tags=["me"])
     responses={401: {"description": "未登录 / token 无效 / token 过期"}},
 )
 async def read_me(current_user: User = Depends(get_current_user)) -> UserPublic:
+    return UserPublic.model_validate(current_user)
+
+
+# ─── PATCH /me (BUG-S6.8-002 资料编辑) ────────────────────────────
+
+
+@router.patch(
+    "",
+    response_model=UserPublic,
+    status_code=status.HTTP_200_OK,
+    summary="编辑当前用户资料 (Sprint 6.8 起仅支持昵称)",
+    responses={
+        400: {"description": "字段校验失败 (空昵称 / 超长 / 全空白)"},
+        401: {"description": "未登录 / token 无效 / token 过期"},
+    },
+)
+async def update_me(
+    body: UpdateMeRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> UserPublic:
+    """编辑当前用户基本资料.
+
+    BUG-S6.8-002 范围: 仅 ``nickname``. 后续扩展 (avatar_url / region) 直接
+    在 ``UpdateMeRequest`` 加字段即可, 服务层逻辑同款 (优先校验, 写库, 返
+    refreshed user).
+
+    业务规则:
+    - 昵称去首尾空白后必须 1-20 字 (中英文混算)
+    - 不传字段或传 None 视为不改 — 用 ``exclude_unset`` 拿到非空 patch
+    - 字段全空 → 400 不动 (避免无意义请求)
+    """
+    patch = body.model_dump(exclude_unset=True)
+    if not patch:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "no_change",
+                "message": "请求未指定要修改的字段",
+            },
+        )
+
+    if "nickname" in patch:
+        new_nickname = (patch["nickname"] or "").strip()
+        if not new_nickname:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "nickname_empty",
+                    "message": "昵称不能为空",
+                },
+            )
+        if len(new_nickname) > 20:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "nickname_too_long",
+                    "message": "昵称最长 20 字",
+                },
+            )
+        current_user.nickname = new_nickname
+
+    await session.flush()
+    await session.refresh(current_user)
+    logger.info(
+        f"me.update.ok user_id={current_user.user_id} fields={list(patch.keys())}"
+    )
     return UserPublic.model_validate(current_user)
 
 

@@ -17,7 +17,7 @@ const LOGIN_PAGE_URL = '/pages/auth/login'
 
 export interface RequestOptions<TData = unknown> {
   url: string
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
   data?: TData
   header?: Record<string, string>
   timeout?: number
@@ -150,7 +150,11 @@ function rawRequest<TResp>(opts: RequestOptions, fullUrl: string): Promise<TResp
   return new Promise<TResp>((resolve, reject) => {
     uni.request({
       url: fullUrl,
-      method: opts.method ?? 'GET',
+      // BUG-S6.8-002: ``PATCH`` 落在 uniapp 内置 ``uni.request`` method 枚举之外
+      // (官方类型只到 PUT/DELETE/OPTIONS/HEAD/TRACE/CONNECT, 不含 PATCH).
+      // 实际三端运行时都支持 PATCH (H5 用 fetch / 小程序 wx.request 都接受任意
+      // method 字符串), 这里用 ``as never`` 抹掉编译期校验, 不影响运行.
+      method: (opts.method ?? 'GET') as never,
       // ``RequestOptions<TData>`` 默认 ``TData=unknown``, uni.request 类型签名要求
       // ``string | AnyObject | ArrayBuffer | undefined``. 业务方传的都是 plain object
       // 或 string, cast 安全.

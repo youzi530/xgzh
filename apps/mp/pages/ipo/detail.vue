@@ -160,6 +160,27 @@ function formatRaisedAmount(
   return `${cur} ${n.toFixed(0)}`
 }
 
+/**
+ * BUG-S6.8-004: 发行价显示 — 区间 / 单值 / 待定 三态.
+ *
+ * - ``price_min != price_max`` → ``"166.60-183.20 HKD"`` (港股招股期早段)
+ * - ``price_min == price_max`` 或老 client 无 min/max → 单值 ``issue_price``
+ * - 全 null (AA 招股截止前未定价) → ``"--"`` (建议 FE 配 chip "待定价")
+ */
+const issuePriceText = computed(() => {
+  const i = item.value
+  if (!i) return '--'
+  const ccy = i.issue_currency ?? ''
+  const lo = i.price_min
+  const hi = i.price_max
+  if (lo != null && hi != null && Number(lo) !== Number(hi)) {
+    return `${ccy} ${Number(lo).toFixed(2)}-${Number(hi).toFixed(2)}`.trim()
+  }
+  const single = hi ?? lo ?? i.issue_price
+  if (single == null) return '--'
+  return `${ccy} ${Number(single).toFixed(2)}`.trim()
+})
+
 const dataSourceText = computed(() => {
   if (!item.value) return ''
   const parts: string[] = []
@@ -271,6 +292,33 @@ async function loadArticles() {
   }
 }
 
+/**
+ * BUG-S6.8-005: 市场文章列表"5 篇 + 查看更多"折叠.
+ *
+ * - 默认只渲染前 5 篇 (足够看趋势, 不挤压下面"基本面 / 风险 / AI 诊断 CTA")
+ * - 点"查看全部 N 篇" → 展开全部 + 按钮文案换"收起"
+ * - 当总数 ≤ 5 篇时, 不显示"查看更多"按钮 (避免 UX 噪音)
+ *
+ * 不做"分页"原因: 后端一次返 ≤ 20 条, 前端就地折叠最直观, 不需要二次拉。
+ * 5 是约定阈值, 与"今日打新 hero 卡 ≤ 3" 同一思路 — 首屏控制密度。
+ */
+const ARTICLE_PREVIEW_COUNT = 5
+const articlesExpanded = ref(false)
+const visibleArticles = computed(() => {
+  if (articlesExpanded.value) return articlesData.value
+  return articlesData.value.slice(0, ARTICLE_PREVIEW_COUNT)
+})
+const showArticleToggle = computed(
+  () => articlesData.value.length > ARTICLE_PREVIEW_COUNT,
+)
+const articleToggleText = computed(() => {
+  if (articlesExpanded.value) return '收起'
+  return `查看全部 ${articlesData.value.length} 篇 ↓`
+})
+function toggleArticles() {
+  articlesExpanded.value = !articlesExpanded.value
+}
+
 function openArticleDetail(item: ArticleListItem) {
   void navigateWithParams('/pages/article/detail', { id: item.article_id })
 }
@@ -348,9 +396,7 @@ function openProspectus() {
         </view>
         <view class="info-cell">
           <text class="info-label">发行价</text>
-          <text class="info-value">
-            {{ item.issue_price != null ? `${item.issue_currency ?? ''} ${Number(item.issue_price).toFixed(2)}` : '--' }}
-          </text>
+          <text class="info-value">{{ issuePriceText }}</text>
         </view>
         <view class="info-cell">
           <text class="info-label">PE</text>
@@ -506,7 +552,7 @@ function openProspectus() {
           </view>
           <view v-else class="article-list">
             <view
-              v-for="a in articlesData"
+              v-for="a in visibleArticles"
               :key="a.article_id"
               class="article-card"
               hover-class="article-card-hover"
@@ -530,6 +576,15 @@ function openProspectus() {
                 <text class="article-dot">·</text>
                 <text class="article-time">{{ a.published_at?.slice(0, 10) }}</text>
               </view>
+            </view>
+            <view
+              v-if="showArticleToggle"
+              class="article-toggle"
+              hover-class="article-toggle-hover"
+              :hover-stay-time="80"
+              @tap="toggleArticles"
+            >
+              <text class="article-toggle-text">{{ articleToggleText }}</text>
             </view>
           </view>
         </view>
@@ -893,6 +948,23 @@ function openProspectus() {
 }
 .article-dot {
   opacity: 0.6;
+}
+
+/* BUG-S6.8-005: 市场文章折叠 toggle 按钮 — 弱视觉, 不抢主内容 */
+.article-toggle {
+  margin: 8rpx auto 0;
+  padding: 16rpx 36rpx;
+  border-radius: 999rpx;
+  background: rgba(79, 139, 255, 0.12);
+  border: 1rpx solid rgba(79, 139, 255, 0.3);
+  align-self: center;
+}
+.article-toggle-hover {
+  background: rgba(79, 139, 255, 0.2);
+}
+.article-toggle-text {
+  font-size: 24rpx;
+  color: var(--color-accent, #4f8bff);
 }
 
 .cta-block {

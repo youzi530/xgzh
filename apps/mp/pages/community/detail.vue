@@ -261,6 +261,22 @@ function avatarFallback(name: string | null): string {
   return (name || '?').slice(0, 1)
 }
 
+/**
+ * BUG-S6.8-003: 帖子作者 / 评论者头像 / 昵称 → 跳用户公开主页.
+ * 帖子详情页本身就是 navigateTo 进来的, 主页跳转再 push 一层栈是 OK 的
+ * (微信小程序栈深 ≤ 10, 详情→主页→主页 = 3 层不会超).
+ */
+function gotoUserProfile(userId: string | null | undefined) {
+  if (!userId) {
+    uni.showToast({ title: '该用户已注销', icon: 'none' })
+    return
+  }
+  uni.navigateTo({
+    url: `/pages/user/profile?id=${encodeURIComponent(userId)}`,
+    fail: () => uni.showToast({ title: '主页加载失败', icon: 'none' }),
+  })
+}
+
 function formatTime(iso: string): string {
   if (!iso) return ''
   const t = new Date(iso).getTime()
@@ -316,7 +332,12 @@ onLoad((opts) => {
         <!-- 帖子主体 -->
         <view class="post-card">
           <view class="post-head">
-            <view class="avatar">
+            <view
+              class="avatar"
+              hover-class="avatar-hover"
+              :hover-stay-time="60"
+              @tap="gotoUserProfile(post.user_id)"
+            >
               <image
                 v-if="post.user_avatar_url"
                 class="avatar-img"
@@ -328,7 +349,12 @@ onLoad((opts) => {
               }}</text>
             </view>
             <view class="post-meta">
-              <text class="post-nickname">{{ post.user_nickname || '匿名用户' }}</text>
+              <text
+                class="post-nickname clickable"
+                hover-class="nickname-hover"
+                :hover-stay-time="60"
+                @tap="gotoUserProfile(post.user_id)"
+              >{{ post.user_nickname || '匿名用户' }}</text>
               <text class="post-time">{{ formatTime(post.created_at) }}</text>
             </view>
             <text v-if="statusChip" class="status-chip" :class="statusChip.cls">
@@ -395,7 +421,12 @@ onLoad((opts) => {
           </view>
           <view v-for="c in comments" v-else :key="c.id" class="comment-card">
             <view class="comment-head">
-              <view class="comment-avatar">
+              <view
+                class="comment-avatar"
+                hover-class="avatar-hover"
+                :hover-stay-time="60"
+                @tap="gotoUserProfile(c.user_id)"
+              >
                 <image
                   v-if="c.user_avatar_url"
                   class="avatar-img"
@@ -405,7 +436,12 @@ onLoad((opts) => {
                 <text v-else class="avatar-fallback">{{ avatarFallback(c.user_nickname) }}</text>
               </view>
               <view class="comment-meta">
-                <text class="comment-nickname">{{ c.user_nickname || '匿名用户' }}</text>
+                <text
+                  class="comment-nickname clickable"
+                  hover-class="nickname-hover"
+                  :hover-stay-time="60"
+                  @tap="gotoUserProfile(c.user_id)"
+                >{{ c.user_nickname || '匿名用户' }}</text>
                 <text class="comment-time">{{ formatTime(c.created_at) }}</text>
               </view>
               <text
@@ -573,6 +609,16 @@ onLoad((opts) => {
   color: #fff;
   font-size: 28rpx;
   font-weight: 700;
+}
+/* BUG-S6.8-003: 头像 / 昵称点击主页 hover 弱反馈 */
+.avatar-hover {
+  opacity: 0.7;
+}
+.clickable {
+  cursor: pointer;
+}
+.nickname-hover {
+  opacity: 0.7;
 }
 .post-meta {
   flex: 1;

@@ -83,6 +83,8 @@ def _orm_to_item(row: IPO) -> IPOItem:
         market=cast(Market, row.market),
         industry=row.industry_l1,
         issue_price=row.issue_price,
+        price_min=row.price_min,
+        price_max=row.price_max,
         issue_currency=row.issue_currency,
         listing_date=row.listing_date,
         subscribe_start=row.subscribe_start,

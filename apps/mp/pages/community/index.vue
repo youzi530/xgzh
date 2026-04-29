@@ -122,6 +122,24 @@ function gotoDetail(postId: string) {
   })
 }
 
+/**
+ * BUG-S6.8-003: 点击作者昵称 / 头像 → 跳用户公开主页.
+ *
+ * ``stop-propagation``: 卡片整体绑了 ``gotoDetail``, 这里点的是子元素 (头像 / 昵称),
+ * 必须阻止冒泡, 否则会先跳详情页再覆盖跳主页 = 双跳栈污染.
+ */
+function gotoUserProfile(userId: string | null | undefined, ev: Event) {
+  ev.stopPropagation?.()
+  if (!userId) {
+    uni.showToast({ title: '该用户已注销', icon: 'none' })
+    return
+  }
+  uni.navigateTo({
+    url: `/pages/user/profile?id=${encodeURIComponent(userId)}`,
+    fail: () => uni.showToast({ title: '主页加载失败', icon: 'none' }),
+  })
+}
+
 function formatRelativeTime(iso: string): string {
   if (!iso) return ''
   const t = new Date(iso).getTime()
@@ -201,7 +219,12 @@ function categoryChipLabel(cat: PostCategory): string {
         @tap="gotoDetail(p.id)"
       >
         <view class="card-head">
-          <view class="avatar">
+          <view
+            class="avatar"
+            hover-class="avatar-hover"
+            :hover-stay-time="60"
+            @tap.stop="(ev: Event) => gotoUserProfile(p.user_id, ev)"
+          >
             <image
               v-if="p.user_avatar_url"
               class="avatar-img"
@@ -211,7 +234,12 @@ function categoryChipLabel(cat: PostCategory): string {
             <text v-else class="avatar-fallback">{{ avatarFallback(p) }}</text>
           </view>
           <view class="card-meta">
-            <text class="card-nickname">{{ p.user_nickname || '匿名用户' }}</text>
+            <text
+              class="card-nickname clickable"
+              hover-class="nickname-hover"
+              :hover-stay-time="60"
+              @tap.stop="(ev: Event) => gotoUserProfile(p.user_id, ev)"
+            >{{ p.user_nickname || '匿名用户' }}</text>
             <text class="card-time">{{ formatRelativeTime(p.created_at) }}</text>
           </view>
           <text v-if="categoryChipLabel(p.category)" class="card-cat-chip">
@@ -395,6 +423,17 @@ function categoryChipLabel(cat: PostCategory): string {
   color: #fff;
   font-size: 26rpx;
   font-weight: 700;
+}
+/* BUG-S6.8-003: 头像 / 昵称点击主页 — hover 弱反馈 (避免误以为不可点) */
+.avatar-hover {
+  opacity: 0.7;
+}
+.clickable {
+  /* H5 hint, 小程序无 cursor; 主要靠 hover-class 反馈 */
+  cursor: pointer;
+}
+.nickname-hover {
+  opacity: 0.7;
 }
 .card-meta {
   flex: 1;

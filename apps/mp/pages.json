@@ -125,6 +125,14 @@
             }
         },
         {
+            "path": "pages/user/profile",
+            "style": {
+                "navigationBarTitleText": "用户主页",
+                "navigationBarBackgroundColor": "#0F172A",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
             "path": "pages/subscriptions/edit",
             "style": {
                 "navigationBarTitleText": "录入中签",

@@ -47,7 +47,24 @@ class DeleteMeResponse(BaseModel):
     )
 
 
+class UpdateMeRequest(BaseModel):
+    """``PATCH /me`` 请求体 (BUG-S6.8-002): 当前仅支持改昵称.
+
+    后续若要扩展 (avatar_url / region / 简介), 加 ``Optional[str]`` 字段即可.
+    全字段 optional, 用 ``model_dump(exclude_unset=True)`` 拿到非 None patch
+    集, 不写空覆盖 (与 ``COALESCE`` 保护字段同款思路).
+    """
+
+    nickname: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=20,
+        description="新昵称 (1-20 字; 不传则不改).",
+    )
+
+
 __all__ = [
     "DeleteMeRequest",
     "DeleteMeResponse",
+    "UpdateMeRequest",
 ]

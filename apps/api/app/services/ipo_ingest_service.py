@@ -80,6 +80,9 @@ def _ipo_item_to_row(
         "industry_l1": item.industry,
         "industry_l2": None,
         "issue_price": item.issue_price,
+        # BUG-S6.8-004: 招股价区间双列 + 老 issue_price 兼容 (== price_max)
+        "price_min": item.price_min,
+        "price_max": item.price_max,
         "issue_currency": item.issue_currency,
         "listing_date": item.listing_date,
         "subscribe_start": item.subscribe_start,
@@ -145,6 +148,8 @@ async def upsert_ipos(
     update_payload: dict[str, Any] = {
         "industry_l1": func.coalesce(excl.industry_l1, cur.industry_l1),
         "issue_price": func.coalesce(excl.issue_price, cur.issue_price),
+        "price_min": func.coalesce(excl.price_min, cur.price_min),
+        "price_max": func.coalesce(excl.price_max, cur.price_max),
         "issue_currency": func.coalesce(excl.issue_currency, cur.issue_currency),
         "listing_date": func.coalesce(excl.listing_date, cur.listing_date),
         "subscribe_start": func.coalesce(excl.subscribe_start, cur.subscribe_start),

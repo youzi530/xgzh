@@ -137,22 +137,46 @@ def _split_name_and_code(raw: str) -> tuple[str, str] | None:
     return name, code
 
 
-def _parse_price(raw: str) -> Decimal | None:
-    """招股价 ``"98.5"`` / ``"24.86-30.71"`` / ``"N/A"`` / ``"-"`` → Decimal 上限.
+def _parse_price_range(raw: str) -> tuple[Decimal | None, Decimal | None]:
+    """招股价 → ``(price_min, price_max)``.
 
-    与 eastmoney 同款逻辑 (区间取上限对齐 raised_amount), 但额外兼容
-    AAStocks 用 ``N/A`` 表示"未确定" (港股 P+ / B+ / W 类生物科技股招股价
-    定价日才公布, 招股截止日前几小时还在 N/A).
+    BUG-S6.8-004: 与 eastmoney_ipo_client 同款双值协议. AAStocks ``upcomingipo.aspx``
+    上的招股价大多是单值 (招股截止日临近, 已定价) 或 ``N/A`` (招股截止前未定),
+    极少是区间 (招股期早段才有).
+
+    - ``"98.5"`` → ``(Decimal('98.5'), Decimal('98.5'))``
+    - ``"24.86-30.71"`` → ``(Decimal('24.86'), Decimal('30.71'))``
+    - ``"N/A"`` / ``"NA"`` / ``"-"`` / ``"—"`` / 空 → ``(None, None)``
+    - 解析异常 → ``(None, None)``
     """
     s = (raw or "").strip()
     if not s or s.upper() in ("N/A", "NA", "-", "—"):
-        return None
-    parts = s.split("-")
-    candidate = parts[-1].strip() if len(parts) >= 2 else parts[0].strip()
-    try:
-        return Decimal(candidate)
-    except (InvalidOperation, ValueError):
-        return None
+        return (None, None)
+    parts = [p.strip() for p in s.split("-")]
+    parsed: list[Decimal | None] = []
+    for p in parts:
+        try:
+            parsed.append(Decimal(p) if p else None)
+        except (InvalidOperation, ValueError):
+            parsed.append(None)
+    if len(parsed) == 1:
+        single = parsed[0]
+        return (single, single)
+    lo, hi = parsed[0], parsed[-1]
+    if lo is None and hi is not None:
+        lo = hi
+    if hi is None and lo is not None:
+        hi = lo
+    return (lo, hi)
+
+
+def _parse_price(raw: str) -> Decimal | None:
+    """legacy 单值兼容 (== ``price_max``).
+
+    保留此函数以兼容 spec / test 引用; 新代码用 :func:`_parse_price_range`.
+    """
+    _, hi = _parse_price_range(raw)
+    return hi
 
 
 def _parse_slash_date(raw: str) -> date | None:
@@ -283,7 +307,10 @@ def parse_aastocks_upcoming_html(
                 continue
 
             industry = cells[2].get_text(strip=True) or None
-            issue_price = _parse_price(cells[3].get_text(strip=True))
+            # BUG-S6.8-004: 同 eastmoney 拆双值. AA 上多为单值 → min == max,
+            # ``N/A`` → 都为 None (FE 显示"待定价").
+            price_min, price_max = _parse_price_range(cells[3].get_text(strip=True))
+            issue_price = price_max
             # cells[4] = 每手股数 (skip; 可后续 extra.lot_size)
             # cells[5] = 入场费 (skip; 可推算 lot_size * issue_price)
             sub_end = _parse_slash_date(cells[6].get_text(strip=True))
@@ -303,6 +330,8 @@ def parse_aastocks_upcoming_html(
                     market="HK",
                     industry=industry,
                     issue_price=issue_price,
+                    price_min=price_min,
+                    price_max=price_max,
                     issue_currency="HKD",
                     listing_date=listing_dt,
                     subscribe_start=None,  # 列表页无, 详情页才有

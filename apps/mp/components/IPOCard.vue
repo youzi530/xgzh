@@ -68,10 +68,26 @@ const subStatus = computed<string>(() => {
   return '信息待补'
 })
 
+/**
+ * BUG-S6.8-004: 招股价显示区间逻辑.
+ * - ``price_min != price_max`` → ``"166.60-183.20 HKD"`` (招股期早段港股)
+ * - ``price_min == price_max`` 或老 client 不带 min/max → 单值 ``"77.70 HKD"``
+ * - 全 null (AA 上的 ``N/A`` 招股期未定价) → ``"--"`` 占位
+ *
+ * 老 ``issue_price`` 字段保留 (== ``price_max``), 非区间场景仍可用; min/max
+ * 是 BUG-S6.8-004 后新增, 老缓存数据可能没 min/max, 需兜回 issue_price.
+ */
 const issuePriceText = computed(() => {
   const i = props.item
-  if (i.issue_price == null) return '--'
-  return `${i.issue_currency ?? ''} ${Number(i.issue_price).toFixed(2)}`.trim()
+  const lo = i.price_min
+  const hi = i.price_max
+  const ccy = i.issue_currency ?? ''
+  if (lo != null && hi != null && Number(lo) !== Number(hi)) {
+    return `${ccy} ${Number(lo).toFixed(2)}-${Number(hi).toFixed(2)}`.trim()
+  }
+  const single = hi ?? lo ?? i.issue_price
+  if (single == null) return '--'
+  return `${ccy} ${Number(single).toFixed(2)}`.trim()
 })
 
 const peText = computed(() => {
