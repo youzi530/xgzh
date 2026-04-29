@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 中签录入 / 编辑表单 (FE-S6-003 接 BE-S6-002 ``POST/PUT /api/v1/subscriptions``).
  *
@@ -356,7 +359,7 @@ onShow(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <view v-if="loading" class="state-block">
       <text class="state-text">加载中...</text>
     </view>

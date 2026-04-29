@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 知识 tab 主页 (FE-S6-004 接 BE-S6-004).
  *
@@ -115,7 +118,7 @@ function formatRelativeTime(iso: string): string {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- Hero -->
     <view class="hero">
       <text class="hero-title">打新知识</text>

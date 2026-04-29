@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 用户公开资料页 (BUG-S6.8-003 minimal 版).
  *
@@ -83,7 +86,7 @@ onLoad((options) => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <view v-if="loading" class="state">
       <text>加载中…</text>
     </view>

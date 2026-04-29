@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 文章详情页 (FE-S3-002).
  *
@@ -167,11 +170,21 @@ function copyLink() {
 }
 
 function gotoOriginal() {
-  if (!article.value?.original_url) return
+  const url: string | undefined = article.value?.original_url
+  if (!url) return
+  const safeUrl: string = url
+  // BUG-S7.1-001 H5 端浏览器主场, 直接新标签打开原文; 0 反盗链 0 备案问题.
+  // noopener,noreferrer 是 window.open 安全最佳实践 — 防 phishing + 不传 referrer
+  // 防原文站做 origin 黑名单. mp 端走合规黑洞分支 (公众号文章不能 webview).
+  // #ifdef H5
+  window.open(safeUrl, '_blank', 'noopener,noreferrer')
+  return
+  // #endif
+  // #ifndef H5
   // MP-WEIXIN 不能直接打开任意 url; 走"复制 URL + 提示在浏览器粘贴" 兜底.
   // 真实部署时如果第三方域名已备案, 这里换成 navigateTo 一个 web-view 中转页
   uni.setClipboardData({
-    data: article.value.original_url,
+    data: safeUrl,
     success: () => {
       uni.showModal({
         title: '查看原文',
@@ -182,6 +195,7 @@ function gotoOriginal() {
     },
     fail: () => uni.showToast({ title: '复制失败', icon: 'none' }),
   })
+  // #endif
 }
 
 function gotoRelatedArticle(articleId: string) {
@@ -207,7 +221,7 @@ onLoad((options) => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- ─── loading ─── -->
     <view v-if="loading" class="state-block">
       <text class="state-text">加载中…</text>

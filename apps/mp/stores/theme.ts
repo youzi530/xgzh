@@ -48,11 +48,17 @@ function detectSystemTheme(): EffectiveTheme {
 }
 
 /**
- * 应用主题到 H5 documentElement + mp navbar.
+ * 应用主题到 H5 documentElement + mp navbar + tabBar.
  *
- * - H5: ``data-theme`` 属性挂 ``<html>``, CSS 变量自动重算; 不再手动设 navbar
- * - mp-weixin / app: 调 ``uni.setNavigationBarColor`` 给当前页 navbar 染色;
- *   page 内容层 v1 不切 (留待 v2 用 globalEvent 推 wrapper class)
+ * - H5: ``data-theme`` 属性挂 ``<html>``, CSS 变量自动重算; 不再手动设 navbar.
+ *   tabBar 通过 App.vue 的 ``:root[data-theme='light'] uni-tabbar`` CSS filter
+ *   反色生效, 这里不需要 JS 调用 (BUG-S7.1-004).
+ * - mp-weixin / app:
+ *   - ``uni.setNavigationBarColor`` 给当前页 navbar 染色
+ *   - ``uni.setTabBarStyle`` 同步 tabBar 底色/字色 (BUG-S7.1-004); icon 走 PNG
+ *     path 不能动态换色, 留待 v2 出第二套浅色 PNG
+ *   - page 内容层 CSS 变量切换走 ``view.theme-light`` 选择器 (BUG-S7.1-003);
+ *     各页面顶层 view ``:class="[ 'page', themeClass ]"`` 注入即可
  */
 function applyTheme(effective: EffectiveTheme) {
   // #ifdef H5
@@ -77,6 +83,28 @@ function applyTheme(effective: EffectiveTheme) {
   } catch {
     // 部分 mp 端 (调试器 / 早期版本) 不支持; 静默吞
   }
+  // BUG-S7.1-004: mp 端 tabBar 主题同步. borderStyle 仅接 white/black 字面量
+  // (mp 协议限制), 不接任意色值; 浅色主题用 white 给 tabBar 浅色边框.
+  // setTabBarStyle 在 mp/app 端通用; 部分老版本调试器不支持, 静默吞.
+  try {
+    if (effective === 'light') {
+      uni.setTabBarStyle({
+        color: '#64748b',
+        selectedColor: '#2563eb',
+        backgroundColor: '#ffffff',
+        borderStyle: 'white',
+      })
+    } else {
+      uni.setTabBarStyle({
+        color: '#94a3b8',
+        selectedColor: '#4f8bff',
+        backgroundColor: '#0B1220',
+        borderStyle: 'black',
+      })
+    }
+  } catch {
+    // 调试器不支持 setTabBarStyle, 静默吞
+  }
   // #endif
 }
 
@@ -89,6 +117,21 @@ export const useThemeStore = defineStore('theme', () => {
     if (mode.value === 'auto') return systemTheme.value
     return mode.value
   })
+
+  /**
+   * BUG-S7.1-003: page 内容层主题 class.
+   *
+   * mp 端 page 元素不能直接挂 class, 退而求其次给所有页面**顶层 view** 加
+   * ``:class="['page', themeClass]"``; 选 ``light`` 时返回 ``'theme-light'``,
+   * 配合 App.vue 的 ``view.theme-light { --color-* }`` 选择器, 在该 view 上
+   * 重定义 CSS 变量, 子元素全继承到 — 实现内容层主题切换.
+   *
+   * H5 端这个 class 也会注入但不依赖它生效 (H5 走 ``:root[data-theme]``);
+   * 注入它单纯是为了保持 mp / H5 同一套模板代码不分支.
+   */
+  const themeClass = computed<string>(() =>
+    effective.value === 'light' ? 'theme-light' : '',
+  )
 
   /** 冷启动: 读 storage + apply + 监听系统主题变化 */
   function init() {
@@ -144,6 +187,7 @@ export const useThemeStore = defineStore('theme', () => {
     mode,
     systemTheme,
     effective,
+    themeClass,
     init,
     setMode,
     reapply,

@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 知识详情页 (FE-S6-005 接 BE-S6-004 ``GET /knowledge/{slug}``).
  *
@@ -169,7 +172,7 @@ onLoad((options) => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- loading -->
     <view v-if="loading" class="state-block">
       <text class="state-text">加载中...</text>

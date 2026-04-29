@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 我的自选 (FE-006, 依赖 BE-010 / FE-005).
  *
@@ -154,7 +157,7 @@ onPullDownRefresh(async () => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <view class="legal-banner">
       <text class="legal-banner-text">⚠️ 自选仅记录关注偏好, 不构成投资建议</text>
     </view>

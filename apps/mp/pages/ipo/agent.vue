@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * AI 对话页 (FE-S2-001 + FE-S2-002 + FE-S2-003 + FE-S2-004).
  *
@@ -412,7 +415,7 @@ const isLoggedIn = computed(() => auth.loggedIn)
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- 1. 顶部固定免责 banner -->
     <view class="risk-banner">
       <text class="risk-banner-text">⚠️ AI 输出仅供参考, 不构成投资建议; 最终以官方招股书 / 公告为准</text>

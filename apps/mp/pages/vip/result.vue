@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * VIP 支付结果页 (FE-S3-004).
  *
@@ -186,7 +189,7 @@ onUnload(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <view class="hero">
       <text class="hero-emoji">{{ heroEmoji }}</text>
       <text class="hero-title">{{ heroTitle }}</text>

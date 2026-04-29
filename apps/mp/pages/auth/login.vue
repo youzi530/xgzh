@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 登录页 (FE-001, 依赖 BE-002 + BE-005).
  *
@@ -239,7 +242,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <view class="hero">
       <text class="hero-logo">新股智汇</text>
       <text class="hero-sub">港 A 股打新 · AI 分析 · 跨境合规</text>

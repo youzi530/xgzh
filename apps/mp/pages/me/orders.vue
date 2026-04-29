@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 支付历史页 (FE-S3-005).
  *
@@ -139,7 +142,7 @@ onPullDownRefresh(async () => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- ─── summary 条 ─── -->
     <view class="summary">
       <text class="summary-text">{{ summaryText }}</text>

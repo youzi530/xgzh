@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 文章列表 Tab UI (FE-S3-001).
  *
@@ -272,7 +275,7 @@ onReachBottom(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- ─── 错误 banner ─── -->
     <view v-if="error" class="err-banner">
       <text class="err-text">{{ error }}</text>

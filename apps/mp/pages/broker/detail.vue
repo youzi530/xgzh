@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 券商详情页 (FE-S3-003).
  *
@@ -279,7 +282,7 @@ onLoad((options) => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- ─── loading ─── -->
     <view v-if="loading" class="state-block">
       <text class="state-text">加载中…</text>

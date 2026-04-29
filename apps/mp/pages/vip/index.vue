@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * VIP 升级页 (FE-S3-004).
  *
@@ -322,7 +325,7 @@ onShow(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- ─── 顶部 hero ─── -->
     <view class="hero">
       <text class="hero-crown">👑</text>

@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 反馈与建议表单页 (FE-S5-002 / 对接 BE-S5-004 ``POST /api/v1/feedback``).
  *
@@ -132,7 +135,7 @@ onLoad(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- 顶部说明区 -->
     <view class="hero">
       <text class="hero-title">反馈与建议</text>

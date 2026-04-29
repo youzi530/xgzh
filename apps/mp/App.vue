@@ -89,10 +89,19 @@ page,
  * 被编译, 仍按字面 ``page`` 选择器写; 用 store ``reapply()`` 在 mp 端给
  * page 挂 class — mp v2 增强).
  */
+/* BUG-S7.1-003 修复:
+ * mp 端 page 不能直接挂 class, 退一步给每页**顶层 view**(class="page") 注入
+ * ``themeClass='theme-light'``; 这里加 ``view.theme-light`` 选择器让 CSS 变量
+ * 在该 view 上重定义, 子元素继承生效. 等价于 page.theme-light 的 mp v2 实现.
+ *
+ * 注意: 这条选择器命中所有 .theme-light 的 view, 包括非 page-root 的 view, 但
+ * "page-root view 是页面唯一带 .theme-light 的祖先"是约定, 不会冲突.
+ */
 :root[data-theme='light'],
 :root[data-theme='light'] uni-page-body,
 page.theme-light,
-uni-page-body.theme-light {
+uni-page-body.theme-light,
+view.theme-light {
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
   --color-surface-elevated: #f1f5f9;
@@ -129,6 +138,36 @@ uni-page-wrapper,
 uni-page-body {
   background: var(--color-bg) !important;
   color: var(--color-text);
+}
+
+/* BUG-S7.1-004: H5 端 tabBar 主题切换.
+ * pages.json 的 ``tabBar`` 配置一套深色 PNG icon + 灰底, 主题切换不动 tabBar.
+ * 浅色主题下用 CSS filter 反色让单色 icon 视觉适配 (无需出第二套 PNG).
+ *
+ * - invert(0.7) brightness(0.6): 把白灰 icon 反成深灰; 选这两个值是经验值,
+ *   纯 invert(1) 太黑, brightness 兜回亮度
+ * - saturate(0): 防止 invert 后 icon 走味带蓝/绿色
+ * - selected (.uni-tabbar__bd--active) icon 不反色 — selected 是品牌蓝
+ *   #2563eb 在浅底已可见, 反色反而走味
+ *
+ * mp 端不进 H5 条件块, mp 用 ``setTabBarStyle`` 改色; icon path 不变 (灰
+ * icon 在白底视觉勉强能识别, 留待 v2 出第二套).
+ */
+:root[data-theme='light'] uni-tabbar {
+  background-color: #ffffff !important;
+  border-top: 1rpx solid rgba(15, 23, 42, 0.08) !important;
+}
+:root[data-theme='light'] uni-tabbar .uni-tabbar__icon img {
+  filter: invert(0.7) brightness(0.6) saturate(0);
+}
+:root[data-theme='light'] uni-tabbar .uni-tabbar__bd--active .uni-tabbar__icon img {
+  filter: none;
+}
+:root[data-theme='light'] uni-tabbar .uni-tabbar__label {
+  color: #64748b !important;
+}
+:root[data-theme='light'] uni-tabbar .uni-tabbar__bd--active .uni-tabbar__label {
+  color: #2563eb !important;
 }
 /* #endif */
 </style>

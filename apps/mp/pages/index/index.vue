@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 首页 IPO 列表 (FE-004 升级版).
  *
@@ -234,7 +237,7 @@ onReachBottom(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <view class="hero">
       <view class="hero-left">
         <text class="hero-title">新股智汇</text>

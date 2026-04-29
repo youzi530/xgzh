@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 中签账户管理页 (FE-S6-003 接 BE-S6-002 ``/api/v1/subscriptions/accounts``).
  *
@@ -187,7 +190,7 @@ function regionLabel(r: SubscriptionRegion): string {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <view class="hero">
       <text class="hero-title">账户管理</text>
       <text class="hero-subtitle">支持多个券商账户独立记账, 主账户优先汇总</text>

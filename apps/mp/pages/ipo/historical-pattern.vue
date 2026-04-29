@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * AI 历史规律分析报告页 (FE-S4-003).
  *
@@ -352,7 +355,7 @@ onLoad((query) => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- ─── 风险提示 ─── -->
     <view class="risk-banner">
       <text class="risk-banner-text">

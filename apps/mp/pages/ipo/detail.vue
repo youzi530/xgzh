@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 新股详情页 (FE-005, 依赖 BE-009 / BE-010).
  *
@@ -410,7 +413,7 @@ function openProspectus() {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <view class="risk-banner">
       <text class="risk-banner-text">⚠️ IPO 投资有重大风险, 本页内容仅供信息聚合参考, 不构成投资建议</text>
     </view>

@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 券商列表 / 对比页 (FE-S3-003).
  *
@@ -164,7 +167,7 @@ onPullDownRefresh(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- ─── 错误 banner ─── -->
     <view v-if="error" class="err-banner">
       <text class="err-text">{{ error }}</text>

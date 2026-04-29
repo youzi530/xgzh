@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 中签 tab 主页 (FE-S6-002 接 BE-S6-001/002/003).
  *
@@ -149,7 +152,7 @@ function getAccountLabel(accountId: string): string {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- Hero -->
     <view class="hero">
       <view class="hero-text">

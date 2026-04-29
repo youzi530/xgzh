@@ -63,7 +63,7 @@ const upgrade = useUpgradeModal()
 
 // FE-S4-004: 主题切换器 — 读 mode 给 segment 高亮, 写 mode 立即生效 + 持久化
 const themeStore = useThemeStore()
-const { mode: themeMode } = storeToRefs(themeStore)
+const { mode: themeMode, themeClass } = storeToRefs(themeStore)
 
 interface ThemeOption {
   key: ThemeMode
@@ -518,7 +518,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', themeClass]">
     <view class="legal-banner">
       <text class="legal-banner-text">本平台为信息聚合工具, 不构成投资建议</text>
     </view>

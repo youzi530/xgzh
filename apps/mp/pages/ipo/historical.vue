@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 历史 IPO 列表页 (FE-S4-001).
  *
@@ -237,7 +240,7 @@ onReachBottom(() => {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- ─── hero ─── -->
     <view class="hero">
       <view class="hero-back" hover-class="hero-back-hover" :hover-stay-time="80" @tap="gotoBack">

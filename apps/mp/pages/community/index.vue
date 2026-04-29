@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 社区 tab 主页 (FE-S6-005 接 BE-S6-006).
  *
@@ -169,7 +172,7 @@ function categoryChipLabel(cat: PostCategory): string {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- Hero -->
     <view class="hero">
       <view class="hero-text">

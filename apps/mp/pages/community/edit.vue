@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useThemeStore as __useThemeStore } from '@/stores/theme'
+const __theme = __useThemeStore()
+
 /**
  * 社区发帖页 (FE-S6-006 接 BE-S6-006/008/009).
  *
@@ -169,7 +172,7 @@ function rejectionLabel(r: string): string {
 </script>
 
 <template>
-  <view class="page">
+  <view :class="['page', __theme.themeClass]">
     <!-- 内容 -->
     <view class="section">
       <view class="section-head">
