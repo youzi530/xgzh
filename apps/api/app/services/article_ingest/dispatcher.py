@@ -65,6 +65,9 @@ from app.services.article_ingest.sources.base import (
 from app.services.article_ingest.sources.eastmoney_search_client import (
     EastmoneySearchClient,
 )
+from app.services.article_ingest.sources.longbridge_api_client import (
+    LongbridgeApiClient,
+)
 from app.services.article_ingest.sources.sina_finance_client import (
     SinaFinanceClient,
 )
@@ -179,25 +182,30 @@ def register_sources(
 
     顺序无所谓 (各源并发时间互相不影响); 注册池 (Sprint 6.9 起 5 源):
 
-    ====================  =================  =========================================
-    源                    类型               关键词驱动?
-    ====================  =================  =========================================
-    ZhitongRSSClient       RSS 大池           ❌ (订阅式, 关键词反查由 dispatcher 做)
-    SinaFinanceClient      JSON API 大池      ❌ (滚动式, 关键词反查由 dispatcher 做)
-    XueqiuClient           关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 雪球长文)
-    EastmoneySearchClient  关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 持牌全媒体)
-    SogouWechatClient      关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 微信公众号大V)
-    ====================  =================  =========================================
+    ======================  =================  =========================================
+    源                      类型               关键词驱动?
+    ======================  =================  =========================================
+    ZhitongRSSClient         RSS 大池           ❌ (订阅式, 关键词反查由 dispatcher 做)
+    SinaFinanceClient        JSON API 大池      ❌ (滚动式, 关键词反查由 dispatcher 做)
+    XueqiuClient             关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 雪球长文)
+    EastmoneySearchClient    关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 持牌全媒体)
+    SogouWechatClient        关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 微信公众号大V)
+    LongbridgeApiClient      symbol 驱动        ✅ (按 HK code 跑, 长桥官方授权 API,
+                                                  S7.3-001 大V 替代源新增, token 配置时启用)
+    ======================  =================  =========================================
 
-    设计原则 (BUG-S6.7-007 + BUG-S6.9-001):
+    设计原则 (BUG-S6.7-007 + BUG-S6.9-001 + BUG-S7.3-001):
     - **大池 + 精搜双策略**: 大池高 recall 抓周边新闻 / 行业评论; 精搜高 precision
       直接命中 IPO 主题文章. 两者并集后 dispatcher 统一过 IPOKeywordIndex 反查.
     - 大池源 (Zhitong/Sina) 不需要 keywords, 直接 instantiate
     - 精搜源 (Xueqiu/EM/Sogou) 共享同一份 queries 字符串列表 (节省 IPOKeywordIndex
       内部 ``_ipos`` 遍历; 每源最多打 ``article_ingest_xueqiu_max_queries`` 次)
-    - **维度互补 (S6.9-001)**: Xueqiu = 雪球用户长文 / EM = 持牌媒体转载 / Sogou =
-      微信公众号大V. 三者按 ``source_name`` 自然分流 (Sogou 加 ``"微信·"`` 前缀
-      让 FE 按前缀 filter 出"大V点评" tab, 与"持牌媒体" 分轨展示).
+    - **维度互补 (S6.9-001 + S7.3-001)**: Xueqiu = 雪球用户长文 / EM = 持牌媒体转载 /
+      Sogou = 微信公众号大V / Longbridge = 港股官方授权大V (新). 各源按 ``source_name``
+      自然分流: Sogou ``"微信·"`` 前缀, Longbridge ``"长桥·"`` 前缀, 让 FE 按前缀
+      filter 出"大V点评" tab, 与"持牌媒体" 分轨展示.
+    - **token-gated 源**: LongbridgeApiClient 仅在 ``settings.longbridge_api_token``
+      非空时注册. 这让 Sprint 7.3 上线**不阻塞**用户拿 token, token 填了自动启用.
     """
     queries: list[str] = []
     seen: set[str] = set()
@@ -224,6 +232,22 @@ def register_sources(
         if sogou_queries:
             sources.append(
                 SogouWechatClient(settings=settings, queries=sogou_queries)
+            )
+
+    # S7.3-001: 长桥 OpenAPI — 仅在 token 配置时注册. 用 HK code 作 symbol;
+    # 长桥主战场港股 + 美股, A 股不在覆盖范围, 索引里只取 market='HK' 的 code.
+    if settings.longbridge_api_token:
+        hk_symbols = [
+            ipo.code
+            for ipo in keyword_index._ipos  # noqa: SLF001 — internal access by design
+            if ipo.market == "HK" and ipo.code
+        ]
+        if hk_symbols:
+            sources.append(
+                LongbridgeApiClient(
+                    settings=settings,
+                    symbols=hk_symbols[: settings.longbridge_api_max_queries],
+                )
             )
     return sources
 

@@ -582,6 +582,7 @@ onLoad((query) => {
 .page {
   min-height: 100vh;
   background: var(--color-bg, #0b1220);
+  color: var(--color-text, #e2e8f0);
   padding: 24rpx 24rpx 80rpx;
   display: flex;
   flex-direction: column;

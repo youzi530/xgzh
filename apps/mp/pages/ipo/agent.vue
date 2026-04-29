@@ -669,6 +669,7 @@ const isLoggedIn = computed(() => auth.loggedIn)
   flex-direction: column;
   height: 100vh;
   background: var(--color-bg, #0b1220);
+  color: var(--color-text, #e2e8f0);
 }
 
 /* ───────── 顶部 ───────── */

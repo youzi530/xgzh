@@ -492,15 +492,59 @@ class Settings(BaseSettings):
         le=50,
     )
     article_ingest_sogou_inter_query_delay_seconds: float = Field(
-        default=1.5,
+        default=3.0,
         description=(
             "搜狗微信 search 两个 query 之间的 sleep 间隔 (秒). spike 期间观察到连续 "
-            "5 次 / 10s 内必触发反爬 (重定向 ``/antispider``); 1.5s 间隔下连续 10 "
-            "query 实测稳定. 0 = 立即下一 query (仅测试用, respx 注入). 调高更安全, "
-            "但 10 query × 1.5s = 15s, 30min scheduler 周期下完全可吞."
+            "5 次 / 10s 内必触发反爬 (重定向 ``/antispider``); 1.5s 间隔在 bug-fix-21:53 "
+            "用户复测仍触发, BUG-S7.3-001 调高到 3.0s 更保守. 0 = 立即下一 query "
+            "(仅测试用, respx 注入). 10 query × 3s = 30s, 30min scheduler 周期下完全可吞."
         ),
         ge=0,
         le=10,
+    )
+
+    # ─── BUG-S7.3-001 长桥证券 OpenAPI (大V 替代源, spec/22) ──────────────
+    longbridge_api_token: str = Field(
+        default="",
+        description=(
+            "长桥证券 OpenAPI access_token (Bearer 前缀别带, client 自动加). "
+            "**留空 = 不启用本数据源**, dispatcher 注册时会跳过不浪费 source 槽位. "
+            "申请流程: 长桥 App 开户 → openapi.longbridge.com 申请 OpenAPI 权限 → "
+            "OAuth2 register/authorize/token 拿 access_token. 用户后续填即生效, "
+            "不需重新发版."
+        ),
+    )
+    longbridge_api_base_url: str = Field(
+        default="https://openapi.longbridge.global",
+        description=(
+            "长桥 OpenAPI base URL. 国际版 ``.global``, 港版 ``.com.hk`` 都接受. "
+            "如官方文档调整 endpoint, 改这里 + ``longbridge_api_news_path`` 即可."
+        ),
+    )
+    longbridge_api_news_path: str = Field(
+        default="/v1/quote/news",
+        description=(
+            "长桥新闻 API path (含前缀 /). 实际路径以官方文档为准, 用户拿 token "
+            "实测后调整. 默认值是 spec/22 spike 推测路径."
+        ),
+    )
+    longbridge_api_max_queries: int = Field(
+        default=20,
+        description=(
+            "长桥 API 单次 ingest 最多查几个 HK symbol (覆盖最近 N 只活跃 IPO). "
+            "长桥速率限制 10 次/秒, 比搜狗宽松 1 个量级, 默认 20."
+        ),
+        ge=1,
+        le=100,
+    )
+    longbridge_api_inter_query_delay_seconds: float = Field(
+        default=0.2,
+        description=(
+            "长桥 API 两个 query 之间的 sleep (秒). 长桥速率限制 10 次/秒, 0.2s "
+            "保守覆盖 (5 次/秒). 0 = 仅测试用."
+        ),
+        ge=0,
+        le=5,
     )
 
     # ─── BE-S3-003 simhash 同主题折叠 ─────────────────────────────────
