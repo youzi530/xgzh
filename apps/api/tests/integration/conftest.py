@@ -200,6 +200,7 @@ async def patch_session_factory(
     import app.services.user_deletion_service as user_deletion_mod
     import app.services.vip_service as vip_service_mod
     import scripts.backfill_historical_ipos as backfill_historical_mod
+    import scripts.check_historical_coverage as check_historical_coverage_mod
     import scripts.seed_brokers as seed_brokers_mod
 
     # 多处都要 patch: 各 module 在 import 时把 ``get_session_factory`` 拷到自己
@@ -227,6 +228,7 @@ async def patch_session_factory(
         user_deletion_mod,
         seed_brokers_mod,
         backfill_historical_mod,
+        check_historical_coverage_mod,
     ]
     originals: list[object] = [
         getattr(mod, "get_session_factory") for mod in targets  # noqa: B009

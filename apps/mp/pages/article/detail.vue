@@ -42,6 +42,7 @@ import {
 } from '@/api/article'
 import ArticleCard from '@/components/ArticleCard.vue'
 import SentimentBadge from '@/components/SentimentBadge.vue'
+import { getNavParam, navigateWithParams } from '@/utils/navigate'
 
 const article = ref<ArticleDetail | null>(null)
 const loading = ref<boolean>(true)
@@ -152,7 +153,8 @@ async function loadDetail(articleId: string) {
 }
 
 function onIpoTap(code: string) {
-  uni.navigateTo({ url: `/pages/ipo/detail?code=${encodeURIComponent(code)}` })
+  // QA-S5-001 BC-4: 用 navigateWithParams 统一 encode
+  void navigateWithParams('/pages/ipo/detail', { code })
 }
 
 function copyLink() {
@@ -184,7 +186,8 @@ function gotoOriginal() {
 
 function gotoRelatedArticle(articleId: string) {
   // 跳同路由不同参数; uni.redirectTo 会替换栈, 让用户后退仍能回到列表
-  uni.redirectTo({ url: `/pages/article/detail?article_id=${encodeURIComponent(articleId)}` })
+  // QA-S5-001 BC-4: 用 navigateWithParams (replace 模式) 统一 encode
+  void navigateWithParams('/pages/article/detail', { article_id: articleId }, { replace: true })
 }
 
 function gotoList() {
@@ -192,7 +195,8 @@ function gotoList() {
 }
 
 onLoad((options) => {
-  const articleId = options?.article_id as string | undefined
+  // QA-S5-001 BC-4: getNavParam 统一跨端 decode (虽然 article_id 是 ASCII safe, 但保持一致)
+  const articleId = getNavParam(options, 'article_id')
   if (!articleId) {
     error.value = '缺少 article_id 参数'
     loading.value = false

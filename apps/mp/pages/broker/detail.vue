@@ -44,6 +44,7 @@ import {
   type BrokerPublic,
 } from '@/api/broker'
 import { getDeviceId } from '@/utils/device'
+import { getNavParam } from '@/utils/navigate'
 
 const broker = ref<BrokerPublic | null>(null)
 const loading = ref<boolean>(true)
@@ -266,7 +267,8 @@ function gotoList() {
 }
 
 onLoad((options) => {
-  const slug = options?.slug as string | undefined
+  // QA-S5-001 BC-4: getNavParam 统一跨端 decode (slug 是 ASCII safe, 但保持 helper 一致)
+  const slug = getNavParam(options, 'slug')
   if (!slug) {
     error.value = '缺少 slug 参数'
     loading.value = false

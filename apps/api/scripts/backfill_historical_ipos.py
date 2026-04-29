@@ -540,8 +540,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--source",
         choices=["fixture", "synthetic", "akshare"],
-        default="fixture",
-        help="数据源: fixture (默认 ~40 真实锚点) / synthetic (合成至 target-rows) / akshare (真网络)",
+        # QA-S5-001 BC-1/2/7: default 从 fixture (40 行) 改为 synthetic (600 行齐全),
+        # 让 dev/staging 默认就有充足覆盖, 不再因运营/QA 忘跑 --source synthetic 导致
+        # industry / first_day_change_pct 大量 null. 测试代码均显式传 source="fixture"
+        # 不受影响.
+        default="synthetic",
+        help="数据源: synthetic (默认, fixture+合成 600 行) / fixture (~40 真实锚点) / akshare (真网络)",
     )
     parser.add_argument(
         "--fixture-file",

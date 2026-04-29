@@ -47,6 +47,7 @@ import {
 } from '@/api/broker'
 import BrokerCard from '@/components/BrokerCard.vue'
 import { getDeviceId } from '@/utils/device'
+import { navigateWithParams } from '@/utils/navigate'
 
 const list = ref<BrokerPublic[]>([])
 const loading = ref<boolean>(false)
@@ -89,7 +90,8 @@ function selectMarket(m: MarketFilter) {
 }
 
 function gotoDetail(slug: string) {
-  uni.navigateTo({ url: `/pages/broker/detail?slug=${encodeURIComponent(slug)}` })
+  // QA-S5-001 BC-4: 用 navigateWithParams 统一 encode
+  void navigateWithParams('/pages/broker/detail', { slug })
 }
 
 /**

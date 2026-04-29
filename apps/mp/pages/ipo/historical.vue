@@ -33,6 +33,7 @@ import {
   type Market,
 } from '@/api/ipo'
 import HistoricalIPOCard from '@/components/HistoricalIPOCard.vue'
+import { navigateWithParams } from '@/utils/navigate'
 
 type MarketKey = Market | 'all'
 
@@ -195,9 +196,8 @@ const yearFromIdx = computed(() => yearOptions.value.indexOf(yearFrom.value))
 const yearToIdx = computed(() => yearOptions.value.indexOf(yearTo.value))
 
 function openDetail(item: HistoricalIPOItem) {
-  uni.navigateTo({
-    url: `/pages/ipo/detail?code=${encodeURIComponent(item.code)}&name=${encodeURIComponent(item.name)}`,
-  })
+  // QA-S5-001 BC-4: 用 navigateWithParams 统一 encode, 不再手动 ``encodeURIComponent``
+  void navigateWithParams('/pages/ipo/detail', { code: item.code, name: item.name })
 }
 
 function gotoBack() {
@@ -209,14 +209,12 @@ function gotoBack() {
  * 报告页 onLoad 自动填表; 用户进去直接点"生成"即可, 不用重选条件.
  */
 function gotoAIReport() {
-  const params: string[] = []
-  if (industry.value) params.push(`industry=${encodeURIComponent(industry.value)}`)
-  if (market.value !== 'all') params.push(`market=${market.value}`)
-  params.push(`year_from=${yearFrom.value}`)
-  params.push(`year_to=${yearTo.value}`)
-  const qs = params.join('&')
-  uni.navigateTo({
-    url: `/pages/ipo/historical-pattern${qs ? '?' + qs : ''}`,
+  // QA-S5-001 BC-4: 用 navigateWithParams 统一 encode (industry 中文 / market 枚举 / 年份)
+  void navigateWithParams('/pages/ipo/historical-pattern', {
+    industry: industry.value || undefined,
+    market: market.value !== 'all' ? market.value : undefined,
+    year_from: yearFrom.value,
+    year_to: yearTo.value,
   })
 }
 

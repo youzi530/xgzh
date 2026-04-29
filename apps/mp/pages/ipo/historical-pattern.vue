@@ -45,6 +45,7 @@ import {
 import type { Market } from '@/api/ipo'
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 import { useAuthStore } from '@/stores/auth'
+import { getNavParam, navigateWithParams } from '@/utils/navigate'
 import { isAbortError, type StreamHandle } from '@/utils/sse'
 import { type MarkdownBlock, parseMarkdown } from '@/utils/markdown'
 import { Typewriter } from '@/utils/typewriter'
@@ -303,9 +304,8 @@ function onYearToChange(e: { detail: { value: number | string } }) {
 // ─── citation 跳详情 ──────────────────────────────────────────────
 
 function gotoCitation(c: HistoricalPatternCitation) {
-  uni.navigateTo({
-    url: `/pages/ipo/detail?code=${encodeURIComponent(c.code)}&name=${encodeURIComponent(c.name)}`,
-  })
+  // QA-S5-001 BC-4: 用 navigateWithParams 统一 encode
+  void navigateWithParams('/pages/ipo/detail', { code: c.code, name: c.name })
 }
 
 function gotoLogin() {
@@ -333,19 +333,20 @@ function fdColor(v: number | null): string {
 
 onLoad((query) => {
   if (!query) return
-  const ind = decodeURIComponent((query.industry as string) ?? '')
+  // QA-S5-001 BC-4: 用 getNavParam 统一跨端 decode (mp-weixin / H5 / App 行为差异)
+  const ind = getNavParam(query, 'industry')
   if (ind && INDUSTRY_OPTIONS.some((o) => o.key === ind)) industry.value = ind
-  const mk = (query.market as string) ?? ''
+  const mk = getNavParam(query, 'market')
   if (mk === 'HK' || mk === 'A') market.value = mk as Market
-  const yf = Number(query.year_from)
+  const yf = Number(getNavParam(query, 'year_from'))
   if (!Number.isNaN(yf) && yf >= YEAR_PICKER_MIN && yf <= YEAR_PICKER_MAX) {
     yearFrom.value = yf
   }
-  const yt = Number(query.year_to)
+  const yt = Number(getNavParam(query, 'year_to'))
   if (!Number.isNaN(yt) && yt >= YEAR_PICKER_MIN && yt <= YEAR_PICKER_MAX) {
     yearTo.value = yt
   }
-  const code = decodeURIComponent((query.code as string) ?? '')
+  const code = getNavParam(query, 'code')
   if (code) currentIpoCode.value = code
 })
 </script>

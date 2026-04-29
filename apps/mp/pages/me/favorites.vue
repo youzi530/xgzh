@@ -35,6 +35,7 @@ import type { IPOItem } from '@/api/ipo'
 import IPOCard from '@/components/IPOCard.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'
+import { navigateWithParams } from '@/utils/navigate'
 
 const authStore = useAuthStore()
 const { loggedIn } = storeToRefs(authStore)
@@ -92,9 +93,8 @@ function refreshAuthGate() {
 }
 
 function openDetail(item: IPOItem) {
-  uni.navigateTo({
-    url: `/pages/ipo/detail?code=${encodeURIComponent(item.code)}&name=${encodeURIComponent(item.name)}`,
-  })
+  // QA-S5-001 BC-4: 用 navigateWithParams 统一 encode (name 中文跨端关键)
+  void navigateWithParams('/pages/ipo/detail', { code: item.code, name: item.name })
 }
 
 async function onLongPress(item: FavoriteItem) {

@@ -62,6 +62,7 @@ const UpgradeVipModal = defineAsyncComponent(
 import { useUpgradeModal } from '@/composables/upgradeModal'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
+import { getNavParams } from '@/utils/navigate'
 import { openProspectusUrl } from '@/utils/prospectus'
 
 const chat = useChatStore()
@@ -171,8 +172,8 @@ const quickPrompts = computed<string[]>(() => {
 })
 
 onLoad((query) => {
-  const code = decodeURIComponent((query?.code as string) ?? '')
-  const name = decodeURIComponent((query?.name as string) ?? '')
+  // QA-S5-001 BC-4: 跨端统一 decode (mp-weixin 需 decode, H5/App 已 decode, helper 自动判别)
+  const { code, name } = getNavParams(query, ['code', 'name'])
   // setIpoContext 内部会判断 ipo 切换 → reset; 同 ipo 重进幂等
   chat.setIpoContext(code || null, name)
 })

@@ -27,6 +27,7 @@ import {
 import IPOCalendar from '@/components/IPOCalendar.vue'
 import IPOCard from '@/components/IPOCard.vue'
 import { useAuthStore } from '@/stores/auth'
+import { navigateWithParams } from '@/utils/navigate'
 
 type ViewMode = 'list' | 'calendar'
 
@@ -135,9 +136,8 @@ function switchView(v: ViewMode) {
 }
 
 function openDetail(item: IPOItem) {
-  uni.navigateTo({
-    url: `/pages/ipo/detail?code=${encodeURIComponent(item.code)}&name=${encodeURIComponent(item.name)}`,
-  })
+  // QA-S5-001 BC-4: 用 navigateWithParams 统一 encode (item.name 是中文 / 跨端差异关键路径)
+  void navigateWithParams('/pages/ipo/detail', { code: item.code, name: item.name })
 }
 
 function gotoArticles() {

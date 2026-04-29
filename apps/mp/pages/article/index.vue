@@ -51,6 +51,7 @@ import {
   type TLDRResponse,
 } from '@/api/article'
 import ArticleCard from '@/components/ArticleCard.vue'
+import { navigateWithParams } from '@/utils/navigate'
 // PE-S4-001 首屏 lazy-load: TL;DR drawer 仅在用户点 "看 TL;DR" 后才打开, 大多数
 // 用户只浏览列表不点 TL;DR. defineAsyncComponent 拆 chunk 减小首屏 bundle.
 const TldrDrawer = defineAsyncComponent(
@@ -167,13 +168,12 @@ function selectSort(s: SortBy) {
 
 // ─── 跳转 ───────────────────────────────────────────────────
 function onArticleClick(articleId: string) {
-  uni.navigateTo({
-    url: `/pages/article/detail?article_id=${encodeURIComponent(articleId)}`,
-  })
+  // QA-S5-001 BC-4: 用 navigateWithParams 统一 encode
+  void navigateWithParams('/pages/article/detail', { article_id: articleId })
 }
 
 function onIpoClick(code: string) {
-  uni.navigateTo({ url: `/pages/ipo/detail?code=${encodeURIComponent(code)}` })
+  void navigateWithParams('/pages/ipo/detail', { code })
 }
 
 // ─── TL;DR drawer (FE-S3-002) ────────────────────────────────
@@ -237,7 +237,7 @@ function onTldrSourceClick(articleId: string) {
   closeTldr()
   // 抽屉关掉再跳, 避免 mp-weixin 上 navigateTo 与抽屉 transition 冲突看起来跳一半
   setTimeout(() => {
-    uni.navigateTo({ url: `/pages/article/detail?article_id=${encodeURIComponent(articleId)}` })
+    void navigateWithParams('/pages/article/detail', { article_id: articleId })
   }, 100)
 }
 

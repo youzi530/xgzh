@@ -34,6 +34,7 @@ import {
   statusPalette,
 } from '@/api/ipo'
 import FavoriteButton from '@/components/FavoriteButton.vue'
+import { getNavParams, navigateWithParams } from '@/utils/navigate'
 // PE-S4-001 首屏 lazy-load: PeerScatterChart + PeerStatsBars 仅在用户切到 "行业对比"
 // tab 时才需要 (实测 80% 用户进详情看完基本面就走). 用 defineAsyncComponent 让这两
 // 个 SVG-heavy 组件 (~12KB combined) 不进首屏 chunk, 降低首字节传输量.
@@ -130,8 +131,11 @@ function formatNumber(key: string, v: number): string {
 }
 
 onLoad((query) => {
-  code.value = decodeURIComponent((query?.code as string) ?? '')
-  name.value = decodeURIComponent((query?.name as string) ?? '')
+  // QA-S5-001 BC-4: 用 getNavParams 统一跨端 decode 行为, 不再手动 ``decodeURIComponent``
+  // (mp-weixin onLoad 拿到 raw encoded 串需 decode; H5/App 框架已 decode, helper 自动判别 noop)
+  const parsed = getNavParams(query, ['code', 'name'])
+  code.value = parsed.code
+  name.value = parsed.name
   if (code.value) load()
   // 登录态下预热自选数据, 关注按钮立即知道 favored 状态
   if (loggedIn.value) {
@@ -194,8 +198,9 @@ function onTabSelect(t: Tab) {
 }
 
 function gotoAgent() {
-  uni.navigateTo({
-    url: `/pages/ipo/agent?code=${encodeURIComponent(code.value)}&name=${encodeURIComponent(name.value || item.value?.name || '')}`,
+  void navigateWithParams('/pages/ipo/agent', {
+    code: code.value,
+    name: name.value || item.value?.name || '',
   })
 }
 

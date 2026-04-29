@@ -296,6 +296,19 @@ onUnmounted(() => {
           </view>
         </view>
 
+        <!-- QA-S5-001 BC-3: 协议勾选挪到登录按钮"上方"紧贴, 防小屏被推出可见区 -->
+        <view class="agree-row" @tap="agreed = !agreed">
+          <view :class="['checkbox', agreed && 'checkbox-on']">
+            <text v-if="agreed" class="check">✓</text>
+          </view>
+          <view class="agree-text">
+            <text>我已阅读并同意</text>
+            <text class="link" @tap.stop="openAgreement('tos')">《用户协议》</text>
+            <text class="link" @tap.stop="openAgreement('privacy')">《隐私政策》</text>
+            <text class="link" @tap.stop="openAgreement('disclaimer')">《免责声明》</text>
+          </view>
+        </view>
+
         <view
           :class="['btn-primary', !canSubmit && 'btn-disabled']"
           @tap="handlePhoneLogin"
@@ -311,6 +324,20 @@ onUnmounted(() => {
           <text class="wechat-icon">微</text>
         </view>
         <text class="wechat-tip">使用微信账号一键登录</text>
+
+        <!-- QA-S5-001 BC-3: 协议勾选与 phone form 同步, 共享 agreed ref -->
+        <view class="agree-row agree-row-center" @tap="agreed = !agreed">
+          <view :class="['checkbox', agreed && 'checkbox-on']">
+            <text v-if="agreed" class="check">✓</text>
+          </view>
+          <view class="agree-text">
+            <text>我已阅读并同意</text>
+            <text class="link" @tap.stop="openAgreement('tos')">《用户协议》</text>
+            <text class="link" @tap.stop="openAgreement('privacy')">《隐私政策》</text>
+            <text class="link" @tap.stop="openAgreement('disclaimer')">《免责声明》</text>
+          </view>
+        </view>
+
         <view
           :class="['btn-primary', 'btn-wechat', wechatLoading && 'btn-disabled']"
           @tap="handleWechatLogin"
@@ -322,19 +349,8 @@ onUnmounted(() => {
       <!-- #endif -->
     </view>
 
-    <!-- 合规 footer -->
+    <!-- 合规 footer (仅风险提示; 协议勾选已挪到登录按钮上方) -->
     <view class="footer">
-      <view class="agree-row" @tap="agreed = !agreed">
-        <view :class="['checkbox', agreed && 'checkbox-on']">
-          <text v-if="agreed" class="check">✓</text>
-        </view>
-        <view class="agree-text">
-          <text>我已阅读并同意</text>
-          <text class="link" @tap.stop="openAgreement('tos')">《用户协议》</text>
-          <text class="link" @tap.stop="openAgreement('privacy')">《隐私政策》</text>
-          <text class="link" @tap.stop="openAgreement('disclaimer')">《免责声明》</text>
-        </view>
-      </view>
       <text class="risk">
         投资有风险, 入市需谨慎. 本应用为信息聚合工具, 不构成投资 / 税务 / 法律建议.
       </text>
@@ -536,12 +552,16 @@ onUnmounted(() => {
   }
 }
 
+/* QA-S5-001 BC-3: footer 不再放协议勾选, 只放风险提示;
+ * margin-top: auto 让 risk 沉到 page 底部, 但 .agree-row 已脱离 footer
+ * 紧贴登录按钮上方 (在 .card .form 末尾) — 小屏幕 form 高度永远在视口内,
+ * 协议勾选不会再被挤到看不见
+ */
 .footer {
   margin-top: auto;
-  padding-top: 64rpx;
+  padding-top: 32rpx;
   display: flex;
   flex-direction: column;
-  gap: 24rpx;
   align-items: center;
 }
 
@@ -549,6 +569,14 @@ onUnmounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 12rpx;
+  /* 紧贴登录按钮上方; .form gap=28rpx 已经够空气, 这里不另设 margin */
+  padding: 8rpx 4rpx;
+}
+
+/* 微信 tab 居中布局, 协议行也居中以视觉对齐 */
+.agree-row-center {
+  width: 100%;
+  justify-content: center;
 }
 
 .checkbox {
