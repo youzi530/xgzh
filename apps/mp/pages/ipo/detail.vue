@@ -305,31 +305,52 @@ async function loadArticles() {
  * 不做"分页"原因: 后端一次返 ≤ 20 条, 前端就地折叠最直观, 不需要二次拉。
  * 5 是约定阈值, 与"今日打新 hero 卡 ≤ 3" 同一思路 — 首屏控制密度。
  *
- * BUG-S6.9-001: 市场文章 → 大V点评 二级 chip.
+ * BUG-S6.9-001 + BUG-S8-FE: 市场文章 → 二级 chip + 大V点评子 chip.
  *
- * - 同一份 articlesData 不二次拉; 按 source_name 前缀 "微信·" 切分
- * - 三个 chip [全部 / 持牌媒体 / 大V点评], v-show 切换
- * - 切 chip 时 reset articlesExpanded (避免切到只有 2 条的 tab 还残留"收起")
- * - 持牌媒体 = source_name 不以 "微信·" 起 (东财 / 雪球 / 新浪 / 智通)
- * - 大V点评 = source_name 以 "微信·" 起 (搜狗微信 BUG-S6.9-001 抓的)
+ * - 同一份 articlesData 不二次拉; 按 source_name 前缀切分
+ * - 一级 chip [全部 / 持牌媒体 / 大V点评] (UX 不变)
+ * - **BUG-S8-FE**: 大V点评 选中时展开 sub-chip [全部·大V / 微信 / 长桥社区]
+ * - 持牌媒体 = source_name 不在 KOL 前缀集合内 (智通/新浪/财联社/财新/东财/雪球/长桥)
+ * - 大V点评 KOL_PREFIXES = ['微信·', '长桥社区·'] (S6.9 搜狗微信 + S8 长桥社区帖子)
+ *   - 微信 sub = startsWith('微信·')   (搜狗微信公众号, S6.9)
+ *   - 长桥社区 sub = startsWith('长桥社区·') (S8 长桥 community API)
+ * - 切 chip / sub-chip 时 reset articlesExpanded
  */
 const ARTICLE_PREVIEW_COUNT = 5
 const articlesExpanded = ref(false)
 
 type ArticleSourceFilter = 'all' | 'media' | 'kol'
+type KolSubFilter = 'all' | 'wechat' | 'longbridge'
 const articleFilter = ref<ArticleSourceFilter>('all')
+const kolSubFilter = ref<KolSubFilter>('all')
 const WECHAT_PREFIX = '微信·'
+const LONGBRIDGE_COMMUNITY_PREFIX = '长桥社区·'
+const KOL_PREFIXES = [WECHAT_PREFIX, LONGBRIDGE_COMMUNITY_PREFIX]
 
+function isKolArticle(sourceName: string | undefined): boolean {
+  const s = sourceName || ''
+  return KOL_PREFIXES.some((p) => s.startsWith(p))
+}
+
+const kolFilteredAll = computed(() =>
+  articlesData.value.filter((a) => isKolArticle(a.source_name)),
+)
 const filteredArticles = computed(() => {
   if (articleFilter.value === 'media') {
-    return articlesData.value.filter(
-      (a) => !(a.source_name || '').startsWith(WECHAT_PREFIX),
-    )
+    return articlesData.value.filter((a) => !isKolArticle(a.source_name))
   }
   if (articleFilter.value === 'kol') {
-    return articlesData.value.filter(
-      (a) => (a.source_name || '').startsWith(WECHAT_PREFIX),
-    )
+    if (kolSubFilter.value === 'wechat') {
+      return kolFilteredAll.value.filter((a) =>
+        (a.source_name || '').startsWith(WECHAT_PREFIX),
+      )
+    }
+    if (kolSubFilter.value === 'longbridge') {
+      return kolFilteredAll.value.filter((a) =>
+        (a.source_name || '').startsWith(LONGBRIDGE_COMMUNITY_PREFIX),
+      )
+    }
+    return kolFilteredAll.value
   }
   return articlesData.value
 })
@@ -349,20 +370,40 @@ function toggleArticles() {
 }
 
 const mediaCount = computed(
-  () =>
-    articlesData.value.filter(
-      (a) => !(a.source_name || '').startsWith(WECHAT_PREFIX),
-    ).length,
+  () => articlesData.value.filter((a) => !isKolArticle(a.source_name)).length,
 )
-const kolCount = computed(
+const kolCount = computed(() => kolFilteredAll.value.length)
+const kolWechatCount = computed(
   () =>
-    articlesData.value.filter((a) =>
+    kolFilteredAll.value.filter((a) =>
       (a.source_name || '').startsWith(WECHAT_PREFIX),
     ).length,
 )
+const kolLongbridgeCount = computed(
+  () =>
+    kolFilteredAll.value.filter((a) =>
+      (a.source_name || '').startsWith(LONGBRIDGE_COMMUNITY_PREFIX),
+    ).length,
+)
+const kolEmptyHint = computed(() => {
+  if (kolSubFilter.value === 'wechat') {
+    return '暂无微信公众号大V 文章 (搜狗微信 ingest 中)'
+  }
+  if (kolSubFilter.value === 'longbridge') {
+    return '暂无长桥社区帖子 (token 未配置 / 港股社区暂未发帖)'
+  }
+  return '暂无大V 点评 (微信 / 长桥社区均无内容, ingest 中)'
+})
+
 function selectArticleFilter(f: ArticleSourceFilter) {
   if (articleFilter.value === f) return
   articleFilter.value = f
+  articlesExpanded.value = false
+  kolSubFilter.value = 'all'
+}
+function selectKolSub(f: KolSubFilter) {
+  if (kolSubFilter.value === f) return
+  kolSubFilter.value = f
   articlesExpanded.value = false
 }
 
@@ -632,8 +673,35 @@ function openProspectus() {
                 <text>大V点评 {{ kolCount }}</text>
               </view>
             </view>
+            <!-- BUG-S8-FE: 大V tab 选中时展开二级 sub-chip [全部 / 微信 / 长桥社区] -->
+            <view v-if="articleFilter === 'kol'" class="article-subfilter-bar">
+              <view
+                :class="['article-subfilter-chip', kolSubFilter === 'all' && 'article-subfilter-chip-active']"
+                hover-class="article-subfilter-chip-hover"
+                :hover-stay-time="60"
+                @tap="selectKolSub('all')"
+              >
+                <text>全部·大V {{ kolCount }}</text>
+              </view>
+              <view
+                :class="['article-subfilter-chip', kolSubFilter === 'wechat' && 'article-subfilter-chip-active']"
+                hover-class="article-subfilter-chip-hover"
+                :hover-stay-time="60"
+                @tap="selectKolSub('wechat')"
+              >
+                <text>微信公众号 {{ kolWechatCount }}</text>
+              </view>
+              <view
+                :class="['article-subfilter-chip', kolSubFilter === 'longbridge' && 'article-subfilter-chip-active']"
+                hover-class="article-subfilter-chip-hover"
+                :hover-stay-time="60"
+                @tap="selectKolSub('longbridge')"
+              >
+                <text>长桥社区 {{ kolLongbridgeCount }}</text>
+              </view>
+            </view>
             <view v-if="filteredArticles.length === 0" class="empty">
-              <text>{{ articleFilter === 'kol' ? '暂无微信公众号大V 文章 (搜狗微信 ingest 中)' : '暂无持牌媒体文章' }}</text>
+              <text>{{ articleFilter === 'kol' ? kolEmptyHint : '暂无持牌媒体文章' }}</text>
             </view>
             <view
               v-for="a in visibleArticles"
@@ -997,6 +1065,38 @@ function openProspectus() {
 .article-filter-chip-active {
   background: rgba(79, 139, 255, 0.15);
   border-color: rgba(79, 139, 255, 0.4);
+  color: #4f8bff;
+  font-weight: 600;
+}
+
+/* BUG-S8-FE: 大V tab 二级 sub-chip [全部·大V / 微信 / 长桥社区]
+   视觉权重比一级 chip 略低 (字号 -2rpx, 圆角更小, 不带主色填充态对比), 仅当
+   articleFilter === 'kol' 时展示, 与一级 chip 同行视觉但差一档 */
+.article-subfilter-bar {
+  display: flex;
+  flex-direction: row;
+  gap: 10rpx;
+  padding: 0 0 12rpx 0;
+  flex-wrap: wrap;
+}
+.article-subfilter-chip {
+  padding: 6rpx 16rpx;
+  background: transparent;
+  border: 1rpx dashed var(--color-border);
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6rpx;
+}
+.article-subfilter-chip-hover {
+  opacity: 0.7;
+}
+.article-subfilter-chip-active {
+  background: rgba(79, 139, 255, 0.08);
+  border-color: rgba(79, 139, 255, 0.5);
+  border-style: solid;
   color: #4f8bff;
   font-weight: 600;
 }

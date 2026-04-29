@@ -547,6 +547,35 @@ class Settings(BaseSettings):
         le=5,
     )
 
+    # ─── BUG-S8-003 长桥社区 API (与新闻 API 同 token, 大V点评 tab 数据源) ─────
+    longbridge_community_path: str = Field(
+        default="/v1/community/posts",
+        description=(
+            "长桥社区帖子 API path (含前缀 /). 与 ``longbridge_api_news_path`` 独立 "
+            "(便于用户拿 token 后两源分别调). 实际路径以官方文档为准, 默认是 spec/22 "
+            "spike 推测路径. 与新闻 API 共享 access_token, 边际成本 0."
+        ),
+    )
+
+    # ─── BUG-S8-001 财联社全球财经资讯 (akshare stock_info_global_cls) ──────
+    article_ingest_cls_symbols: str = Field(
+        default="全部",
+        description=(
+            "财联社快讯 symbol 类别, 逗号分隔 (例 ``全部,港股,A股,美股``). 默认 ``全部``"
+            "覆盖最多. akshare ``stock_info_global_cls`` 单 symbol 单次返 ~20 条; 多 "
+            "symbol 用 ``,`` 分隔, dispatcher 会逐个 query 后去重."
+        ),
+    )
+    article_ingest_cls_inter_query_delay_seconds: float = Field(
+        default=0.5,
+        description=(
+            "财联社两个 symbol 类别间的 sleep (秒). akshare 内部已限速, 0.5s 保守; "
+            "0 = 测试用."
+        ),
+        ge=0,
+        le=5,
+    )
+
     # ─── BE-S3-003 simhash 同主题折叠 ─────────────────────────────────
     article_dedup_simhash_threshold: int = Field(
         default=3,

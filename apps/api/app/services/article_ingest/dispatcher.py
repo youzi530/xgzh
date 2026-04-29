@@ -62,11 +62,16 @@ from app.services.article_ingest.sources.base import (
     ArticleSource,
     IPOKeywordIndex,
 )
+from app.services.article_ingest.sources.caixin_client import CaixinClient
+from app.services.article_ingest.sources.cls_global_client import ClsGlobalClient
 from app.services.article_ingest.sources.eastmoney_search_client import (
     EastmoneySearchClient,
 )
 from app.services.article_ingest.sources.longbridge_api_client import (
     LongbridgeApiClient,
+)
+from app.services.article_ingest.sources.longbridge_community_client import (
+    LongbridgeCommunityClient,
 )
 from app.services.article_ingest.sources.sina_finance_client import (
     SinaFinanceClient,
@@ -182,17 +187,19 @@ def register_sources(
 
     顺序无所谓 (各源并发时间互相不影响); 注册池 (Sprint 6.9 起 5 源):
 
-    ======================  =================  =========================================
-    源                      类型               关键词驱动?
-    ======================  =================  =========================================
-    ZhitongRSSClient         RSS 大池           ❌ (订阅式, 关键词反查由 dispatcher 做)
-    SinaFinanceClient        JSON API 大池      ❌ (滚动式, 关键词反查由 dispatcher 做)
-    XueqiuClient             关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 雪球长文)
-    EastmoneySearchClient    关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 持牌全媒体)
-    SogouWechatClient        关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 微信公众号大V)
-    LongbridgeApiClient      symbol 驱动        ✅ (按 HK code 跑, 长桥官方授权 API,
-                                                  S7.3-001 大V 替代源新增, token 配置时启用)
-    ======================  =================  =========================================
+    ============================  =================  =========================================
+    源                            类型               关键词驱动?
+    ============================  =================  =========================================
+    ZhitongRSSClient               RSS 大池           ❌ (订阅式, 关键词反查由 dispatcher 做)
+    SinaFinanceClient              JSON API 大池      ❌ (滚动式, 关键词反查由 dispatcher 做)
+    ClsGlobalClient (S8-001)       akshare 大池       ❌ (财联社全球财经快讯)
+    CaixinClient (S8-002)          akshare 大池       ❌ (财新网主要新闻 100 条)
+    XueqiuClient                   关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 雪球长文)
+    EastmoneySearchClient          关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 持牌全媒体)
+    SogouWechatClient              关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 微信公众号大V)
+    LongbridgeApiClient            symbol 驱动        ✅ (HK code, 长桥官方新闻 API, token-gated)
+    LongbridgeCommunityClient (S8) symbol 驱动        ✅ (HK code, 长桥社区帖子, token 同款)
+    ============================  =================  =========================================
 
     设计原则 (BUG-S6.7-007 + BUG-S6.9-001 + BUG-S7.3-001):
     - **大池 + 精搜双策略**: 大池高 recall 抓周边新闻 / 行业评论; 精搜高 precision
@@ -222,20 +229,24 @@ def register_sources(
     sources: list[ArticleSource] = [
         ZhitongRSSClient(settings=settings),
         SinaFinanceClient(settings=settings),
+        # S8-001: 财联社全球财经 (akshare 封装, 持牌媒体, 0 反爬, pip 一行)
+        ClsGlobalClient(settings=settings),
+        # S8-002: 财新网 (akshare stock_news_main_cx, 持牌媒体, 0 反爬)
+        CaixinClient(settings=settings),
     ]
     if queries:
         sources.append(XueqiuClient(settings=settings, queries=queries))
         sources.append(EastmoneySearchClient(settings=settings, queries=queries))
-        # S6.9-001: 搜狗微信; queries 截到 sogou 专用上限 (反爬门槛比 EM 低,
-        # 默认 max_queries 同 xueqiu, 后续可调)
+        # S6.9-001: 搜狗微信 — Sprint 8 用户明示"作大V点评来源之一保留不动";
+        # queries 截到 sogou 专用上限 (反爬门槛比 EM 低, 默认 max_queries 同 xueqiu)
         sogou_queries = queries[: settings.article_ingest_sogou_max_queries]
         if sogou_queries:
             sources.append(
                 SogouWechatClient(settings=settings, queries=sogou_queries)
             )
 
-    # S7.3-001: 长桥 OpenAPI — 仅在 token 配置时注册. 用 HK code 作 symbol;
-    # 长桥主战场港股 + 美股, A 股不在覆盖范围, 索引里只取 market='HK' 的 code.
+    # S7.3-001 + S8-003: 长桥 OpenAPI — 新闻 + 社区两源共享 token, 同时启用/禁用.
+    # 用 HK code 作 symbol; A 股不在长桥覆盖范围, 索引里只取 market='HK'.
     if settings.longbridge_api_token:
         hk_symbols = [
             ipo.code
@@ -243,11 +254,13 @@ def register_sources(
             if ipo.market == "HK" and ipo.code
         ]
         if hk_symbols:
+            limited = hk_symbols[: settings.longbridge_api_max_queries]
             sources.append(
-                LongbridgeApiClient(
-                    settings=settings,
-                    symbols=hk_symbols[: settings.longbridge_api_max_queries],
-                )
+                LongbridgeApiClient(settings=settings, symbols=limited)
+            )
+            # S8-003: 长桥社区 — "大V点评" tab 数据源 (与微信公众号同分流)
+            sources.append(
+                LongbridgeCommunityClient(settings=settings, symbols=limited)
             )
     return sources
 
