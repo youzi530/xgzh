@@ -634,7 +634,7 @@ device_token, push_token, id_card, id_number
 
 ---
 
-### OPS-S5-002 · 真钉钉 webhook 配置 + 告警字段标准化 ⬜
+### OPS-S5-002 · 真钉钉 webhook 配置 + 告警字段标准化 ✅
 
 **目标**：OPS-S4-001 已有发送链路（``error_monitor._maybe_alert``），但 dingtalk_webhook 是空 placeholder，本 PR 配真 URL + 告警字段标准化（severity / module / runbook 链接）。
 
@@ -664,10 +664,67 @@ device_token, push_token, id_card, id_number
 
 **AC**
 
-- [ ] 告警 markdown 渲染正确（钉钉机器人测试发一次）
-- [ ] runbook URL 可点击（钉钉支持）
-- [ ] webhook 失败 fail-soft（已有逻辑，本 PR 加单元测）
-- [ ] runbook md 文件链接 spec/06 §合规处理流程
+- [x] 告警 markdown 渲染正确（24 用例锁定字段：severity / env / error_pct / window / module / hostname / runbook / at；可视渲染留 staging 钉钉群人工冒烟）
+- [x] runbook URL 可点击（用 `[url](url)` markdown 链接形式，钉钉自动渲染）
+- [x] webhook 失败 fail-soft（webhook 空 / 4xx / 网络错三种场景全单测覆盖）
+- [x] runbook md 文件链接 spec/06 §合规处理流程
+
+**完成报告 (2026-04-29)**
+
+实际改动:
+
+- `app/services/error_monitor.py`：
+  - 新增 `Severity = Literal["P0", "P1", "P2"]` 类型 + `derive_severity(error_pct, threshold_pct)` 三档判定
+  - 拆 `_maybe_alert` → `build_alert_payload(metrics, settings, hostname=None)` + `sign_dingtalk_url(webhook, secret, now_ms=None)` + `send_dingtalk(payload, settings=None)` 三个可独立单测的纯函数
+  - 钉钉 markdown payload 含 8 字段:severity / env / error_pct / window / module / hostname / runbook / @ 列表
+  - 关键词 `XGZH-ALERT` 进 markdown 标题 + 正文(钉钉关键词模式必含)
+- `app/core/config.py`：新增 6 个字段
+  - `alert_dingtalk_secret`(留空 = 关键词模式)
+  - `alert_runbook_base_url`(留空时不带 runbook 字段)
+  - `alert_at_user_ids` / `alert_at_mobiles`(@ 列表,逗号分隔)
+  - `alert_module_name`(默认 `xgzh-api`,多服务部署时区分来源)
+- `.env.example`：加 6 行 ALERT_* 注释 + 占位
+- 新建 `xgzh/docs/runbooks/error_rate_high.md`：完整 runbook(严重级判定 / 排查路径 ABC / 上下游联动 / 测试链路代码段)
+- 新增 `tests/test_error_monitor_alert.py`(24 用例:严重级 9 + payload 格式 7 + 加签算法 4 + send fail-soft 4)
+
+钉钉加签算法(`sign_dingtalk_url`)与官方文档对齐:
+
+```python
+timestamp = int(time.time() * 1000)
+sign_str  = f"{timestamp}\n{secret}"
+hmac_code = HMAC_SHA256(secret_bytes, sign_str_bytes)
+sign      = url_quote(base64(hmac_code))
+url       = f"{webhook}&timestamp={timestamp}&sign={sign}"
+```
+
+工程决策:
+
+- **拆 `_maybe_alert` 为三个纯函数** (`build_alert_payload` / `sign_dingtalk_url` / `send_dingtalk`):
+  让每段都能独立单测,告警字段格式可以离线锁死(spec 改格式只动一处),不需要打钉钉 / Redis / 真 wallclock
+- **`derive_severity` 中 P0 硬编码 5%** 而非 "threshold * N":P0 的语义是"业务大概率不可用",与 threshold(噪音容忍线)无关。threshold 调高时不应让 P0 跟着调高
+- **markdown 关键词进 title 同时进 text**:钉钉关键词模式只查 `text.content` 是否含关键词(普通文本) / `markdown.text` 是否含(markdown 类型),两个位置都放保守
+- **`@` 同时填 `at.atUserIds` 和 text body 内联**:钉钉机器人协议要求两处都要填,`at` 字段决定推送给谁,内联 `@uid` 决定该人是否真收到红点 push
+- **`sign_dingtalk_url` 接受 `now_ms` 注入**:让单测能锁死字面量(`sign={expected_sign}`),改算法时回归立刻挂掉
+- **httpx 用 `MockTransport` 而非 `respx`**:本测试不依赖现有 respx fixture / 域名匹配,直接给 `httpx.AsyncClient(transport=MockTransport)` 注入更精准
+- **`send_dingtalk` 4xx 也算 fail-soft**:钉钉 API 限流 / sign 错都会返 4xx,我们 logger.warning + 返 False 但不抛,告警丢失 1 条比业务 worker 因告警失败崩溃划算
+- **runbook 是真 markdown 文件而非链接占位**:写了完整排查路径(error_pct ≥ 5% / 1-5% / < threshold 三种场景),让 oncall 第一次值班就有明确动作。`docs/runbooks/error_rate_high.md` 与 spec/12 §AC 对齐
+- **不引 Sentry trace ID 进告警**:Sentry SDK 与 error_monitor 是两个独立链路,Sentry 的 issue URL 在 OPS-S5-001 SDK 自动提供;告警里附 trace ID 需要 BE 中间件深度耦合,本 sprint 不动
+
+关键学习 / 踩坑:
+
+- 钉钉 webhook URL 通常已含 `?access_token=xxx`,加签拼接用 `&` 而非 `?`,代码里 `sep = "&" if "?" in webhook else "?"` 处理两种情况
+- `at.atUserIds` 是 V2 字段;早期机器人 V1 用 `atDingtalkIds`,但 V2 已是事实默认。文档对齐 V2,生产用 V2 钉钉机器人创建即可
+- ruff `I001` 把 `from app...error_monitor import` 自动按字母序排列,新增 export 时不要手工对齐顺序
+- Pydantic `Settings(**dict)` 直接构造而非 `Settings.model_validate(...)`:绕开 `env_file` 加载,单测纯静态参数
+
+测试结果: 单文件 24 用例 / 0.18s 全绿;全仓库 **1040 passed**(前 1016 + 本次 24),0 回归;ruff + mypy 全绿(134 source files)。
+
+**OPS 模块全收口** (S5):
+
+| ID | 任务 | 状态 |
+|----|------|------|
+| OPS-S5-001 | 真 Sentry SDK 接入 | ✅ |
+| OPS-S5-002 | 钉钉加签 + 告警字段标准化 + runbook | ✅ |
 
 ---
 

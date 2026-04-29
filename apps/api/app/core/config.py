@@ -790,6 +790,42 @@ class Settings(BaseSettings):
             "格式: ``https://oapi.dingtalk.com/robot/send?access_token=xxx``."
         ),
     )
+    alert_dingtalk_secret: str = Field(
+        default="",
+        description=(
+            "钉钉机器人加签 secret. 钉钉机器人安全模式 = 加签时必填; "
+            "= 关键词时留空 (内容必含 'XGZH-ALERT' 即可). "
+            "加签算法: HMAC-SHA256(secret, '{timestamp}\\n{secret}'), 结果 base64 + urlencode 后随 URL."
+        ),
+    )
+    alert_runbook_base_url: str = Field(
+        default="",
+        description=(
+            "告警 runbook 基础 URL. 例: ``https://github.com/lingqiao/xgzh-runbook/wiki``. "
+            "告警 markdown 里 ``runbook: {base_url}/{alert_name}`` 拼路径; 留空时不带 runbook 字段."
+        ),
+    )
+    alert_at_user_ids: str = Field(
+        default="",
+        description=(
+            "告警 @ 的钉钉 userId 列表, 逗号分隔. 钉钉机器人 V2 推荐用 userIds, "
+            "比手机号更稳 (改号不丢通知). 例: ``manager01,oncall_zhang``. 留空 = 不 @."
+        ),
+    )
+    alert_at_mobiles: str = Field(
+        default="",
+        description=(
+            "告警 @ 手机号列表, 逗号分隔. userIds 拿不到时回退方案. "
+            "格式: 11 位裸号或 +86xxx. 留空 = 不 @."
+        ),
+    )
+    alert_module_name: str = Field(
+        default="xgzh-api",
+        description=(
+            "告警 markdown 里的 module 字段值. 多服务部署时用来区分告警来源 "
+            "(如 xgzh-api / xgzh-scheduler). 默认 ``xgzh-api``."
+        ),
+    )
 
     # ─── OPS-S5-001 Sentry SDK ────────────────────────────────────────
     sentry_dsn: str = Field(
