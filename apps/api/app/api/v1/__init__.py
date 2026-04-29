@@ -15,6 +15,7 @@ from app.api.v1 import (
     me,
     payment,
     push,
+    subscriptions,
     vip,
 )
 
@@ -33,6 +34,7 @@ router.include_router(brokers.router)
 router.include_router(vip.router)
 router.include_router(payment.router)
 router.include_router(feedback.router)
+router.include_router(subscriptions.router)
 router.include_router(feature_flags.router)
 router.include_router(admin.router)
 

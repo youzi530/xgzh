@@ -171,8 +171,8 @@ A 股篇 (12 篇)
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
-| BE-S6-001 | be/schema | `subscription_records` + `subscription_accounts` 双表 + alembic 0009 + ORM | 0.5d | — | P0 | ⬜ |
-| BE-S6-002 | be/api | 中签 CRUD API（`POST/GET/PUT/DELETE /api/v1/subscriptions`）+ 多户字段 + 限流 | 1d | BE-S6-001 | P0 | ⬜ |
+| BE-S6-001 | be/schema | `subscription_records` + `subscription_accounts` 双表 + alembic 0012 + ORM | 0.5d | — | P0 | ✅ |
+| BE-S6-002 | be/api | 中签 CRUD API（`POST/GET/PUT/DELETE /api/v1/subscriptions`）+ 多户字段 + 限流 | 1d | BE-S6-001 | P0 | ✅ |
 | BE-S6-003 | be/api | 中签收益汇总 API（`GET /api/v1/subscriptions/summary?group_by=month/year/ipo&account_id=...`）| 1d | BE-S6-002 | P0 | ⬜ |
 | FE-S6-002 | fe/page | 中签 tab 主页：账户切换器 + 月汇总卡片 + 列表（按时间倒序） | 1.5d | FE-S6-001 + BE-S6-003 | P0 | ⬜ |
 | FE-S6-003 | fe/page | 中签录入表单：单条录入 + 字段联动（首日收盘/收益自动算）+ 账户管理 | 1d | BE-S6-002 + FE-S6-002 | P0 | ⬜ |
