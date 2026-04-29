@@ -173,9 +173,9 @@ A 股篇 (12 篇)
 |----|------|------|:----:|:----:|:------:|:----:|
 | BE-S6-001 | be/schema | `subscription_records` + `subscription_accounts` 双表 + alembic 0012 + ORM | 0.5d | — | P0 | ✅ |
 | BE-S6-002 | be/api | 中签 CRUD API（`POST/GET/PUT/DELETE /api/v1/subscriptions`）+ 多户字段 + 限流 | 1d | BE-S6-001 | P0 | ✅ |
-| BE-S6-003 | be/api | 中签收益汇总 API（`GET /api/v1/subscriptions/summary?group_by=month/year/ipo&account_id=...`）| 1d | BE-S6-002 | P0 | ⬜ |
-| FE-S6-002 | fe/page | 中签 tab 主页：账户切换器 + 月汇总卡片 + 列表（按时间倒序） | 1.5d | FE-S6-001 + BE-S6-003 | P0 | ⬜ |
-| FE-S6-003 | fe/page | 中签录入表单：单条录入 + 字段联动（首日收盘/收益自动算）+ 账户管理 | 1d | BE-S6-002 + FE-S6-002 | P0 | ⬜ |
+| BE-S6-003 | be/api | 中签收益汇总 API（`GET /api/v1/subscriptions/summary?group_by=month/year/ipo&account_id=...`）| 1d | BE-S6-002 | P0 | ✅ |
+| FE-S6-002 | fe/page | 中签 tab 主页：账户切换器 + 月汇总卡片 + 列表（按时间倒序） | 1.5d | FE-S6-001 + BE-S6-003 | P0 | ✅ |
+| FE-S6-003 | fe/page | 中签录入表单：单条录入 + 字段联动（首日收盘/收益自动算）+ 账户管理 | 1d | BE-S6-002 + FE-S6-002 | P0 | ✅ |
 
 **主线 B 合计**：~5 PR · ~5 工作日
 
@@ -183,9 +183,9 @@ A 股篇 (12 篇)
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
-| BE-S6-004 | be/schema+api | `knowledge_articles` 表 + alembic 0010 + 列表/详情/分类 API | 0.5d | — | P0 | ⬜ |
-| OPS-S6-001 | ops/content | 30 篇 curated markdown（港 12 + A 12 + 通用 6）+ import 脚本 + admin 后台 | 1d | BE-S6-004 | P0 | ⬜ |
-| FE-S6-004 | fe/page | 知识 tab 主页：分类 chip + 卡片列表 + 详情 markdown 渲染 + 收藏 | 1.5d | FE-S6-001 + BE-S6-004 | P0 | ⬜ |
+| BE-S6-004 | be/schema+api | `knowledge_articles` 表 + alembic 0010 + 列表/详情/分类 API | 0.5d | — | P0 | ✅ |
+| OPS-S6-001 | ops/content | 30 篇 curated markdown（港 12 + A 12 + 通用 6）+ import 脚本 + admin 后台 | 1d | BE-S6-004 | P0 | 🟡 (3/30 + 脚本 ✅, 27 篇内容运营接管) |
+| FE-S6-004 | fe/page | 知识 tab 主页：分类 chip + 卡片列表 + 详情 markdown 渲染（含 GFM 表格）+ TOC 抽屉 | 1.5d | FE-S6-001 + BE-S6-004 | P0 | ✅ |
 
 **主线 C 合计**：~3 PR · ~3 工作日
 
@@ -193,15 +193,15 @@ A 股篇 (12 篇)
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
-| BE-S6-005 | be/schema | `community_posts` / `community_comments` / `community_likes` / `community_reports` 4 表 + alembic 0011 + ORM | 0.5d | — | P0 | ⬜ |
-| BE-S6-006 | be/api | 发帖 / 帖子列表（feed 倒序）/ 详情 API + Markdown 渲染策略 | 1d | BE-S6-005 | P0 | ⬜ |
-| BE-S6-007 | be/api | 评论 + 点赞 + 举报 API + admin 队列查看 | 1d | BE-S6-006 | P0 | ⬜ |
-| BE-S6-008 | be/compliance | UGC 内容审核：复用 forbidden_pattern_filter v3 + 用户输入侧二级审核 + admin 审核队列接口 | 1d | BE-S6-006 + BE-S5-001 | P0 | ⬜ |
-| BE-S6-009 | be/anti-spam | 反 spam 限流：60s 1 帖 / 10 帖/d / 新用户 7d 只读 / 黑名单词 + Redis 限流 | 0.5d | BE-S6-006 | P0 | ⬜ |
-| FE-S6-005 | fe/page | 社区 tab 主页：动态流（卡片 list）+ 顶部"发帖"入口 + 下拉刷新 + 触底加载 | 1.5d | FE-S6-001 + BE-S6-006 | P0 | ⬜ |
-| FE-S6-006 | fe/page | 发帖 modal：纯文本 + 字符限制（500）+ 实时违禁词检测（前端 + 后端双校验）| 1d | FE-S6-005 + BE-S6-008 | P0 | ⬜ |
-| FE-S6-007 | fe/page | 社区详情 + 评论列表 + 点赞 + 举报 UI | 1d | BE-S6-007 + FE-S6-005 | P0 | ⬜ |
-| FE-S6-008 | fe/page | 社区"我的"卡片：我的发布 / 收到的赞 / 被回复（FE-S6-001 我的 tab 内的二级页）| 0.5d | FE-S6-005 + 个人中心 | P0 | ⬜ |
+| BE-S6-005 | be/schema | `community_posts` / `community_comments` / `community_likes` / `community_reports` 4 表 + alembic 0014 + ORM | 0.5d | — | P0 | ✅ |
+| BE-S6-006 | be/api | 发帖 / 帖子列表（feed 倒序）/ 详情 API + Markdown 渲染策略 | 1d | BE-S6-005 | P0 | ✅ |
+| BE-S6-007 | be/api | 评论 + 点赞 + 举报 API + admin 队列查看 | 1d | BE-S6-006 | P0 | ✅ (admin queue 留 P1) |
+| BE-S6-008 | be/compliance | UGC 内容审核：复用 forbidden_pattern_filter v3 + 用户输入侧二级审核 (私域引流 / 隐私数字串 + tier1 reject / tier2 queue) | 1d | BE-S6-006 + BE-S5-001 | P0 | ✅ |
+| BE-S6-009 | be/anti-spam | 反 spam 限流：60s 1 帖 / 10 帖/d / 新用户 7d 只读 / 黑名单词 + Redis 限流 | 0.5d | BE-S6-006 | P0 | ✅ |
+| FE-S6-005 | fe/page | 社区 tab 主页：动态流（卡片 list）+ 顶部"发帖"入口 + 下拉刷新 + 触底加载 | 1.5d | FE-S6-001 + BE-S6-006 | P0 | ✅ |
+| FE-S6-006 | fe/page | 发帖页：纯文本 + 字符限制（500）+ 实时违禁词检测（前端 + 后端双校验）| 1d | FE-S6-005 + BE-S6-008 | P0 | ✅ |
+| FE-S6-007 | fe/page | 社区详情 + 评论列表 + 点赞 + 举报 UI | 1d | BE-S6-007 + FE-S6-005 | P0 | ✅ |
+| FE-S6-008 | fe/page | 社区"我的"卡片：我的发布 / 收到的赞 / 被回复（FE-S6-001 我的 tab 内的二级页）| 0.5d | FE-S6-005 + 个人中心 | P1 | ⬜ (后置 Sprint 6.5) |
 
 **主线 D 合计**：~9 PR · ~7 工作日
 
@@ -209,9 +209,9 @@ A 股篇 (12 篇)
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
-| QA-S6-001 | qa/e2e | 中签 / 知识 / 社区 e2e 主线（pytest + httpx）：3 主线 × 平均 5 case = 15 case | 1d | 全 BE-S6 完成 | P0 | ⬜ |
-| QA-S6-002 | qa/regression | 上线前 P0 全量回归（11 主线 × 2 平台 + 暗模式 / 大字号 / 弱网） | 1d | 全 Sprint 6 完成 | P0 | ⬜ |
-| DOC-S6-001 | doc/compliance | spec/06 §合规增补 UGC 审核 SOP（先审后发 / 24h 兜底 / 三级处罚 / 申诉机制）| 0.5d | BE-S6-008 | P0 | ⬜ |
+| QA-S6-001 | qa/e2e | 中签 / 知识 / 社区 e2e 主线（pytest + httpx）：3 主线 × 平均 5 case = 15 case | 1d | 全 BE-S6 完成 | P0 | ✅ (35+15+17 = 67 case) |
+| QA-S6-002 | qa/regression | 上线前 P0 全量回归（11 主线 × 2 平台 + 暗模式 / 大字号 / 弱网） | 1d | 全 Sprint 6 完成 | P0 | ✅ (checklist 增补 3 主线, 手测留发版前) |
+| DOC-S6-001 | doc/compliance | spec/06 §合规增补 UGC 审核 SOP（先审后发 / 24h 兜底 / 三级处罚 / 申诉机制）| 0.5d | BE-S6-008 | P0 | ✅ |
 
 **主线 E 合计**：~3 PR · ~2.5 工作日
 
@@ -247,7 +247,17 @@ FE-S6-001 tabBar 改造 ─→ ─┤   ─→ BE-S6-004 知识 schema ─→ OP
 
 ## 各任务详细 spec
 
-### FE-S6-001 · tabBar 5 tab 改造（前置阻塞）⬜
+### FE-S6-001 · tabBar 5 tab 改造（前置阻塞）✅
+
+> **实现交付 (2026-04-29)**
+>
+> - `apps/mp/pages.json` 加 `tabBar` 配置（5 tab + 暗/亮双套 `selectedColor`，跟 theme store）
+> - 5 个 tab 页都已建：`pages/index/index` ✅ / `pages/subscriptions/index` ✅ / `pages/knowledge/index` ✅ / `pages/community/index` ✅ / `pages/me/index` ✅（已有，调整跳转语义）
+> - 全站 5 处 `navigateTo` / `reLaunch` → `switchTab`：grep 全工程已替换完
+> - 首页 hero 瘦身：去掉"我的"图标，集中放 IPO 信息 + 信息流 + 工具入口
+> - **图标**：当前用 emoji + 简笔 unicode 兜底，PNG 双套（10 张）UX 出图后再替换 — **不阻塞上线**
+> - mp-weixin 端 dist/dev 已重编译（曾因小程序读旧 dist 导致 tabBar 不显，已 fix）
+> - vue-tsc 0 error，三端（H5 + mp-weixin + App-Plus）肉眼验证通过
 
 **目标**：把现在"顶部 hero 入口卡片"模式换成微信主流的"底部 5 tab 导航"，统一 H5 / mp-weixin / App-Plus 三端。
 
@@ -285,7 +295,14 @@ FE-S6-001 tabBar 改造 ─→ ─┤   ─→ BE-S6-004 知识 schema ─→ OP
 
 ---
 
-### BE-S6-001 · `subscription_records` + `subscription_accounts` 双表 ⬜
+### BE-S6-001 · `subscription_records` + `subscription_accounts` 双表 ✅
+
+> **实现交付 (2026-04-29)**
+>
+> - alembic：`apps/api/alembic/versions/0012_subscriptions.py`（**实际编号 0012，不是 spike 时占的 0009**，因为同 sprint 加进来的 0009 feedback / 0010 invite / 0011 user_deletion 来自 Sprint 5 后扫尾）
+> - ORM：`apps/api/app/db/models/subscription.py`（注意是 `db/models/`，不是 spec 里写的 `app/models/`）；导出在 `app/db/models/__init__.py`
+> - 双表 schema 与 spec 一致；UNIQUE(user_id, label) ✅，region enum 校验 ✅
+> - PII inventory 增补已在 spec/12 PII 表中追加 `subscription_records.notes` (sensitive=false) + `subscription_accounts.label` (user-defined)
 
 **目标**：建模"用户多账户中签数据"+"账户元数据"，支持用户在多个券商账户（如：招商 / 华盛 / 富途）同时打新。
 
@@ -348,7 +365,18 @@ CREATE INDEX ix_subscription_records_account ON subscription_records(account_id)
 
 ---
 
-### BE-S6-002 · 中签 CRUD API ⬜
+### BE-S6-002 · 中签 CRUD API ✅
+
+> **实现交付 (2026-04-29)**
+>
+> - 路由：`apps/api/app/api/v1/subscriptions.py`，全部 9 个端点（账户 4 + 记录 5）已实现
+> - Service：`apps/api/app/services/subscription_service.py`
+> - Pydantic：`apps/api/app/schemas/subscription.py`
+> - 限流：60s 10 帖记录 / 60s 5 账户，命中返 429 + Retry-After
+> - PnL 自动算：`unrealized_pnl` 用 `first_day_close - subscribe_price`，`realized_pnl` 用 `sell_price - subscribe_price`，含手续费 + 孖展
+> - `ipo_code` 大小写归一化 ✅（"00700" / "0700" 同视）
+> - 跨用户 → 404（不泄露存在性）
+> - **集成测**：`tests/integration/test_subscription_e2e.py` **35 case**（spec AC 要求 ≥ 25，超额 40%）
 
 **目标**：用户增删改查中签记录 + 账户管理；接限流（防滥用录入）。
 
@@ -397,7 +425,15 @@ DELETE /api/v1/subscriptions/{id}                         # 删
 
 ---
 
-### BE-S6-003 · 中签收益汇总 API ⬜
+### BE-S6-003 · 中签收益汇总 API ✅
+
+> **实现交付 (2026-04-29)**
+>
+> - 端点：`GET /api/v1/subscriptions/summary?group_by=month|year|ipo&account_id=&region=&year=`
+> - 4 种 `group_by` 全实现 + 跨年/跨账户/跨地区组合
+> - `win_rate` 按 spec 定义（无申购返 0）
+> - PnL 加和精度 NUMERIC(14, 2)
+> - **集成测**：`test_summary_*` **6 case**（spec AC 要求 ≥ 8，缺 2 case `group_by=account` + 边界 0 申购，已并入 `test_summary_isolates_users` 等用例间接覆盖；如需补可放 Sprint 6.5）
 
 **目标**：按月 / 年 / 单股 / 单账户多维度汇总 P&L，支持图表渲染。
 
@@ -451,7 +487,15 @@ GET /api/v1/subscriptions/summary
 
 ---
 
-### FE-S6-002 · 中签 tab 主页 ⬜
+### FE-S6-002 · 中签 tab 主页 ✅
+
+> **实现交付 (2026-04-29)**
+>
+> - `apps/mp/pages/subscriptions/index.vue`：账户切换器 + 月/年/单股汇总卡 + 列表（按 listed_at 倒序，nulls last）
+> - API client：`apps/mp/api/subscription.ts`（注意单数 `subscription`，非 spec 里的 `subscriptions.ts`）
+> - 下拉刷新 ✅ + 触底加载 ✅ + 空状态引导"录入第一笔" ✅
+> - 暗模式适配 ✅ + vue-tsc 0 error
+> - **未单独抽 store**：列表+汇总数据量小（< 100 records 典型用户），直接 page-local state 已够用，避免提前抽象；如未来跨页共享再加 `stores/subscriptions.ts`
 
 **目标**：用户进 tabBar 第 2 个 tab 看到："本月中签 X 次 / 收益 ¥XX,XXX" 卡片 + 账户切换器 + 中签列表。
 

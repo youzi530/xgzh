@@ -13,9 +13,16 @@ from app.db.models.chat import (
     ChatTokenUsage,
     ChatToolCall,
 )
+from app.db.models.community import (
+    CommunityComment,
+    CommunityLike,
+    CommunityPost,
+    CommunityReport,
+)
 from app.db.models.feedback import Feedback
 from app.db.models.invite import InviteCode, InviteReward
 from app.db.models.ipo import IPO, IPODocument
+from app.db.models.knowledge import KnowledgeArticle
 from app.db.models.push import PushToken
 from app.db.models.subscription import SubscriptionAccount, SubscriptionRecord
 from app.db.models.user import User, UserFavorite
@@ -31,12 +38,17 @@ __all__ = [
     "ChatSession",
     "ChatTokenUsage",
     "ChatToolCall",
+    "CommunityComment",
+    "CommunityLike",
+    "CommunityPost",
+    "CommunityReport",
     "ConversionEvent",
     "Feedback",
     "InviteCode",
     "InviteReward",
     "IPO",
     "IPODocument",
+    "KnowledgeArticle",
     "PushToken",
     "SubscriptionAccount",
     "SubscriptionRecord",

@@ -70,6 +70,22 @@ export type MarkdownBlock =
   | {
       kind: 'hr'
     }
+  | {
+      /**
+       * GFM 风格表格 (FE-S6-005 知识详情页扩充).
+       *
+       * - ``headers``: 表头单元格 inline 段
+       * - ``rows``: 数据行, 每行是 ``InlineSegment[]`` 数组
+       * - ``aligns``: 每列对齐方式 (来自 ``|---:---|`` 分隔行 col-modifier),
+       *   值为 ``'left' | 'center' | 'right'``; 长度与 ``headers`` 对齐, 不足补 ``'left'``
+       *
+       * 不支持: 列对齐之外的扩展语法 (e.g. cell 跨列), 嵌套块 (e.g. 表格里的代码块).
+       */
+      kind: 'table'
+      headers: InlineSegment[][]
+      rows: InlineSegment[][][]
+      aligns: ('left' | 'center' | 'right')[]
+    }
 
 // ─── 行内解析: 把一行字符串变成 InlineSegment[] ──────────────────────
 
@@ -254,7 +270,32 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
       continue
     }
 
-    // 6. 列表 (无序 / 有序; 不支持嵌套, 兄弟项连续)
+    // 6. GFM 表格: 第 1 行 ``|h1|h2|``, 第 2 行 ``|---|:-:|`` 分隔, 接 N 行数据
+    if (line.trim().startsWith('|') && i + 1 < lines.length) {
+      const sep = lines[i + 1].trim()
+      // 分隔行: 必须是 ``|`` 开头 + 至少 1 个 ``-`` + 可选 ``:``
+      if (/^\|(\s*:?-{1,}:?\s*\|)+$/.test(sep)) {
+        const headers = _splitTableRow(line.trim())
+        const aligns = _parseTableAligns(sep, headers.length)
+        const rows: InlineSegment[][][] = []
+        i += 2
+        while (i < lines.length) {
+          const ln = lines[i].trim()
+          if (!ln.startsWith('|')) break
+          rows.push(_splitTableRow(ln))
+          i += 1
+        }
+        blocks.push({
+          kind: 'table',
+          headers,
+          rows,
+          aligns,
+        })
+        continue
+      }
+    }
+
+    // 7. 列表 (无序 / 有序; 不支持嵌套, 兄弟项连续)
     const ulMatch = /^[-*+]\s+(.+)$/.exec(trimmed)
     const olMatch = /^(\d+)\.\s+(.+)$/.exec(trimmed)
     if (ulMatch || olMatch) {
@@ -275,7 +316,7 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
       continue
     }
 
-    // 7. 段落 — 直到下一个空行 / 块级特殊起点
+    // 8. 段落 — 直到下一个空行 / 块级特殊起点
     const paraLines: string[] = [line]
     i += 1
     while (i < lines.length) {
@@ -307,6 +348,44 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
 }
 
 /**
+ * 把 GFM 表格一行 ``| a | b | c |`` 切成 cell inline 段数组.
+ *
+ * 注意 ``|`` 前后允许任意空白; 末尾 ``|`` 是可选的 (但我们的输入侧总会带);
+ * 不处理转义 ``\|`` (LLM / 运营手写表格极少这么干, 出问题再补).
+ */
+function _splitTableRow(line: string): InlineSegment[][] {
+  let raw = line.trim()
+  if (raw.startsWith('|')) raw = raw.slice(1)
+  if (raw.endsWith('|')) raw = raw.slice(0, -1)
+  return raw.split('|').map((cell) => parseInline(cell.trim()))
+}
+
+/**
+ * 解析 GFM 表格分隔行的 align modifier:
+ * - ``---`` → ``left``
+ * - ``:---`` → ``left``
+ * - ``:---:`` → ``center``
+ * - ``---:`` → ``right``
+ */
+function _parseTableAligns(
+  sep: string,
+  cols: number,
+): ('left' | 'center' | 'right')[] {
+  let raw = sep.trim()
+  if (raw.startsWith('|')) raw = raw.slice(1)
+  if (raw.endsWith('|')) raw = raw.slice(0, -1)
+  const parts = raw.split('|').map((p) => p.trim())
+  const aligns: ('left' | 'center' | 'right')[] = []
+  for (let k = 0; k < cols; k += 1) {
+    const p = parts[k] ?? ''
+    if (p.startsWith(':') && p.endsWith(':')) aligns.push('center')
+    else if (p.endsWith(':')) aligns.push('right')
+    else aligns.push('left')
+  }
+  return aligns
+}
+
+/**
  * 拿 block 列表的纯文本 (去 markdown 标记) — 供"复制内容" / 截断预览 / 字数统计
  * 等场景使用; 与 LLM 原始 token 流保持语义一致。
  */
@@ -324,6 +403,13 @@ export function blocksToPlainText(blocks: MarkdownBlock[]): string {
           return b.text
         case 'hr':
           return '---'
+        case 'table': {
+          const headers = b.headers.map(inlinesToText).join(' | ')
+          const rows = b.rows
+            .map((r) => r.map(inlinesToText).join(' | '))
+            .join('\n')
+          return `${headers}\n${rows}`
+        }
       }
     })
     .join('\n\n')

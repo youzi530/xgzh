@@ -29,6 +29,9 @@ from app.schemas.subscription import (
     SubscriptionRecordResponse,
     SubscriptionRecordUpdateRequest,
     SubscriptionRegion,
+    SubscriptionSummaryGroup,
+    SubscriptionSummaryGroupBy,
+    SubscriptionSummaryResponse,
 )
 from app.security import get_current_user
 from app.services import subscription_service
@@ -217,6 +220,49 @@ async def list_records(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/summary",
+    response_model=SubscriptionSummaryResponse,
+    summary="中签收益汇总 (按 month/year/ipo 分组)",
+)
+async def summary(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    group_by: SubscriptionSummaryGroupBy = "month",
+    account_id: uuid.UUID | None = None,
+    region: SubscriptionRegion | None = None,
+) -> SubscriptionSummaryResponse:
+    groups, total = await subscription_service.summarize_records(
+        session,
+        user_id=user.user_id,
+        group_by=group_by,
+        account_id=account_id,
+        region=region,
+    )
+    return SubscriptionSummaryResponse(
+        group_by=group_by,
+        groups=[
+            SubscriptionSummaryGroup(
+                key=g.key,
+                label=g.label,
+                count=g.count,
+                allotted_count=g.allotted_count,
+                realized_pnl=g.realized_pnl,
+                unrealized_pnl=g.unrealized_pnl,
+            )
+            for g in groups
+        ],
+        total=SubscriptionSummaryGroup(
+            key=total.key,
+            label=total.label,
+            count=total.count,
+            allotted_count=total.allotted_count,
+            realized_pnl=total.realized_pnl,
+            unrealized_pnl=total.unrealized_pnl,
+        ),
     )
 
 

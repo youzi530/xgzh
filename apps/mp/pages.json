@@ -109,6 +109,46 @@
             }
         },
         {
+            "path": "pages/community/edit",
+            "style": {
+                "navigationBarTitleText": "发布动态",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
+            "path": "pages/community/detail",
+            "style": {
+                "navigationBarTitleText": "动态详情",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
+            "path": "pages/subscriptions/edit",
+            "style": {
+                "navigationBarTitleText": "录入中签",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
+            "path": "pages/subscriptions/accounts",
+            "style": {
+                "navigationBarTitleText": "账户管理",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
+            "path": "pages/knowledge/detail",
+            "style": {
+                "navigationBarTitleText": "知识详情",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
             "path": "pages/article/index",
             "style": {
                 "navigationBarTitleText": "市场文章",

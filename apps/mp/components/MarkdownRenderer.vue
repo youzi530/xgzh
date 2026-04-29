@@ -212,6 +212,78 @@ function inlineKey(seg: InlineSegment, idx: number): string {
         </scroll-view>
       </view>
 
+      <!-- 表格 (GFM, FE-S6-005) -->
+      <view v-else-if="block.kind === 'table'" class="md-table">
+        <scroll-view scroll-x class="md-table-scroll">
+          <view class="md-table-inner">
+            <view class="md-tr md-tr-head">
+              <view
+                v-for="(h, hIdx) in block.headers"
+                :key="hIdx"
+                class="md-th"
+                :class="`md-align-${block.aligns[hIdx] || 'left'}`"
+              >
+                <text>
+                  <text
+                    v-for="(seg, sIdx) in h"
+                    :key="inlineKey(seg, sIdx)"
+                  >
+                    <text v-if="seg.kind === 'text'">{{ seg.text }}</text>
+                    <text v-else-if="seg.kind === 'bold'" class="md-bold">{{ seg.text }}</text>
+                    <text v-else-if="seg.kind === 'italic'" class="md-italic">{{ seg.text }}</text>
+                    <text v-else-if="seg.kind === 'code'" class="md-inline-code">{{ seg.text }}</text>
+                    <text
+                      v-else-if="seg.kind === 'link'"
+                      class="md-link"
+                      @tap.stop="onLinkTap(seg.url)"
+                    >{{ seg.text }}</text>
+                    <text
+                      v-else-if="seg.kind === 'citation'"
+                      class="md-citation"
+                      @tap.stop="onCitationTap(seg.idx)"
+                    >[{{ seg.idx }}]</text>
+                  </text>
+                </text>
+              </view>
+            </view>
+            <view
+              v-for="(row, rIdx) in block.rows"
+              :key="rIdx"
+              class="md-tr"
+            >
+              <view
+                v-for="(cell, cIdx) in row"
+                :key="cIdx"
+                class="md-td"
+                :class="`md-align-${block.aligns[cIdx] || 'left'}`"
+              >
+                <text>
+                  <text
+                    v-for="(seg, sIdx) in cell"
+                    :key="inlineKey(seg, sIdx)"
+                  >
+                    <text v-if="seg.kind === 'text'">{{ seg.text }}</text>
+                    <text v-else-if="seg.kind === 'bold'" class="md-bold">{{ seg.text }}</text>
+                    <text v-else-if="seg.kind === 'italic'" class="md-italic">{{ seg.text }}</text>
+                    <text v-else-if="seg.kind === 'code'" class="md-inline-code">{{ seg.text }}</text>
+                    <text
+                      v-else-if="seg.kind === 'link'"
+                      class="md-link"
+                      @tap.stop="onLinkTap(seg.url)"
+                    >{{ seg.text }}</text>
+                    <text
+                      v-else-if="seg.kind === 'citation'"
+                      class="md-citation"
+                      @tap.stop="onCitationTap(seg.idx)"
+                    >[{{ seg.idx }}]</text>
+                  </text>
+                </text>
+              </view>
+            </view>
+          </view>
+        </scroll-view>
+      </view>
+
       <!-- 水平线 -->
       <view v-else-if="block.kind === 'hr'" class="md-hr" />
     </view>
@@ -365,6 +437,58 @@ function inlineKey(seg: InlineSegment, idx: number): string {
   color: var(--color-text, #f1f5f9);
   line-height: 1.6;
   white-space: pre;
+}
+
+/* 表格 (GFM, FE-S6-005) */
+.md-table {
+  border-radius: 8rpx;
+  overflow: hidden;
+  border: 1rpx solid rgba(255, 255, 255, 0.08);
+}
+.md-table-scroll {
+  white-space: nowrap;
+}
+.md-table-inner {
+  display: flex;
+  flex-direction: column;
+  min-width: 100%;
+}
+.md-tr {
+  display: flex;
+  flex-direction: row;
+  border-bottom: 1rpx solid rgba(255, 255, 255, 0.06);
+}
+.md-tr:last-child {
+  border-bottom: none;
+}
+.md-tr-head {
+  background: rgba(255, 255, 255, 0.04);
+}
+.md-th,
+.md-td {
+  flex: 1;
+  min-width: 160rpx;
+  padding: 16rpx 20rpx;
+  font-size: 26rpx;
+  line-height: 1.5;
+  color: var(--color-text, #f1f5f9);
+  border-right: 1rpx solid rgba(255, 255, 255, 0.06);
+}
+.md-th:last-child,
+.md-td:last-child {
+  border-right: none;
+}
+.md-th {
+  font-weight: 700;
+}
+.md-align-left {
+  text-align: left;
+}
+.md-align-center {
+  text-align: center;
+}
+.md-align-right {
+  text-align: right;
 }
 
 /* 水平线 */

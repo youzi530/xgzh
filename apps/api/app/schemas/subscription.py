@@ -239,6 +239,39 @@ class SubscriptionRecordListResponse(BaseModel):
     offset: int
 
 
+# ─── 汇总 (BE-S6-003) ───────────────────────────────────────────────────
+
+
+SubscriptionSummaryGroupBy = Literal["month", "year", "ipo"]
+
+
+class SubscriptionSummaryGroup(BaseModel):
+    """单个分组桶: key='2026-04' / '2026' / '00700'."""
+
+    key: str = Field(..., description="分组键: month=YYYY-MM, year=YYYY, ipo=ipo_code")
+    label: str = Field(..., description="UI 显示用的人话")
+    count: int = Field(..., description="本组总记录条数")
+    allotted_count: int = Field(..., description="本组中签条数 (allotted_shares > 0)")
+    realized_pnl: Decimal | None = Field(
+        default=None, description="本组已实现 PnL 求和; 全部 NULL 时仍为 NULL"
+    )
+    unrealized_pnl: Decimal | None = Field(
+        default=None, description="本组浮盈浮亏求和; 全部 NULL 时仍为 NULL"
+    )
+
+
+class SubscriptionSummaryResponse(BaseModel):
+    """``GET /api/v1/subscriptions/summary`` 响应."""
+
+    group_by: SubscriptionSummaryGroupBy
+    groups: list[SubscriptionSummaryGroup] = Field(
+        ..., description="分组列表 (按 key 倒序; ipo 按 PnL 倒序)"
+    )
+    total: SubscriptionSummaryGroup = Field(
+        ..., description="全 user 维度合计 (key='_total')"
+    )
+
+
 __all__ = [
     "SubscriptionAccountCreateRequest",
     "SubscriptionAccountListResponse",
@@ -249,4 +282,7 @@ __all__ = [
     "SubscriptionRecordResponse",
     "SubscriptionRecordUpdateRequest",
     "SubscriptionRegion",
+    "SubscriptionSummaryGroup",
+    "SubscriptionSummaryGroupBy",
+    "SubscriptionSummaryResponse",
 ]

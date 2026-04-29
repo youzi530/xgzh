@@ -594,3 +594,155 @@ async def test_record_create_rate_limit_10_per_minute(client: httpx.AsyncClient)
     res11 = await client.post("/api/v1/subscriptions", json=payload, headers=_h(token))
     assert res11.status_code == 429
     assert "Retry-After" in res11.headers
+
+
+
+# ─── 6. 汇总 API (BE-S6-003) ────────────────────────────────
+
+
+async def _seed_records_for_summary(
+    client: httpx.AsyncClient, token: str, account_id: str
+) -> None:
+    """预烖几条 records 跨 2 个月 + 2 只股, 供 summary 验证."""
+    records = [
+        # 2026-04, 00700 中签 + 已卖, realized=495 unrealized=195
+        {
+            "ipo_code": "00700",
+            "subscribed_at": "2026-04-01",
+            "listed_at": "2026-04-10",
+            "subscribe_shares": 1000,
+            "allotted_shares": 100,
+            "subscribe_price": "10.00",
+            "fees": "5.00",
+            "first_day_close": "12.00",
+            "sell_price": "15.00",
+            "sell_at": "2026-04-15T10:00:00+08:00",
+        },
+        # 2026-04, 09988 未中签
+        {
+            "ipo_code": "09988",
+            "subscribed_at": "2026-04-05",
+            "subscribe_shares": 500,
+            "allotted_shares": 0,
+        },
+        # 2026-03, 00700 中签 + 未卖, unrealized=995
+        {
+            "ipo_code": "00700",
+            "subscribed_at": "2026-03-01",
+            "listed_at": "2026-03-10",
+            "subscribe_shares": 1000,
+            "allotted_shares": 100,
+            "subscribe_price": "10.00",
+            "fees": "5.00",
+            "first_day_close": "20.00",
+        },
+    ]
+    for r in records:
+        payload = {"account_id": account_id, "region": "HK", **r}
+        res = await client.post("/api/v1/subscriptions", json=payload, headers=_h(token))
+        assert res.status_code == 201, res.text
+
+
+async def test_summary_group_by_month(client: httpx.AsyncClient) -> None:
+    _, token = await _register_via_otp(client, phone="13000000040")
+    acc = await _create_account(client, token, label="A")
+    await _seed_records_for_summary(client, token, acc["id"])
+
+    res = await client.get(
+        "/api/v1/subscriptions/summary?group_by=month", headers=_h(token)
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["group_by"] == "month"
+    # 2 个月 (按 desc: 2026-04 在前, 2026-03 在后)
+    assert len(body["groups"]) == 2
+    assert [g["key"] for g in body["groups"]] == ["2026-04", "2026-03"]
+
+    apr = body["groups"][0]
+    assert apr["count"] == 2  # 00700 + 09988
+    assert apr["allotted_count"] == 1  # 只 00700 中签
+    assert apr["realized_pnl"] == "495.00"
+    assert apr["unrealized_pnl"] == "195.00"
+    assert "2026 年 4 月" in apr["label"]
+
+    mar = body["groups"][1]
+    assert mar["count"] == 1
+    assert mar["realized_pnl"] is None  # 3 月那条没卖
+    assert mar["unrealized_pnl"] == "995.00"
+
+    # 总览: count=3, allotted=2, realized=495, unrealized=195+995=1190
+    total = body["total"]
+    assert total["count"] == 3
+    assert total["allotted_count"] == 2
+    assert total["realized_pnl"] == "495.00"
+    assert total["unrealized_pnl"] == "1190.00"
+
+
+async def test_summary_group_by_year(client: httpx.AsyncClient) -> None:
+    _, token = await _register_via_otp(client, phone="13000000041")
+    acc = await _create_account(client, token, label="A")
+    await _seed_records_for_summary(client, token, acc["id"])
+    res = await client.get(
+        "/api/v1/subscriptions/summary?group_by=year", headers=_h(token)
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["group_by"] == "year"
+    assert len(body["groups"]) == 1  # 都是 2026
+    assert body["groups"][0]["key"] == "2026"
+    assert body["groups"][0]["count"] == 3
+    assert body["groups"][0]["unrealized_pnl"] == "1190.00"
+
+
+async def test_summary_group_by_ipo(client: httpx.AsyncClient) -> None:
+    _, token = await _register_via_otp(client, phone="13000000042")
+    acc = await _create_account(client, token, label="A")
+    await _seed_records_for_summary(client, token, acc["id"])
+    res = await client.get(
+        "/api/v1/subscriptions/summary?group_by=ipo", headers=_h(token)
+    )
+    assert res.status_code == 200
+    body = res.json()
+    # 2 只股: 00700 (PnL = 495 + 195 + 995 = 1685) > 09988 (PnL=0)
+    assert [g["key"] for g in body["groups"]] == ["00700", "09988"]
+    g700 = body["groups"][0]
+    assert g700["count"] == 2
+    assert g700["allotted_count"] == 2
+    assert g700["realized_pnl"] == "495.00"
+    assert g700["unrealized_pnl"] == "1190.00"
+
+
+async def test_summary_filter_by_account(client: httpx.AsyncClient) -> None:
+    _, token = await _register_via_otp(client, phone="13000000043")
+    a1 = await _create_account(client, token, label="A1")
+    a2 = await _create_account(client, token, label="A2")
+    await _seed_records_for_summary(client, token, a1["id"])
+    # a2 完全没 records
+    res = await client.get(
+        f"/api/v1/subscriptions/summary?group_by=month&account_id={a2['id']}",
+        headers=_h(token),
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["groups"] == []
+    assert body["total"]["count"] == 0
+
+
+async def test_summary_isolates_users(client: httpx.AsyncClient) -> None:
+    _, t1 = await _register_via_otp(client, phone="13000000044")
+    _, t2 = await _register_via_otp(client, phone="13000000045")
+    acc1 = await _create_account(client, t1, label="X")
+    await _seed_records_for_summary(client, t1, acc1["id"])
+    res = await client.get(
+        "/api/v1/subscriptions/summary?group_by=month", headers=_h(t2)
+    )
+    assert res.status_code == 200
+    assert res.json()["total"]["count"] == 0
+
+
+async def test_summary_invalid_group_by_rejected(client: httpx.AsyncClient) -> None:
+    _, token = await _register_via_otp(client, phone="13000000046")
+    res = await client.get(
+        "/api/v1/subscriptions/summary?group_by=quarter", headers=_h(token)
+    )
+    assert res.status_code == 422  # FastAPI Literal 检验不在枚举

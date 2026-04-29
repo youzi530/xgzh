@@ -36,6 +36,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import func, select, update
@@ -509,3 +510,135 @@ async def delete_record(
     await session.delete(record)
     await session.flush()
     logger.info(f"sub_record.deleted user={user_id} id={record_id}")
+
+
+# ─── 收益汇总 (BE-S6-003) ──────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class SummaryGroup:
+    """汇总桶 (service 层中性数据结构, router 转 pydantic)."""
+
+    key: str
+    label: str
+    count: int
+    allotted_count: int
+    realized_pnl: Decimal | None
+    unrealized_pnl: Decimal | None
+
+
+def _format_month_label(key: str) -> str:
+    """'2026-04' → '2026 年 4 月'."""
+    if "-" not in key or len(key) < 7:
+        return key
+    y, m = key.split("-", 1)
+    try:
+        return f"{int(y)} 年 {int(m)} 月"
+    except ValueError:
+        return key
+
+
+async def summarize_records(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    group_by: str,
+    account_id: uuid.UUID | None = None,
+    region: str | None = None,
+) -> tuple[list[SummaryGroup], SummaryGroup]:
+    """汇总该 user 中签记录, 返 (groups, total).
+
+    分组维度:
+    - ``group_by='month'``: 按 ``subscribed_at`` 的 YYYY-MM (PG ``to_char``)
+    - ``group_by='year'``:  按 YYYY
+    - ``group_by='ipo'``:   按 ``ipo_code`` (label 优先用 ipo_name, 没值 fallback ipo_code)
+
+    汇总指标:
+    - count: 本组总记录条数
+    - allotted_count: 中签条数 (``allotted_shares > 0``)
+    - realized_pnl: SUM(realized_pnl); NULL 跳过
+    - unrealized_pnl: 同上
+
+    ``total`` (key='_total') 是全 records 的汇总, 不受 group_by 影响.
+    """
+    key_expr: Any  # SQLAlchemy column or func; both expose .label() / .desc()
+    if group_by == "month":
+        key_expr = func.to_char(SubscriptionRecord.subscribed_at, "YYYY-MM")
+    elif group_by == "year":
+        key_expr = func.to_char(SubscriptionRecord.subscribed_at, "YYYY")
+    elif group_by == "ipo":
+        key_expr = SubscriptionRecord.ipo_code
+    else:
+        raise ValueError(f"unsupported group_by: {group_by}")
+
+    count_expr = func.count(SubscriptionRecord.id).label("cnt")
+    allotted_expr = func.count(
+        func.nullif(SubscriptionRecord.allotted_shares, 0)
+    ).label("allotted_cnt")
+    realized_expr = func.sum(SubscriptionRecord.realized_pnl).label("realized_sum")
+    unrealized_expr = func.sum(SubscriptionRecord.unrealized_pnl).label(
+        "unrealized_sum"
+    )
+    name_expr = func.max(SubscriptionRecord.ipo_name).label("name_picked")
+
+    base_filters: list[Any] = [SubscriptionRecord.user_id == user_id]
+    if account_id is not None:
+        base_filters.append(SubscriptionRecord.account_id == account_id)
+    if region is not None:
+        base_filters.append(SubscriptionRecord.region == region)
+
+    group_stmt = select(
+        key_expr.label("group_key"),
+        count_expr,
+        allotted_expr,
+        realized_expr,
+        unrealized_expr,
+        name_expr,
+    ).group_by(key_expr)
+    for f in base_filters:
+        group_stmt = group_stmt.where(f)
+
+    if group_by == "ipo":
+        order_expr = (
+            func.coalesce(realized_expr, Decimal("0"))
+            + func.coalesce(unrealized_expr, Decimal("0"))
+        ).desc()
+        group_stmt = group_stmt.order_by(order_expr)
+    else:
+        group_stmt = group_stmt.order_by(key_expr.desc())
+
+    rows = (await session.execute(group_stmt)).all()
+    groups: list[SummaryGroup] = []
+    for r in rows:
+        gk = r.group_key
+        if group_by == "month":
+            label = _format_month_label(gk)
+        elif group_by == "year":
+            label = f"{gk} 年"
+        else:
+            label = f"{r.name_picked} ({gk})" if r.name_picked else gk
+        groups.append(
+            SummaryGroup(
+                key=gk,
+                label=label,
+                count=int(r.cnt),
+                allotted_count=int(r.allotted_cnt),
+                realized_pnl=r.realized_sum,
+                unrealized_pnl=r.unrealized_sum,
+            )
+        )
+
+    total_stmt = select(count_expr, allotted_expr, realized_expr, unrealized_expr)
+    for f in base_filters:
+        total_stmt = total_stmt.where(f)
+    t = (await session.execute(total_stmt)).one()
+    total = SummaryGroup(
+        key="_total",
+        label="合计",
+        count=int(t.cnt),
+        allotted_count=int(t.allotted_cnt),
+        realized_pnl=t.realized_sum,
+        unrealized_pnl=t.unrealized_sum,
+    )
+
+    return groups, total

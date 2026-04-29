@@ -7,11 +7,13 @@ from app.api.v1 import (
     auth,
     brokers,
     chat,
+    community,
     favorites,
     feature_flags,
     feedback,
     invite,
     ipos,
+    knowledge,
     me,
     payment,
     push,
@@ -35,6 +37,8 @@ router.include_router(vip.router)
 router.include_router(payment.router)
 router.include_router(feedback.router)
 router.include_router(subscriptions.router)
+router.include_router(knowledge.router)
+router.include_router(community.router)
 router.include_router(feature_flags.router)
 router.include_router(admin.router)
 

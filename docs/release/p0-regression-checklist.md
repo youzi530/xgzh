@@ -1,17 +1,19 @@
-# 上线前 P0 回归 checklist (QA-S5-002)
+# 上线前 P0 回归 checklist (QA-S5-002 + QA-S6-002)
 
-> **目标**:Sprint 5 全任务收尾后,端到端再走一遍 spec/07 §6.1 所有功能验收路径,作为"上线放行"的最后一道关。
+> **目标**:Sprint 6 全任务收尾后,端到端再走一遍 spec/07 §6.1 + spec/13 主线 B/C/D 所有功能验收路径,作为"上线放行"的最后一道关。
 > **覆盖度策略**:**自动化测试守 → 红线**(任何破坏自动化都必 fail);**手测验收 → 真机平台**(自动化无法覆盖的端到端 UI 体验)
-> **生成日期**:2026-04-29
+> **更新日期**:2026-04-29 (Sprint 6 增补 3 主线: 中签记账 / 知识库 / 社区)
 
 ---
 
-## 1. 自动化回归状态(2026-04-29 实测)
+## 1. 自动化回归状态(2026-04-29 实测, Sprint 6 收尾)
 
 ```
 $ make test-all  (= XGZH_TEST_DATABASE_URL=... uv run pytest tests/ -v)
 
-  1045 passed in 205.57s (3:25)
+  Sprint 5 基线: 1045 passed
+  Sprint 6 增量: +35 中签 e2e + 15 知识 e2e + 17 社区 e2e + 11 admin/UGC = +78 case
+  Sprint 6 实测 393 integration passed in 153s (2:33)  (含 17 community 全绿)
   ✅ 0 failed
   ✅ 0 回归
 ```
@@ -132,6 +134,51 @@ $ cd apps/mp && npx vue-tsc --noEmit
 | UTM 邀请落地 → 自动 bindInvite | ✅ BE-S5-005 invite_reward(9 case)| ✅ utils/utm.ts + auth.setSession hook | ⏸ **冷启演练** | ⏸ |
 | UTM 7d TTL 过期清理 | — | ✅ utils/utm.ts UTM_TTL_MS | — | — |
 
+### 主线 9:中签记账(Sprint 6 主线 B 新增)
+
+| 路径 | BE 自动化 | FE 自动化 | H5 手测 | mp-weixin 手测 |
+|------|----------|----------|--------|----------------|
+| 账户 CRUD + 主账户切换 | ✅ `tests/integration/test_subscription_e2e.py`(35 case) | ✅ vue-tsc | ⏸ | ⏸ |
+| 中签 records CRUD + PnL 自动算 | ✅ 同上 | ✅ subscriptions/edit.vue | ⏸ | ⏸ |
+| 月 / 年 / 单股汇总 + 多账户筛选 | ✅ 同上 | ✅ subscriptions/index.vue | ⏸ | ⏸ |
+| 录入限流 60s ≤ 10 | ✅ 同上 | — | ⏸ 触发限流提示 | ⏸ |
+
+**手测补强重点**:
+- 录入流程跑通: 创建账户 → 录入 1 条中签 (港股 / 含孖展) → 主页汇总卡显示正确
+- "未中签" 录入也能存储 (allotted_shares=0)
+- 月 / 年切换 chip 即时反映
+
+### 主线 10:知识库(Sprint 6 主线 C 新增)
+
+| 路径 | BE 自动化 | FE 自动化 | H5 手测 | mp-weixin 手测 |
+|------|----------|----------|--------|----------------|
+| 列表 / 详情 / 分类 API | ✅ `tests/integration/test_knowledge_e2e.py`(15 case) | ✅ vue-tsc | ⏸ | ⏸ |
+| view_count 异步累加 | ✅ 同上 | — | — | — |
+| markdown 渲染 + GFM 表格 + TOC | — | ✅ MarkdownRenderer.vue + utils/markdown.ts | ⏸ **3 篇 sample 全渲染正确** | ⏸ |
+| 法律免责 / source_url 显示 | — | ✅ knowledge/detail.vue | ⏸ | ⏸ |
+
+**手测补强重点**:
+- 详情页表格滚动 (mp-weixin 横向滚动适配)
+- TOC 抽屉打开 / 关闭 / 切换章节 toast 正常
+
+### 主线 11:社区 UGC(Sprint 6 主线 D 新增)
+
+| 路径 | BE 自动化 | FE 自动化 | H5 手测 | mp-weixin 手测 |
+|------|----------|----------|--------|----------------|
+| 发帖 / 列表 / 详情 / 软删 | ✅ `tests/integration/test_community_e2e.py`(17 case) | ✅ vue-tsc | ⏸ | ⏸ |
+| v3 内容审核 (Tier 1/2 + 私域引流 + 隐私数字串) | ✅ 同上 | ✅ utils 客户端简化版 | ⏸ 试 "必涨" / "vx 加群" / "13800138000" | ⏸ |
+| 反 spam 限流 (60s ≤ 1 帖 / 10s ≤ 1 评论 / 1s ≤ 5 赞) | ✅ 同上 | — | ⏸ 连点验证 | ⏸ |
+| 新用户 7d 只读 | ✅ 同上 | — | ⏸ | ⏸ |
+| 评论一级 + 二级 + audit | ✅ 同上 | ✅ community/detail.vue | ⏸ | ⏸ |
+| 点赞乐观更新 + 失败回滚 | ✅ 同上 | ✅ detail.vue 内部 | ⏸ | ⏸ |
+| 举报 (4 选项 + reports_count ≥ 5 自动 hidden) | ✅ 同上 | ✅ detail.vue modal | ⏸ | ⏸ |
+
+**手测补强重点**:
+- **合规线**:试发"加我微信 vx 12345"→ 立即 reject + 自见
+- **新用户 7d**:刚注册账号无法发帖 (站内信提示)
+- **乐观更新**:网络断开 → 点赞 UI 立刻反映 → 后端失败回滚
+- **举报阈值**:测试账号刷 5 次举报某帖 → 该帖自动 hidden (作者还能看)
+
 ---
 
 ## 3. 平台特定手测重点
@@ -163,13 +210,17 @@ $ cd apps/mp && npx vue-tsc --noEmit
 
 ### 必须红线(满足才上线)
 
-- [x] BE 自动化全套 1045 通过 / 0 失败 / 0 回归(2026-04-29 实测 3:25)
+- [x] BE 自动化全套通过 / 0 失败 / 0 回归(Sprint 6 实测 393 integration)
 - [x] BE ruff + mypy 双绿
 - [x] FE vue-tsc 0 错
 - [x] BC tracker 9/9 已修(QA-S5-001 归档,见 `bad-case-tracker.md`)
 - [x] PIPL PII 审计 + Sentry PII scrub(BE-S5-002 + OPS-S5-001)
 - [x] DingTalk 告警链路接通(OPS-S5-002 + runbook)
-- [ ] 8 主线 × H5 + mp-weixin 手测全跑过(本 checklist §3)
+- [x] alembic head=0014_community(Sprint 6 schema 三新表族 subscription/knowledge/community 已上)
+- [x] DOC-S6-001 spec/06 §UGC 审核 SOP 已增补(三级处罚 / 24h SLA / 申诉机制)
+- [ ] 11 主线 × H5 + mp-weixin 手测全跑过(本 checklist §3,Sprint 6 +3 主线)
+- [ ] **法务签字**:UGC 用户协议 (含 `《社区规则》`) + 30 篇知识库内容 (OPS-S6-001 内容运营接管)
+- [ ] **运营冷启动**:社区前 100 种子用户 + admin 群 + 违规举报响应 SOP 就位
 - [ ] mp-weixin 提审包 build + 体积 < 2MB(FE-S5-001 待办)
 - [ ] 上线前 5 分钟跑一次 `make ci-integration` 确认 staging DB 同样通过
 - [ ] 上线前跑一次 `uv run python -m scripts.check_historical_coverage` 确认 industry / first_day coverage 达 AC
@@ -180,6 +231,8 @@ $ cd apps/mp && npx vue-tsc --noEmit
 - ⏸ akshare 接 stock_zh_a_hist 反算 first_day_change_pct(Sprint 6+)
 - ⏸ 邀请落地页独立 `/pages/invite/landing`(Sprint 6+)
 - ⏸ FE vitest 单测引入(Sprint 6+)
+- ⏸ FE-S6-008 社区"我的"卡片(Sprint 6.5+,二级页可后置)
+- ⏸ admin 审核队列 UI(Sprint 6.5+,P0 走 SQL 直查 + 钉钉群手动)
 
 ---
 
