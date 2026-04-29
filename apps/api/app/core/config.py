@@ -307,6 +307,20 @@ class Settings(BaseSettings):
         default=-1,
         description="VIP 配额上限. -1 = 无限 (跳过 check), Sprint 3 改成 50/天等具体值.",
     )
+
+    # ─── BUG-S6.6-002a 社区反 spam 策略 (从 anti_spam.py 硬编码迁出) ────
+    # 历史: Sprint 6 BE-S6-009 把 ``_NEW_USER_READONLY_DAYS = 7`` 硬写在 anti_spam.py.
+    # 后果: dev 环境用户(刚注册)永远卡只读, 发帖直接 403; Sprint 6.5 用户验收时
+    # 连"测试发帖"这一步都做不了 → spec/15 §Spike #3.
+    # 修复: 这里出 Settings 字段, dev/staging .env 显式覆盖为 0.
+    community_new_user_readonly_days: int = Field(
+        default=7,
+        description=(
+            "新用户注册后多少天内不能发帖 / 评论 (反 spam 黑产用大批量新号灌水). "
+            "0 = 关闭, 默认 7 (生产). dev/staging .env 应设 0 或 1 方便调试. "
+            "见 ``app/services/community/anti_spam.py:enforce_new_user_writable``."
+        ),
+    )
     vip_user_id_whitelist: str = Field(
         default="",
         description=(

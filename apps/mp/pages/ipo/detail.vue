@@ -51,17 +51,18 @@ const PeerStatsBars = defineAsyncComponent(
 import { useAuthStore } from '@/stores/auth'
 import { useFavoritesStore } from '@/stores/favorites'
 
-type Tab = 'fundamental' | 'peer' | 'sponsor' | 'highlights' | 'risks' | 'articles'
+type Tab = 'articles' | 'fundamental' | 'peer' | 'sponsor' | 'highlights' | 'risks'
 
+// BUG-S6.6-003: 市场文章前置到第 1 位 (Sprint 6.5 时放最末尾, 用户验收说"想先看市场情绪").
+// 顺序原则: 用户看新股先关心舆论(articles) → 数据(fundamental/peer) → 配套(sponsor/highlights/risks).
+// activeTab 默认 'articles', loadArticles 在 onLoad 立即触发 (不再懒加载, 因为是首屏 tab).
 const TABS: { key: Tab; label: string }[] = [
+  { key: 'articles', label: '市场文章' },
   { key: 'fundamental', label: '基本面' },
   { key: 'peer', label: '行业对比' },
   { key: 'sponsor', label: '保荐承销' },
   { key: 'highlights', label: '投资亮点' },
   { key: 'risks', label: '主要风险' },
-  // BUG-S6.5-004a: 市场文章入口从首页右上角迁到这里, 让用户看 IPO 详情时
-  // 直接看到关联文章, 比"首页右上角小按钮"更明显也更顺手。
-  { key: 'articles', label: '市场文章' },
 ]
 
 const code = ref('')
@@ -70,7 +71,7 @@ const item = ref<IPODetail | null>(null)
 const loading = ref(false)
 const error = ref('')
 const errorCode = ref('')
-const activeTab = ref<Tab>('fundamental')
+const activeTab = ref<Tab>('articles')
 
 // FE-S4-002: 行业对比 (BE-S4-003 ``/ipos/{code}/peer-aggregate``)
 //
@@ -150,7 +151,12 @@ onLoad((query) => {
   const parsed = getNavParams(query, ['code', 'name'])
   code.value = parsed.code
   name.value = parsed.name
-  if (code.value) load()
+  if (code.value) {
+    load()
+    // BUG-S6.6-003: articles 是默认 tab, onLoad 就触发拉取 (不再走"切到 tab 才懒加载");
+    // 同步发 detail + articles 两个请求, 走 BE 各自的缓存, 不互相阻塞.
+    loadArticles()
+  }
   // 登录态下预热自选数据, 关注按钮立即知道 favored 状态
   if (loggedIn.value) {
     favStore.loadOnce().catch(() => {

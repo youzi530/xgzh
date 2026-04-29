@@ -100,9 +100,20 @@ async def test_anon_can_list_posts(client: httpx.AsyncClient) -> None:
 
 
 async def test_new_user_within_7d_cannot_post(
-    client: httpx.AsyncClient, session_factory: async_sessionmaker
+    client: httpx.AsyncClient,
+    session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """新用户注册即发帖 → 403 (7d 只读)."""
+    """新用户注册即发帖 → 403 (Nd 只读).
+
+    BUG-S6.6-002a: ``community_new_user_readonly_days`` 已配置化, dev .env 默认 0
+    (关闭). 这里 monkeypatch 强制设回 7 验证保护期逻辑还能跑.
+    """
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("COMMUNITY_NEW_USER_READONLY_DAYS", "7")
+
     full_phone = "+8613000099999"
     await otp_service.store_otp(full_phone, "111111", ttl_seconds=300)
     resp = await client.post(
@@ -117,7 +128,37 @@ async def test_new_user_within_7d_cannot_post(
         headers=_h(token),
     )
     assert res.status_code == 403
+    # cleanup: 还原 settings 缓存让其它用例不受影响
+    get_settings.cache_clear()
     _ = session_factory  # 避免未使用
+
+
+async def test_new_user_readonly_disabled_when_days_zero(
+    client: httpx.AsyncClient,
+    session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BUG-S6.6-002a: ``community_new_user_readonly_days=0`` → 新用户立即可发帖."""
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("COMMUNITY_NEW_USER_READONLY_DAYS", "0")
+
+    full_phone = "+8613000099998"
+    await otp_service.store_otp(full_phone, "111111", ttl_seconds=300)
+    resp = await client.post(
+        "/api/v1/auth/login/phone", json={"phone": full_phone, "code": "111111"}
+    )
+    assert resp.status_code == 200
+    token = resp.json()["tokens"]["access_token"]
+    res = await client.post(
+        "/api/v1/community/posts",
+        json={"content": "0d 保护期下新用户立即发帖"},
+        headers=_h(token),
+    )
+    assert res.status_code == 201, res.text
+    get_settings.cache_clear()
+    _ = session_factory
 
 
 async def test_create_post_approve_published(

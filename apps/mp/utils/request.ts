@@ -91,6 +91,38 @@ function detailCode(err: APIError): string | null {
   return null
 }
 
+/**
+ * 从后端 4xx/5xx response.data 里挖出可读的错误信息.
+ *
+ * FastAPI 默认错误体 = ``{"detail": ...}``, 但 ``detail`` 可能是:
+ *   1. ``string``             → ``raise HTTPException(403, "新用户 7 天内不能发帖")``
+ *   2. ``{code, message}``    → 鉴权 / 业务码 (auth_service)
+ *   3. ``ValidationError[]``  → 422 Pydantic 校验 ``[{loc, msg, type}]``
+ *
+ * 都不是 → fallback ``"HTTP {status}"`` (与原行为一致).
+ *
+ * 设计要点: 提取永远是 best-effort, 永远不抛 — 错误处理路径再抛错就完蛋了.
+ * 单测见 ``utils/__tests__/request.test.ts`` (Sprint 6.7 加).
+ */
+function extractErrorMessage(data: unknown, status: number): string {
+  if (data && typeof data === 'object') {
+    const d = (data as { detail?: unknown }).detail
+    if (typeof d === 'string' && d.trim()) return d
+    if (d && typeof d === 'object') {
+      const obj = d as { message?: unknown; msg?: unknown; code?: unknown }
+      if (typeof obj.message === 'string') return obj.message
+      if (typeof obj.msg === 'string') return obj.msg
+    }
+    if (Array.isArray(d) && d.length > 0) {
+      const first = d[0] as { msg?: unknown }
+      if (typeof first?.msg === 'string') return first.msg
+    }
+    const top = (data as { message?: unknown }).message
+    if (typeof top === 'string' && top.trim()) return top
+  }
+  return `HTTP ${status}`
+}
+
 let _redirectingToLogin = false
 
 function redirectToLogin(reason: string) {
@@ -133,7 +165,14 @@ function rawRequest<TResp>(opts: RequestOptions, fullUrl: string): Promise<TResp
         if (status >= 200 && status < 300) {
           resolve(res.data as TResp)
         } else {
-          reject(new APIError(status, `HTTP ${status}`, res.data))
+          // BUG-S6.6-002b: 把后端的 `detail` 字符串提到 message 里,
+          // 让 toast / parseCommunityError 看到真实原因 ("新用户 7 天内不能发帖")
+          // 而不是字面量 "HTTP 403". detail 形态有 3 种:
+          //   1. {"detail": "纯字符串"}                    → 直接用
+          //   2. {"detail": {"code": "x", "message": "y"}} → 用 message
+          //   3. {"detail": [{"loc": [...], "msg": "..."}]} → Pydantic 422, 拼第一条
+          // 兜底永远 "HTTP {status}".
+          reject(new APIError(status, extractErrorMessage(res.data, status), res.data))
         }
       },
       fail: (err) => {

@@ -34,7 +34,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters import akshare_client, hkex_client
+from app.adapters import akshare_client, eastmoney_ipo_client, hkex_client
 from app.cache import invalidate_namespace
 from app.core.config import Settings, get_settings
 from app.core.logging import logger
@@ -221,21 +221,35 @@ async def run_ingest_a_job(settings: Settings | None = None) -> dict[str, int]:
 
 
 async def run_ingest_hk_job(settings: Settings | None = None) -> dict[str, int]:
-    """APScheduler 回调入口 (BE-S2-000): 抓 hkexnews 申请人列表 → upsert 进库.
+    """APScheduler 回调入口: 抓 HK IPO 全量 → upsert 进库.
+
+    BUG-S6.6-004 / spec/15: HK 主源切到**东方财富 ipolist** (静态 HTML, 真代码 + 招股价
+    + 招股期 + 上市日期, 50 行覆盖近 3 月新股). hkexnews 申请人列表沦为 PreIPO 阶段
+    补充源 (招股价未公开但已交 A1 申请 的早期 IPO + PDF URL).
+
+    数据源对比 (spec/15 §Spike #2):
+
+    ============== ====================== ====================== =====================
+    源              代码                    招股价/期              data_source 标记
+    ============== ====================== ====================== =====================
+    东方财富        06810.HK / 02493.HK    ✅ 完整                eastmoney-ipolist
+    hkexnews        AP260420LIBAN.HK 占位   ❌ 仅 PDF + 提交日期    hkexnews-applicants
+    ============== ====================== ====================== =====================
 
     设计:
-    - 不抛异常: 任何失败 (网络 / DB / 解析) 都 logger.exception 后返回 stats,
-      防止 scheduler 把整个 job 标 failed 后停掉 (与 ``run_ingest_a_job`` 一致)
-    - 自己开 session: 调度器不在请求作用域内, 不能复用 ``Depends(get_session)``
-    - 申请阶段无真实股票代码, 用 ``AP-{yyyymmdd}-{slug}.HK`` 占位; BE-S2-004 解析
-      PDF 关联到真 IPO 后再回写真 code (本 PR 范围外)
-    - 把 hkexnews 返回的 ``prospectus_url`` 走 ``extra_per_code`` 侧通道塞进
-      ``ipos.extra.prospectus_url`` (BE-009 ``IPODetail`` 已从这里读)
+    - 不抛异常: 网络 / DB / 解析任一失败 logger.exception 后返回 stats,
+      防 scheduler 把整个 job 标 failed 后停掉. **eastmoney 源失败不影响 hkexnews 源**.
+    - 自己开 session: 调度器不在请求作用域内, 不能复用 ``Depends(get_session)``.
+    - 两源 upsert 顺序: eastmoney 先 (字段全, 真代码), hkexnews 后 (字段少, 占位 code,
+      不会冲突 — 真代码 vs ``AP-`` 前缀 code 永不撞 (code, market) 唯一约束).
+    - hkexnews 的 ``prospectus_url`` 走 ``extra_per_code`` 侧通道塞进
+      ``ipos.extra.prospectus_url`` (BE-009 ``IPODetail`` 已从这里读, 不变).
 
     返回值:
         ``{"received": N, "inserted": x, "updated": y, "skipped": 0,
-            "errors": e, "cache_invalidated": k, "with_pdf": p}``
-        ``with_pdf`` = 含 prospectus_url 的条数 (给 BE-S2-004 监控用).
+            "errors": e, "cache_invalidated": k, "with_pdf": p,
+            "em_received": E, "em_errors": EE}``
+        ``em_*`` 为东方财富主源的子统计 (出问题时方便定位).
     """
     settings = settings or get_settings()
     stats: dict[str, int] = {
@@ -246,55 +260,86 @@ async def run_ingest_hk_job(settings: Settings | None = None) -> dict[str, int]:
         "errors": 0,
         "cache_invalidated": 0,
         "with_pdf": 0,
+        "em_received": 0,
+        "em_errors": 0,
     }
 
+    factory = get_session_factory()
+
+    # ── 主源: 东方财富 (BUG-S6.6-004) ─────────────────────────
     try:
-        result = await hkex_client.fetch_hk_applicants(
+        em_result = await eastmoney_ipo_client.fetch_eastmoney_ipo_list(
             settings=settings,
             limit=settings.ipo_ingest_hk_limit,
         )
     except Exception as e:
-        logger.exception(f"ipo_ingest.fetch_hk_failed: {e}")
-        stats["errors"] = 1
-        return stats
+        logger.exception(f"ipo_ingest.fetch_eastmoney_failed: {e}")
+        em_result = eastmoney_ipo_client.EastmoneyIPOFetchResult.empty()
+        stats["em_errors"] = 1
 
-    if not result.items:
-        logger.warning("ipo_ingest.fetch_hk empty (hkexnews returned 0 applicants)")
-        return stats
-
-    # PDF URL → extra.prospectus_url 侧通道
-    extra_per_code: dict[str, dict[str, Any]] = {
-        code: {"prospectus_url": url}
-        for code, url in result.prospectus_urls.items()
-    }
-
-    factory = get_session_factory()
-    try:
-        async with factory() as session:
-            stats_db = await upsert_ipos(
-                session,
-                result.items,
-                extra_per_code=extra_per_code,
+    if em_result.items:
+        try:
+            async with factory() as session:
+                em_stats = await upsert_ipos(session, em_result.items)
+                await session.commit()
+            stats["em_received"] = em_stats["received"]
+            for k in ("received", "inserted", "updated", "skipped"):
+                stats[k] += em_stats[k]
+        except Exception as e:
+            logger.exception(
+                f"ipo_ingest.eastmoney_upsert_failed items={len(em_result.items)}: {e}"
             )
-            await session.commit()
-        for k, v in stats_db.items():
-            stats[k] = v
-    except Exception as e:
-        logger.exception(
-            f"ipo_ingest.hk_upsert_failed items={len(result.items)}: {e}"
+            stats["em_errors"] = 1
+    else:
+        logger.warning("ipo_ingest.fetch_eastmoney empty (got 0 rows from ipolist.html)")
+
+    # ── 补充源: hkexnews 申请人列表 (PreIPO 占位 + 招股书 PDF) ─
+    # BE-S2-000 历史路径, 字段少但能补 "已交 A1 申请但还没公开招股价" 的早期 IPO.
+    # 失败不抛 — eastmoney 已经覆盖主路径, hkexnews 只是锦上添花.
+    try:
+        hk_result = await hkex_client.fetch_hk_applicants(
+            settings=settings,
+            limit=settings.ipo_ingest_hk_limit,
         )
-        stats["errors"] = 1
+    except Exception as e:
+        logger.exception(f"ipo_ingest.fetch_hkexnews_failed: {e}")
+        hk_result = hkex_client.HKApplicantFetchResult.empty()
+
+    if hk_result.items:
+        extra_per_code: dict[str, dict[str, Any]] = {
+            code: {"prospectus_url": url}
+            for code, url in hk_result.prospectus_urls.items()
+        }
+        try:
+            async with factory() as session:
+                hk_stats = await upsert_ipos(
+                    session,
+                    hk_result.items,
+                    extra_per_code=extra_per_code,
+                )
+                await session.commit()
+            stats["with_pdf"] = len(hk_result.prospectus_urls)
+            for k in ("received", "inserted", "updated", "skipped"):
+                stats[k] += hk_stats[k]
+        except Exception as e:
+            logger.exception(
+                f"ipo_ingest.hkexnews_upsert_failed items={len(hk_result.items)}: {e}"
+            )
+            stats["errors"] = 1
+
+    if stats["received"] == 0:
+        logger.warning("ipo_ingest.hk both sources returned empty")
         return stats
 
-    stats["with_pdf"] = len(result.prospectus_urls)
     stats["cache_invalidated"] = await invalidate_namespace(
         "ipos:list", "ipos:detail"
     )
 
     logger.info(
         f"ipo_ingest.hk.ok received={stats['received']} "
+        f"em={stats['em_received']} hkexnews_with_pdf={stats['with_pdf']} "
         f"inserted~={stats['inserted']} updated~={stats['updated']} "
-        f"with_pdf={stats['with_pdf']} cache_invalidated={stats['cache_invalidated']}"
+        f"cache_invalidated={stats['cache_invalidated']}"
     )
     return stats
 

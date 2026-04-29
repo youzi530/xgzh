@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache import RateLimitExceeded, get_redis_client
+from app.core.config import get_settings
 from app.db.models import User
 
 # 限流配额 (spec/13 §BE-S6-009 AC)
@@ -43,9 +44,6 @@ _COMMENT_RATE_24H = 50
 _LIKE_RATE_1S = 5
 _REPORT_RATE_60S = 1
 _REPORT_RATE_24H = 5
-
-# 新用户保护期 (天)
-_NEW_USER_READONLY_DAYS = 7
 
 
 class NewUserReadOnlyError(Exception):
@@ -65,10 +63,19 @@ async def enforce_new_user_writable(
     *,
     user_id: uuid.UUID,
 ) -> None:
-    """检查用户是否度过 ``_NEW_USER_READONLY_DAYS`` 保护期.
+    """检查用户是否度过新用户保护期.
 
-    新注册用户 7d 内只能浏览, 不能发帖 / 评论 (反 spam 黑产用大批量新号灌水).
+    保护期天数走 ``settings.community_new_user_readonly_days`` (BUG-S6.6-002a):
+    - ``<= 0``: 关闭保护期, 直接放行 (dev/staging 默认配置, 无 DB 查询零开销)
+    - ``> 0``: 查 ``users.created_at``, 注册不足 N 天则 raise
+
+    生产默认 7 天 (反 spam 黑产用大批量新号灌水 spec/13 §BE-S6-009);
+    dev/staging .env 应显式 ``COMMUNITY_NEW_USER_READONLY_DAYS=0`` 方便调试.
     """
+    readonly_days = get_settings().community_new_user_readonly_days
+    if readonly_days <= 0:
+        return  # 保护期关闭, 不查 DB
+
     stmt = select(User.created_at).where(User.user_id == user_id)
     result = await session.execute(stmt)
     created_at = result.scalar_one_or_none()
@@ -80,9 +87,10 @@ async def enforce_new_user_writable(
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=UTC)
     age = now - created_at
-    if age < timedelta(days=_NEW_USER_READONLY_DAYS):
+    if age < timedelta(days=readonly_days):
         logger.info(
-            f"community.new_user_readonly user={user_id} age_s={age.total_seconds()}"
+            f"community.new_user_readonly user={user_id} "
+            f"age_s={age.total_seconds()} threshold_days={readonly_days}"
         )
         raise NewUserReadOnlyError(
             user_id=user_id,
