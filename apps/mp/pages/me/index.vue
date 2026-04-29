@@ -263,6 +263,10 @@ function gotoFavorites() {
   uni.navigateTo({ url: '/pages/me/favorites' })
 }
 
+function gotoFeedback() {
+  uni.navigateTo({ url: '/pages/me/feedback' })
+}
+
 function copyInviteCode() {
   const code = user.value?.invite_code
   if (!code) return
@@ -476,6 +480,19 @@ onUnmounted(() => {
         </view>
         <view class="entry-right">
           <text v-if="favoriteCount > 0" class="entry-badge">{{ favoriteCount }}</text>
+          <text class="entry-arrow">›</text>
+        </view>
+      </view>
+      <!-- FE-S5-002: 反馈入口 (对接 BE-S5-004 POST /api/v1/feedback) -->
+      <view class="entry-item entry-item-bordered" @tap="gotoFeedback">
+        <view class="entry-left">
+          <text class="entry-icon entry-icon-feedback">💬</text>
+          <view class="entry-text">
+            <text class="entry-title">反馈与建议</text>
+            <text class="entry-desc">问题 / 功能建议 / 内容质量</text>
+          </view>
+        </view>
+        <view class="entry-right">
           <text class="entry-arrow">›</text>
         </view>
       </view>
@@ -776,6 +793,14 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 24rpx 0;
+}
+.entry-item-bordered {
+  border-top: 1rpx solid var(--color-border, rgba(255, 255, 255, 0.04));
+}
+.entry-icon-feedback {
+  background: rgba(79, 139, 255, 0.15);
+  border-color: rgba(79, 139, 255, 0.4);
+  color: var(--color-primary, #4f8bff);
 }
 .entry-left {
   flex: 1;

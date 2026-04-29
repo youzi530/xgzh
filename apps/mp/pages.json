@@ -77,6 +77,14 @@
             }
         },
         {
+            "path": "pages/me/feedback",
+            "style": {
+                "navigationBarTitleText": "反馈与建议",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
             "path": "pages/article/index",
             "style": {
                 "navigationBarTitleText": "市场文章",

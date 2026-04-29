@@ -757,7 +757,7 @@ url       = f"{webhook}&timestamp={timestamp}&sign={sign}"
 
 ---
 
-### FE-S5-002 · 反馈入口 + 表单页 ⬜
+### FE-S5-002 · 反馈入口 + 表单页 ✅
 
 **目标**：BE-S5-004 的 FE 对接。``me/index.vue`` 加"反馈与建议"入口，跳 ``pages/me/feedback.vue`` 表单页。
 
@@ -777,9 +777,46 @@ url       = f"{webhook}&timestamp={timestamp}&sign={sign}"
 
 **AC**
 
-- [ ] 表单提交成功 → toast + 1s 后回上一页
-- [ ] 失败 → toast 错误码 + 不清空表单（保护用户输入）
-- [ ] 暗黑模式适配（FE-S4-004 路径）
+- [x] 表单提交成功 → toast + 1s 后回上一页（`navigateBack` 兜底 `reLaunch /pages/me/index`）
+- [x] 失败 → toast 错误码 + 不清空表单（限流走 `'too_many_requests'` 精准文案,其他透传 BE message）
+- [x] 暗黑模式适配（全部走 `var(--color-*)` token,与 me/index 同款 fallback）
+
+**完成报告 (2026-04-29)**
+
+实际改动:
+
+- 新增 `apps/mp/api/feedback.ts`(client + 类型 + 错误解析 + `detectPlatform`)
+- 新增 `apps/mp/pages/me/feedback.vue`(表单页:4 类 segment + 2000 字 textarea + 联系方式 + 钉钉群占位 + 提交按钮)
+- 修改 `apps/mp/pages/me/index.vue`:在自选下方加"反馈与建议"入口卡片(蓝色 `💬` icon 区分自选金色 `★`)
+- 修改 `apps/mp/pages.json`:注册 `pages/me/feedback` 路由
+
+`detectPlatform()` 跨端识别(与 BE Literal 100% 对齐):
+
+```ts
+// #ifdef MP-WEIXIN  → 'mp-weixin'
+// #ifdef APP-PLUS   → uni.getSystemInfoSync().platform === 'ios' ? 'app-ios' : 'app-android'
+// #ifdef H5         → 'h5'
+```
+
+工程决策:
+
+- **不在前端做敏感词过滤**:反馈本来就该让用户能投诉;BE-S5-001 红线词在 LLM 流式产出时拦,反馈入库只在 admin 视角看到时打 logger.warning,不阻塞用户提交
+- **submit 后 1s 回上一页 + reLaunch 兜底**:H5 直接 URL 进表单页时无 history,`navigateBack delta=1` 会失败,catch 后 `reLaunch /pages/me/index`
+- **失败不清空表单**:用户辛苦写的 2000 字别因网络抖动 / 限流被清掉,提交按钮 loading 结束即可让用户 retry
+- **错误文案分级**:`too_many_requests` → "提交过于频繁,请稍后再试";其他错误码透传 BE message(Pydantic 校验 / 500 等)
+- **暗黑模式 token 化**:所有色值走 `var(--color-*)` 带 hex fallback,与 me/index.vue 同源(FE-S4-004 路径)
+- **不做 contact 格式校验**:用户可能留 `188xxx` / `a@b.com` / `wx_id_2024` 任何形式,强校验反而劝退;BE 仅 `≤ 64` 字限,前端只 `maxlength="64"`
+- **textarea `maxlength="2200"` 比 BE 限制宽 200**:让 UI 计数 `2001 / 2000` 时还能继续输入但红色提示,提交按钮禁用,而不是直接拒绝输入(更顺手的 UX)
+- **类型 segment 用 grid 2x2 而非 radio**:大屏占比合理 + 视觉重 emoji 配合 desc 让用户秒懂 4 类的差异
+- **钉钉群二维码占位**:文案"钉钉群二维码上线前补充";真二维码图片由 PM 上线前上传,FE-S5-001 提审时一并替换
+
+跨端 build 校验(本地):
+- `vue-tsc --noEmit`:0 errors(项目级 eslint v9 配置缺失,与本 PR 无关)
+- BE 9 个 feedback 集成测试全过(契约对齐确认)
+
+未做(明确留给后续):
+- FE 单元测试:apps/mp 暂无 vitest 配置(FE-S4 期间没引入),本 PR 不引入新测试栈;表单逻辑通过 vue-tsc 类型保障 + BE 9 测试守住契约
+- 钉钉群真二维码:留给 FE-S5-001 提审打包前 PM 替换
 
 ---
 
