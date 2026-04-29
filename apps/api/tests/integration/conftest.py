@@ -131,7 +131,8 @@ async def truncate_all(db_engine: AsyncEngine) -> AsyncIterator[None]:
                 "brokers, conversion_events, "  # conversion_events 也走 brokers CASCADE, 显式列更稳
                 "vip_orders, vip_memberships, "  # vip_memberships 走 vip_orders FK SET NULL, 不会 CASCADE 顺带清
                 "feedbacks, "  # BE-S5-004: feedbacks.user_id FK SET NULL, 不会被 users CASCADE
-                "invite_rewards "  # BE-S5-005: invite_rewards.inviter_user_id FK CASCADE, users CASCADE 会清, 但显式列让用例间隔离更显
+                "invite_rewards, "  # BE-S5-005: invite_rewards.inviter_user_id FK CASCADE, users CASCADE 会清, 但显式列让用例间隔离更显
+                "user_deletions "  # BE-S5-003: user_deletions.user_id FK CASCADE, users CASCADE 会清, 显式列让用例间隔离
                 "RESTART IDENTITY CASCADE"
             )
         )
@@ -196,6 +197,7 @@ async def patch_session_factory(
     import app.services.ipo_ingest_service as ingest_mod
     import app.services.ipo_service as ipo_service_mod
     import app.services.payment.payment_service as payment_service_mod
+    import app.services.user_deletion_service as user_deletion_mod
     import app.services.vip_service as vip_service_mod
     import scripts.backfill_historical_ipos as backfill_historical_mod
     import scripts.seed_brokers as seed_brokers_mod
@@ -222,6 +224,7 @@ async def patch_session_factory(
         conversion_service_mod,
         vip_service_mod,
         payment_service_mod,
+        user_deletion_mod,
         seed_brokers_mod,
         backfill_historical_mod,
     ]

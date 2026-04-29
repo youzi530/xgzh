@@ -18,6 +18,7 @@ from app.db.models.invite import InviteCode, InviteReward
 from app.db.models.ipo import IPO, IPODocument
 from app.db.models.push import PushToken
 from app.db.models.user import User, UserFavorite
+from app.db.models.user_deletion import UserDeletion
 from app.db.models.vip import VipMembership, VipOrder
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "IPODocument",
     "PushToken",
     "User",
+    "UserDeletion",
     "UserFavorite",
     "VipMembership",
     "VipOrder",

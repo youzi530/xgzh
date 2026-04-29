@@ -70,7 +70,7 @@
 |----|------|------|:----:|:----:|:------:|:----:|
 | BE-S5-001 | compliance | 红线词词典固化 + `forbidden_pattern_filter` v2（spec/06 §2 全词表） | 0.5d | — | P0 | ✅ |
 | BE-S5-002 | compliance | PIPL 个人信息收集清单 + admin 审计接口（`GET /api/v1/admin/pii-inventory`）| 0.5d | OPS-S4-001 | P0 | ✅ |
-| BE-S5-003 | compliance | 用户注销账号工程支持（`DELETE /api/v1/me`，soft delete + 30d 后真删 cron） | 1d | BE-S5-002 | P0 | ⬜ |
+| BE-S5-003 | compliance | 用户注销账号工程支持（`DELETE /api/v1/me`，soft delete + 30d 后真删 cron） | 1d | BE-S5-002 | P0 | ✅ |
 | BE-S5-004 | feedback | 反馈表 + API（``POST /api/v1/feedback``，落 PG `feedbacks` 表，admin 可读）| 0.5d | — | P0 | ✅ |
 | BE-S5-005 | invite | 邀请有礼 trigger（成功邀请 ≥ 3 人 → VIP +7d，复用 vip_service `extend_membership`）| 0.5d | BE-S3-007 | P0 | ✅ |
 | BE-S5-006 | dashboard | `app/api/v1/admin/dashboard.py`（6 指标：DAU / 注册转化 / VIP 转化 / Agent 调用 / 错误率 / SSE p95，admin 鉴权 + JSON / HTML 双格式）| 1d | OPS-S4-001 | P0 | ⬜ |
@@ -277,32 +277,70 @@ OPS-S5-002 钉钉 webhook ─────→│         ↓
 
 ---
 
-### BE-S5-003 · 用户注销账号工程支持 ⬜
+### BE-S5-003 · 用户注销账号工程支持 ✅
 
-**目标**：PIPL §47 要求"用户可注销账号 + 注销后 30d 内真删个人信息"。本 PR 加 ``DELETE /api/v1/me`` + 软删 + 30d 后 cron 真删 + 凭据立即失效。
+**目标**：PIPL §47 要求"用户可注销账号 + 注销后 30d 内真删个人信息"。本 PR 加 ``DELETE /api/v1/me`` + 软删 + 30d 后 cron 真删 + 凭据立即失效 + audit。
 
-**改动文件**
+**实际改动文件**
 
-- `apps/api/app/api/v1/me.py`（加 DELETE）
-- `apps/api/app/services/user_service.py`（``soft_delete_user`` + ``hard_delete_pii_after_grace``）
-- `apps/api/app/scheduler.py`（加 30d 真删 cron job）
-- `apps/api/alembic/versions/0009_user_deletion_audit.py`（新建 ``user_deletions`` 审计表）
-- `apps/api/tests/test_user_deletion.py`（单元 + e2e ≥ 6 case）
+- `apps/api/alembic/versions/0011_user_deletions.py`（新建 audit 表 + UNIQUE user_id + partial index pending）
+- `apps/api/app/db/models/user_deletion.py`（`UserDeletion` ORM）
+- `apps/api/app/db/models/__init__.py`（注册）
+- `apps/api/app/services/user_deletion_service.py`（新建独立 service: soft_delete_user / hard_delete_pii_for_user / hard_delete_pii_overdue / run_hard_delete_pii_job）
+- `apps/api/app/schemas/me.py`（新建 `DeleteMeRequest` / `DeleteMeResponse`）
+- `apps/api/app/api/v1/me.py`（加 `DELETE /me`，复用 IP / UA 抓取与 logout 同款）
+- `apps/api/app/scheduler/__init__.py`（注册 `user_deletion_purge_initial` + `user_deletion_purge_cron` 两个 job）
+- `apps/api/app/core/config.py`（加 `USER_DELETION_GRACE_DAYS=30` / 启动延迟 / cron 时刻 4 个旋钮）
+- `apps/api/tests/integration/conftest.py`（patch_session_factory 注册 `user_deletion_service`，truncate 加 `user_deletions`）
+- `apps/api/tests/integration/test_user_deletion.py`（10 e2e）
 
-**实现要点**
+**注销流程（PIPL §47 双阶段）**
 
-- DELETE /me：要求当前 access token，软删（users.deleted_at = now() + status = -2 "deleted"）+ 黑名单当前 jti + 强制 logout 所有 refresh token + 写 user_deletions 审计行
-- 30d cron：每天扫 ``deleted_at < now() - interval '30 days'`` 的用户，把 PII 字段（phone / wechat_openid / nickname / avatar_url / device_id）置 NULL，但保留 user_id（防 conversion_events / vip_orders 外键悬挂；这些表的 user_id 改 anonymized UUID 也行，但保留 user_id 简单一些）
-- vip_orders 中已支付的订单不删（财务 / 监管 7 年留存），但 phone 等 PII 也置 NULL
-- audit log：``user_deletions(user_id, deleted_at, real_purge_at, reason)``，admin 可查
+```
+T0:                    T0+30d:                       后续:
+DELETE /me            CronTrigger 03:30 凌晨跑       audit 永久保留
+  ↓                     ↓                              ↓
+soft_delete_user      hard_delete_pii_for_user        admin 可拉清单
+  • audit row INSERT    • push_tokens DELETE
+    (real_purge_at=NULL)• auth_sessions DELETE
+  • users.deleted_at=now()
+                        • users.phone/wechat_*/apple_id/
+  • users.status=0          nickname/avatar_url = NULL
+  • auth_sessions       • audit.real_purge_at = now()
+    revoked_at=now()
+  • invite_codes
+    is_active=False
+  • blacklist_jti
+    (current access)
+```
 
-**AC**
+**关键工程决策**
 
-- [ ] DELETE /me 已登录用户 → 200 + token 立即失效
-- [ ] 软删后 GET /me 返 401 user_disabled
-- [ ] 30d cron 真删后 ``users.phone IS NULL``
-- [ ] vip_orders 历史保留（财务）但 phone / wechat_openid 已 NULL
-- [ ] e2e: 注册 → 登录 → DELETE /me → 30d cron 触发 → DB 验证 PII 全清
+1. **service 独立成 `user_deletion_service.py`** — 不进 `user_service.py`(那里只放 finder)；与 `feedback_service` / `vip_service` 同款单一职责。
+2. **status=0 而非 -2** — `User.status` 注释 "1=active, 0=disabled, -1=banned"，spec 写 -2 "deleted" 但加新值要改 ORM + 数据校验；用现有 0 即可，配合 `deleted_at != NULL` + `user_deletions` audit 三者足以区分"被运营禁用"vs"用户主动注销"vs"被风控冻结"。
+3. **DB commit 在 service，Redis blacklist 在 commit 之后** — 与 `bind_invite` / `feedback_service.create_feedback` 同款 service-commit 模式。把 Redis 写放 commit 之后是关键设计：DB 改动已经持久，即便 Redis 故障也不会撤回软删，避免"软删了一半"的脏状态。
+4. **保留 user_id row 不物理删** — `vip_orders` (财务 7 年) / `conversion_events` (渠道 CPA) / `feedbacks` (FK SET NULL) 都依赖 user_id；CASCADE 删 user 会破坏这些表。物理 user row 留下、PII 字段 NULL 是最干净的合规路径。
+5. **每用户独立事务跑 cron** — `hard_delete_pii_overdue` 先列 user_ids 短事务拿，再每个 user 起新 session 处理。单用户失败仅 `logger.exception` 不影响其他用户。`run_hard_delete_pii_job` 顶层 try/except 防 APScheduler 把 job 标 misfire。
+6. **`auth_sessions.revoked_at` UPDATE 走 `func.now()`** — 该列是 naive timestamp (没有 `timezone=True`)，asyncpg 拒绝 UTC-aware datetime；`func.now()` 让 PG 自己生成。`users.deleted_at` (TIMESTAMPTZ) 才能传 Python datetime。这种 schema 不一致是历史遗留，本 PR 不动它，做兼容写法。
+7. **`auth_sessions` 在 BE-004 实际未写入** — 黑名单走 Redis；本 PR `UPDATE auth_sessions SET revoked_at` 当前是 no-op，但保留语义为 5.5 加 session 表持久化时不需再改本路径。e2e 直接验"refresh token 调 `/auth/refresh` → 401 user_unavailable"覆盖语义。
+8. **`invite_codes.is_active=False`** — 注销用户的邀请码不再可被新用户绑（避免"用户都不在了码还在的尴尬"）；`bind_invite` 里 `InviteCodeInactiveError` 已挡。
+9. **conftest patch_session_factory 加 `user_deletion_service`** — `hard_delete_pii_overdue` 走 module-level `get_session_factory()`，必须 patch 让 cron 跑测试库；漏 patch 会导致 cron 跑生产 DSN，e2e 直接 `relation does not exist`。
+10. **`grace_days=0` 用于测试** — 让 cron 立即真删，否则要 mock 时间。
+
+**AC 全过**
+
+- [x] DELETE /me 已登录用户 → 200 + token 立即失效（test_after_soft_delete_access_token_is_invalid）
+- [x] 软删后 GET /me 返 401 token_revoked / user_disabled
+- [x] 软删后 refresh token 失效（test_after_soft_delete_refresh_token_rejected）
+- [x] 软删后 invite_codes.is_active=False
+- [x] 30d cron 真删后 `users.phone IS NULL` + push_tokens / auth_sessions 全清
+- [x] vip_orders 历史保留（财务 7 年；test_hard_delete_keeps_vip_orders_for_finance）
+- [x] cron 幂等（跑两次第二次 purged_count=0）
+- [x] cron 跳过仍在宽限期的用户（test_hard_delete_skips_users_inside_grace_period）
+- [x] 重复注销 → 409（service 层 UserAlreadyDeletedError）
+- [x] e2e 10 case 全绿 + 全量回归 991/991 ✅
+
+**回归**：991 passed（unit + integration 全绿，0 break；BE-S5-003 增量 10 e2e；3min04s）。
 
 ---
 

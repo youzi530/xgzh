@@ -32,6 +32,7 @@ from app.services import ipo_ingest_service
 from app.services.article_ingest import run_ingest_articles_job
 from app.services.article_ingest.dedup import run_recluster_job
 from app.services.article_ingest.sentiment_tagger import run_sentiment_tag_job
+from app.services.user_deletion_service import run_hard_delete_pii_job
 from app.services.vip_service import run_expire_overdue_job as run_vip_expire_job
 
 _scheduler: AsyncIOScheduler | None = None
@@ -81,6 +82,8 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         "article_sentiment_tag_cron",
         "vip_membership_expire_initial",
         "vip_membership_expire_cron",
+        "user_deletion_purge_initial",
+        "user_deletion_purge_cron",
     ):
         with contextlib.suppress(Exception):
             scheduler.remove_job(job_id)
@@ -246,6 +249,35 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         ),
     )
 
+    # ─── 用户注销 30d 真删 (BE-S5-003) ────────────────────────────
+    # PIPL §47: 注销账号 30d 后真删 PII. 一天一次足够 (cutoff 是粒度 1d 的);
+    # 默认 03:30 凌晨低峰跑, 不与 ipo / article ingest 抢 PG 锁.
+    purge_delay = settings.user_deletion_purge_initial_delay_seconds
+    if purge_delay > 0:
+        run_date_purge = datetime.now(scheduler.timezone) + timedelta(seconds=purge_delay)
+        scheduler.add_job(
+            run_hard_delete_pii_job,
+            trigger=DateTrigger(run_date=run_date_purge, timezone=scheduler.timezone),
+            id="user_deletion_purge_initial",
+            name="User Deletion Hard Purge — initial after startup",
+        )
+
+    purge_hour = settings.user_deletion_purge_cron_hour
+    purge_minute = settings.user_deletion_purge_cron_minute
+    scheduler.add_job(
+        run_hard_delete_pii_job,
+        trigger=CronTrigger(
+            hour=purge_hour,
+            minute=purge_minute,
+            timezone=settings.ipo_ingest_timezone,
+        ),
+        id="user_deletion_purge_cron",
+        name=(
+            f"User Deletion Hard Purge — cron {purge_hour:02d}:{purge_minute:02d} "
+            f"{settings.ipo_ingest_timezone}"
+        ),
+    )
+
     logger.info(
         f"scheduler.jobs_registered "
         f"a:initial_delay={delay}s cron={hours} tz={settings.ipo_ingest_timezone} | "
@@ -253,7 +285,9 @@ def register_jobs(scheduler: AsyncIOScheduler, settings: Settings) -> None:
         f"article:initial_delay={art_delay}s cron_minute={art_minute} | "
         f"article_recluster:initial_delay={re_delay}s cron_hour={re_hours} | "
         f"article_sentiment:initial_delay={st_delay}s cron_minute={st_minute} | "
-        f"vip_expire:initial_delay={vip_delay}s cron_hour={vip_hours} minute={vip_minute}"
+        f"vip_expire:initial_delay={vip_delay}s cron_hour={vip_hours} minute={vip_minute} | "
+        f"user_deletion_purge:initial_delay={purge_delay}s "
+        f"cron={purge_hour:02d}:{purge_minute:02d}"
     )
 
 

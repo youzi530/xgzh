@@ -597,6 +597,41 @@ class Settings(BaseSettings):
         le=59,
     )
 
+    # ─── BE-S5-003 用户注销 + 30d 真删 cron ──────────────────────────
+    user_deletion_grace_days: int = Field(
+        default=30,
+        description=(
+            "用户注销后 PII 保留宽限期 (天); 超过该期限的注销请求由 cron 跑真删. "
+            "PIPL §47 + 监管惯例 30d. 设 0 = 立即真删 (debug / 自动化测试用); "
+            "设 > 30 需要法律基础, 不建议."
+        ),
+        ge=0,
+        le=90,
+    )
+    user_deletion_purge_initial_delay_seconds: int = Field(
+        default=60,
+        description=(
+            "用户注销真删 cron 启动延迟秒数. 0 = 关闭立即跑只走 cron. "
+            "建议 > 30s 让 ipo / article ingest 等启动 job 先跑完, 不抢 PG 锁."
+        ),
+        ge=0,
+    )
+    user_deletion_purge_cron_hour: int = Field(
+        default=3,
+        description=(
+            "用户注销真删 cron 触发整点 (0-23, Asia/Shanghai). 默认 03:00 凌晨低峰. "
+            "30d 真删非紧急, 一天一次足够."
+        ),
+        ge=0,
+        le=23,
+    )
+    user_deletion_purge_cron_minute: int = Field(
+        default=30,
+        description="用户注销真删 cron 偏移分钟 (0-59). 默认 30 错开整点高峰.",
+        ge=0,
+        le=59,
+    )
+
     # ─── BE-S5-005 邀请有礼 trigger ──────────────────────────────────
     invite_reward_n_users: int = Field(
         default=3,
