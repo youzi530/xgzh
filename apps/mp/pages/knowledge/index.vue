@@ -80,6 +80,13 @@ function gotoDetail(slug: string) {
   })
 }
 
+// BUG-S6.7-001: 历史新股入口从中签页 (Sprint 6.5 BUG-S6.5-004c) 迁来.
+// 用户验收: 历史数据更像"打新参考资料 / 学习材料", 不属于私有账户记账域,
+// 放知识页比中签页更符合用户心智 (中签 = 我的私有数据, 知识 = 公开学习内容).
+function gotoHistorical() {
+  uni.navigateTo({ url: '/pages/ipo/historical' })
+}
+
 function levelLabel(level: number): string {
   if (level === 1) return '入门'
   if (level === 2) return '进阶'
@@ -113,6 +120,18 @@ function formatRelativeTime(iso: string): string {
     <view class="hero">
       <text class="hero-title">打新知识</text>
       <text class="hero-subtitle">港 A 通用 · 入门 → 进阶 → 实战</text>
+    </view>
+
+    <!-- BUG-S6.7-001: 历史新股入口卡 (从中签页迁来) -->
+    <view class="hist-card" hover-class="hist-card-hover" :hover-stay-time="80" @tap="gotoHistorical">
+      <view class="hist-left">
+        <text class="hist-emoji">📊</text>
+        <view class="hist-text">
+          <text class="hist-title">历史新股库</text>
+          <text class="hist-desc">查看历年港 A 新股首日 / 中签率 / 行业对比, 辅助打新决策</text>
+        </view>
+      </view>
+      <text class="hist-arrow">›</text>
     </view>
 
     <!-- 分类 chip -->
@@ -208,6 +227,58 @@ function formatRelativeTime(iso: string): string {
 }
 .hero-subtitle {
   font-size: 24rpx;
+  color: var(--color-text-muted, #94a3b8);
+}
+
+// ─── BUG-S6.7-001: 历史新股入口卡 (从中签页迁来) ──────────────
+.hist-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  padding: 24rpx;
+  background: rgba(168, 85, 247, 0.08);
+  border: 1rpx solid rgba(168, 85, 247, 0.3);
+  border-radius: 20rpx;
+}
+.hist-card-hover {
+  background: rgba(168, 85, 247, 0.15);
+}
+.hist-left {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  flex: 1;
+  min-width: 0;
+}
+.hist-emoji {
+  width: 64rpx;
+  height: 64rpx;
+  flex-shrink: 0;
+  border-radius: 16rpx;
+  background: rgba(168, 85, 247, 0.18);
+  text-align: center;
+  line-height: 64rpx;
+  font-size: 32rpx;
+}
+.hist-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  min-width: 0;
+}
+.hist-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text, #e2e8f0);
+}
+.hist-desc {
+  font-size: 22rpx;
+  color: var(--color-text-muted, #94a3b8);
+}
+.hist-arrow {
+  flex-shrink: 0;
+  font-size: 32rpx;
   color: var(--color-text-muted, #94a3b8);
 }
 

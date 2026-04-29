@@ -34,7 +34,12 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters import akshare_client, eastmoney_ipo_client, hkex_client
+from app.adapters import (
+    aastocks_ipo_client,
+    akshare_client,
+    eastmoney_ipo_client,
+    hkex_client,
+)
 from app.cache import invalidate_namespace
 from app.core.config import Settings, get_settings
 from app.core.logging import logger
@@ -223,33 +228,44 @@ async def run_ingest_a_job(settings: Settings | None = None) -> dict[str, int]:
 async def run_ingest_hk_job(settings: Settings | None = None) -> dict[str, int]:
     """APScheduler 回调入口: 抓 HK IPO 全量 → upsert 进库.
 
-    BUG-S6.6-004 / spec/15: HK 主源切到**东方财富 ipolist** (静态 HTML, 真代码 + 招股价
-    + 招股期 + 上市日期, 50 行覆盖近 3 月新股). hkexnews 申请人列表沦为 PreIPO 阶段
-    补充源 (招股价未公开但已交 A1 申请 的早期 IPO + PDF URL).
-
-    数据源对比 (spec/15 §Spike #2):
+    BUG-S6.7-004 / spec/16: HK 现采用 **三源合并** (eastmoney + aastocks + hkexnews):
 
     ============== ====================== ====================== =====================
-    源              代码                    招股价/期              data_source 标记
+    源              覆盖范围               主要字段               data_source 标记
     ============== ====================== ====================== =====================
-    东方财富        06810.HK / 02493.HK    ✅ 完整                eastmoney-ipolist
-    hkexnews        AP260420LIBAN.HK 占位   ❌ 仅 PDF + 提交日期    hkexnews-applicants
+    eastmoney       50 行 listed (近 3 月)  招股价 / 招股股数 /
+                                            募集资金 / 上市日期    eastmoney-ipolist
+    **aastocks**    招股期 (subscribing /   招股价 / 招股截止日 /
+                    upcoming) 5-15 行       行业 / 上市日期        aastocks-upcoming
+    hkexnews        PreIPO 申请人 (占位)    招股书 PDF + 提交日期  hkexnews-applicants
     ============== ====================== ====================== =====================
+
+    Sprint 6.6 (spec/15) 选定东方财富 ipolist 解决了"假数据"问题, 但用户验收
+    发现可孚医疗 / 天星医疗这类**正在招股**的真新股拿不到 — 因为 ipolist 只
+    收已确定上市日期的 IPO. Sprint 6.7 spike 后引入 AAStocks ``upcomingipo.aspx``
+    专门覆盖 subscribing/upcoming 这个东方财富的结构性盲区.
 
     设计:
-    - 不抛异常: 网络 / DB / 解析任一失败 logger.exception 后返回 stats,
-      防 scheduler 把整个 job 标 failed 后停掉. **eastmoney 源失败不影响 hkexnews 源**.
+    - 不抛异常: 任一源失败 logger.exception 后返回 stats,
+      防 scheduler 把整个 job 标 failed 后停掉. **三源相互独立**.
     - 自己开 session: 调度器不在请求作用域内, 不能复用 ``Depends(get_session)``.
-    - 两源 upsert 顺序: eastmoney 先 (字段全, 真代码), hkexnews 后 (字段少, 占位 code,
-      不会冲突 — 真代码 vs ``AP-`` 前缀 code 永不撞 (code, market) 唯一约束).
+    - 三源 upsert 顺序: eastmoney 先 (字段全, listed) → aastocks 后 (subscribing
+      覆盖) → hkexnews 最后 (PreIPO 占位 code 与真代码不冲突). PG ON CONFLICT
+      DO UPDATE 用 ``COALESCE(EXCLUDED, current)``, 不会覆盖前源已写的非 NULL
+      字段, 所以顺序对结果幂等.
+    - aastocks 重叠 listed 行 (天星 listed 后还会出现在 ipolist 列表里) —
+      eastmoney 先写 status='listed', aastocks 后写 status='subscribing' 时
+      ``COALESCE(EXCLUDED.status, current.status)`` 保留 'listed' (后写不
+      覆盖). 等下一周期 aastocks upcoming 不再含天星, 此行就稳定 listed.
     - hkexnews 的 ``prospectus_url`` 走 ``extra_per_code`` 侧通道塞进
       ``ipos.extra.prospectus_url`` (BE-009 ``IPODetail`` 已从这里读, 不变).
 
     返回值:
         ``{"received": N, "inserted": x, "updated": y, "skipped": 0,
             "errors": e, "cache_invalidated": k, "with_pdf": p,
-            "em_received": E, "em_errors": EE}``
-        ``em_*`` 为东方财富主源的子统计 (出问题时方便定位).
+            "em_received": E, "em_errors": EE,
+            "aa_received": A, "aa_errors": AE}``
+        ``em_*`` / ``aa_*`` 为各源子统计 (出问题时方便定位).
     """
     settings = settings or get_settings()
     stats: dict[str, int] = {
@@ -262,6 +278,8 @@ async def run_ingest_hk_job(settings: Settings | None = None) -> dict[str, int]:
         "with_pdf": 0,
         "em_received": 0,
         "em_errors": 0,
+        "aa_received": 0,
+        "aa_errors": 0,
     }
 
     factory = get_session_factory()
@@ -278,9 +296,18 @@ async def run_ingest_hk_job(settings: Settings | None = None) -> dict[str, int]:
         stats["em_errors"] = 1
 
     if em_result.items:
+        # BUG-S6.7-002: total_shares 通过 extra_per_code 侧通道 (与 prospectus_url
+        # 同款协议) 塞进 ``ipos.extra.total_shares``, 详情页 IPODetail 从这里读.
+        # 序列化为 str 让 PG JSONB 友好 (Decimal 不直接 JSONB 化).
+        em_extra: dict[str, dict[str, Any]] = {
+            code: {"total_shares": str(shares)}
+            for code, shares in em_result.total_shares_by_code.items()
+        }
         try:
             async with factory() as session:
-                em_stats = await upsert_ipos(session, em_result.items)
+                em_stats = await upsert_ipos(
+                    session, em_result.items, extra_per_code=em_extra
+                )
                 await session.commit()
             stats["em_received"] = em_stats["received"]
             for k in ("received", "inserted", "updated", "skipped"):
@@ -292,6 +319,39 @@ async def run_ingest_hk_job(settings: Settings | None = None) -> dict[str, int]:
             stats["em_errors"] = 1
     else:
         logger.warning("ipo_ingest.fetch_eastmoney empty (got 0 rows from ipolist.html)")
+
+    # ── 补全源: AAStocks 招股期 IPO (BUG-S6.7-003) ────────────
+    # 专门覆盖东方财富 ipolist 缺的 subscribing/upcoming 段 (天星/可孚等正在招股的港股).
+    # 失败不抛 — eastmoney 已经覆盖 listed 主路径, aastocks 失败也只是回退到"看不
+    # 到招股期", 不影响已上市新股展示.
+    try:
+        aa_result = await aastocks_ipo_client.fetch_aastocks_upcoming(
+            settings=settings,
+            limit=settings.ipo_ingest_hk_limit,
+        )
+    except Exception as e:
+        logger.exception(f"ipo_ingest.fetch_aastocks_failed: {e}")
+        aa_result = aastocks_ipo_client.AAStocksIPOFetchResult.empty()
+        stats["aa_errors"] = 1
+
+    if aa_result.items:
+        try:
+            async with factory() as session:
+                aa_stats = await upsert_ipos(session, aa_result.items)
+                await session.commit()
+            stats["aa_received"] = aa_stats["received"]
+            for k in ("received", "inserted", "updated", "skipped"):
+                stats[k] += aa_stats[k]
+        except Exception as e:
+            logger.exception(
+                f"ipo_ingest.aastocks_upsert_failed items={len(aa_result.items)}: {e}"
+            )
+            stats["aa_errors"] = 1
+    else:
+        logger.info(
+            "ipo_ingest.fetch_aastocks empty "
+            "(no upcoming/subscribing IPOs in window — 正常情况)"
+        )
 
     # ── 补充源: hkexnews 申请人列表 (PreIPO 占位 + 招股书 PDF) ─
     # BE-S2-000 历史路径, 字段少但能补 "已交 A1 申请但还没公开招股价" 的早期 IPO.
@@ -337,7 +397,8 @@ async def run_ingest_hk_job(settings: Settings | None = None) -> dict[str, int]:
 
     logger.info(
         f"ipo_ingest.hk.ok received={stats['received']} "
-        f"em={stats['em_received']} hkexnews_with_pdf={stats['with_pdf']} "
+        f"em={stats['em_received']} aa={stats['aa_received']} "
+        f"hkexnews_with_pdf={stats['with_pdf']} "
         f"inserted~={stats['inserted']} updated~={stats['updated']} "
         f"cache_invalidated={stats['cache_invalidated']}"
     )

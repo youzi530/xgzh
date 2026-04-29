@@ -451,6 +451,35 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── BUG-S6.7-005/006 新增 2 源 (东方财富全媒体搜索 + 新浪滚动) ──────────
+    article_ingest_eastmoney_search_page_size: int = Field(
+        default=10,
+        description=(
+            "东方财富搜索 API 单次关键词搜索的 ``pageSize``. 实测 408 hits 也只取 top 10, "
+            "10 已包含核心媒体覆盖 (北京商报 / 证券时报 / 南财 / 界面 / 凤凰 等). "
+            "调高会按相关性递减但触达更多周边媒体."
+        ),
+        ge=1,
+        le=50,
+    )
+    article_ingest_sina_pageid: int = Field(
+        default=153,
+        description="新浪滚动新闻 API ``pageid``. 当前固定 153 (老 API 协议), 改版时调整.",
+    )
+    article_ingest_sina_lid: int = Field(
+        default=2517,
+        description=(
+            "新浪滚动新闻 API ``lid`` (分类 ID). 2517 = 全部股票市场新闻 (实测覆盖最广, "
+            "港 A 美都包). 其它备选: 2515 (全部公司新闻) / 2509 (财经要闻)."
+        ),
+    )
+    article_ingest_sina_num: int = Field(
+        default=50,
+        description="新浪滚动新闻 API 单次拉取条数. 上游硬上限 50, 默认 50 跑满.",
+        ge=1,
+        le=50,
+    )
+
     # ─── BE-S3-003 simhash 同主题折叠 ─────────────────────────────────
     article_dedup_simhash_threshold: int = Field(
         default=3,

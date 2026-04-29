@@ -52,6 +52,18 @@ def sample_html() -> str:
 # ─── A. parser 纯函数 ──────────────────────────────────────────
 
 
+def test_parse_total_shares_collected(sample_html: str) -> None:
+    """BUG-S6.7-002: total_shares 解析进 ``total_shares_by_code`` 旁路 dict.
+
+    fixture 第 1 行: 商米科技-W 06810.HK 招股股数 ``"4262.68万"`` → 42626800
+    """
+    result = parse_eastmoney_ipo_html(sample_html, today=_TODAY)
+    assert "06810.HK" in result.total_shares_by_code
+    shares = result.total_shares_by_code["06810.HK"]
+    # 4262.68 * 10000 = 42_626_800
+    assert shares == Decimal("42626800")
+
+
 def test_parse_happy_5_rows(sample_html: str) -> None:
     """fixture 5 行正常 HTML → 5 条 IPOItem, code/name/字段全对."""
     result = parse_eastmoney_ipo_html(sample_html, today=_TODAY)

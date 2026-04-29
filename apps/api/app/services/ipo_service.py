@@ -23,6 +23,7 @@ BE-S2-000: HK 路径切 DB (与 A 股一致), 仅在 DB 空表时 fallback 到 h
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, cast
 
 from sqlalchemy import extract, func, select
@@ -262,6 +263,17 @@ def _orm_to_detail(row: IPO) -> IPODetail:
     if not isinstance(fin, dict):
         fin = None
 
+    # BUG-S6.7-002: 招股股数 走 extra JSONB 旁路 (与 highlights 一致, 0 alembic 迁移).
+    # ingest (eastmoney_ipo_client) 写时塞 ``extra.total_shares = "4.26268e7"`` (str
+    # 序列化, JSONB 友好); 详情读出时尝试解 Decimal, 失败 → None.
+    total_shares_raw = extra.get("total_shares")
+    total_shares: Decimal | None = None
+    if total_shares_raw is not None:
+        try:
+            total_shares = Decimal(str(total_shares_raw))
+        except (InvalidOperation, ValueError, TypeError):
+            total_shares = None
+
     return IPODetail(
         **base.model_dump(),
         prospectus_url=row.prospectus_url,
@@ -270,6 +282,7 @@ def _orm_to_detail(row: IPO) -> IPODetail:
         highlights=[str(h) for h in highlights if h is not None],
         risks=[str(r) for r in risks if r is not None],
         financial_summary=fin,
+        total_shares=total_shares,
     )
 
 

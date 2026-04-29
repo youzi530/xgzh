@@ -123,6 +123,43 @@ const financialEntries = computed<{ label: string; value: string }[]>(() => {
     }))
 })
 
+// BUG-S6.7-002: 招股期 / 招股股数 / 募集资金 三字段格式化.
+//
+// - 招股期: ``subscribe_start ~ subscribe_end``, 任一缺则只显示有的; 都缺 → '--'
+// - 招股股数: 万 / 亿 单位换算, 与基本面页财务数字风格一致
+// - 募集资金: 后端按 ``issue_currency`` 给基础单位 (港币 HKD), 折亿/万 + 加币种
+const subscribeWindowText = computed(() => {
+  const start = item.value?.subscribe_start
+  const end = item.value?.subscribe_end
+  if (!start && !end) return '--'
+  const fmt = (s?: string | null) => (s ? s.slice(0, 10) : '')
+  if (start && end) return `${fmt(start)} ~ ${fmt(end)}`
+  if (start) return `${fmt(start)} ~ (待定)`
+  return `(待定) ~ ${fmt(end)}`
+})
+
+function formatBigShares(v: number | null | undefined): string {
+  if (v == null) return '--'
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return '--'
+  if (n >= 1e8) return `${(n / 1e8).toFixed(2)} 亿股`
+  if (n >= 1e4) return `${(n / 1e4).toFixed(2)} 万股`
+  return `${n} 股`
+}
+
+function formatRaisedAmount(
+  v: number | null | undefined,
+  currency: string | null | undefined,
+): string {
+  if (v == null) return '--'
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return '--'
+  const cur = currency || 'HKD'
+  if (n >= 1e8) return `${cur} ${(n / 1e8).toFixed(2)} 亿`
+  if (n >= 1e4) return `${cur} ${(n / 1e4).toFixed(2)} 万`
+  return `${cur} ${n.toFixed(0)}`
+}
+
 const dataSourceText = computed(() => {
   if (!item.value) return ''
   const parts: string[] = []
@@ -328,6 +365,19 @@ function openProspectus() {
           <text class="info-value">
             {{ item.one_lot_winning_rate != null ? `${(Number(item.one_lot_winning_rate) * 100).toFixed(2)}%` : '--' }}
           </text>
+        </view>
+        <!-- BUG-S6.7-002: 招股期 / 招股股数 / 募集资金 (用户决策核心字段) -->
+        <view class="info-cell">
+          <text class="info-label">招股期</text>
+          <text class="info-value">{{ subscribeWindowText }}</text>
+        </view>
+        <view class="info-cell">
+          <text class="info-label">招股股数</text>
+          <text class="info-value">{{ formatBigShares(item.total_shares) }}</text>
+        </view>
+        <view class="info-cell">
+          <text class="info-label">募集资金</text>
+          <text class="info-value">{{ formatRaisedAmount(item.raised_amount, item.issue_currency) }}</text>
         </view>
       </view>
 

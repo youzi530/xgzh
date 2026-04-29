@@ -142,13 +142,6 @@ function gotoAccountManage() {
   })
 }
 
-// BUG-S6.5-004c: 历史新股入口从首页右上角图标按钮迁来 — 历史数据 ≈ 中签
-// 数据辅助参考(看历史中签率 / 历史首日表现, 辅助下次申购决策), 放中签 tab 比首页
-// "公开入口"更合适, 也清空首页 hero 视觉负担。
-function gotoHistorical() {
-  uni.navigateTo({ url: '/pages/ipo/historical' })
-}
-
 function getAccountLabel(accountId: string): string {
   const acc = accounts.value.find((a) => a.id === accountId)
   return acc?.label ?? '未知账户'
@@ -193,18 +186,6 @@ function getAccountLabel(accountId: string): string {
         </view>
       </view>
     </scroll-view>
-
-    <!-- BUG-S6.5-004c: 历史新股入口卡 (从首页右上角迁来) -->
-    <view class="hist-card" hover-class="hist-card-hover" :hover-stay-time="80" @tap="gotoHistorical">
-      <view class="hist-left">
-        <text class="hist-emoji">📊</text>
-        <view class="hist-text">
-          <text class="hist-title">历史新股</text>
-          <text class="hist-desc">查看历年港 A 新股首日 / 中签率 / 走势, 辅助打新决策</text>
-        </view>
-      </view>
-      <text class="hist-arrow">›</text>
-    </view>
 
     <!-- 汇总卡片 -->
     <view v-if="hasAccounts || hasRecords" class="summary">
@@ -393,58 +374,6 @@ function getAccountLabel(accountId: string): string {
   background: rgba(246, 196, 83, 0.2);
   color: #f6c453;
   border-radius: 8rpx;
-}
-
-// ─── BUG-S6.5-004c: 历史新股入口卡 ────────────────────────────
-.hist-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16rpx;
-  padding: 24rpx;
-  background: rgba(168, 85, 247, 0.08);
-  border: 1rpx solid rgba(168, 85, 247, 0.3);
-  border-radius: 20rpx;
-}
-.hist-card-hover {
-  background: rgba(168, 85, 247, 0.15);
-}
-.hist-left {
-  display: flex;
-  align-items: center;
-  gap: 20rpx;
-  flex: 1;
-  min-width: 0;
-}
-.hist-emoji {
-  width: 64rpx;
-  height: 64rpx;
-  flex-shrink: 0;
-  border-radius: 16rpx;
-  background: rgba(168, 85, 247, 0.18);
-  text-align: center;
-  line-height: 64rpx;
-  font-size: 32rpx;
-}
-.hist-text {
-  display: flex;
-  flex-direction: column;
-  gap: 4rpx;
-  min-width: 0;
-}
-.hist-title {
-  font-size: 28rpx;
-  font-weight: 600;
-  color: var(--color-text, #e2e8f0);
-}
-.hist-desc {
-  font-size: 22rpx;
-  color: var(--color-text-muted, #94a3b8);
-}
-.hist-arrow {
-  flex-shrink: 0;
-  font-size: 32rpx;
-  color: var(--color-text-muted, #94a3b8);
 }
 
 // ─── 汇总卡 ────────────────────────────────────────────────

@@ -62,6 +62,12 @@ from app.services.article_ingest.sources.base import (
     ArticleSource,
     IPOKeywordIndex,
 )
+from app.services.article_ingest.sources.eastmoney_search_client import (
+    EastmoneySearchClient,
+)
+from app.services.article_ingest.sources.sina_finance_client import (
+    SinaFinanceClient,
+)
 from app.services.article_ingest.sources.xueqiu_client import XueqiuClient
 from app.services.article_ingest.sources.zhitong_rss_client import ZhitongRSSClient
 
@@ -168,27 +174,43 @@ def register_sources(
 ) -> list[ArticleSource]:
     """实例化所有数据源.
 
-    顺序无所谓 (各源并发时间互相不影响); 传 ``keyword_index`` 是给 XueqiuClient
-    用 — 它需要关键词列表去打雪球搜索 API. 智通 RSS 不需要 (RSS 自带"全部最近
-    新闻", 关键词反查由 dispatcher 阶段统一做).
+    顺序无所谓 (各源并发时间互相不影响); 注册池 (Sprint 6.7 起 4 源):
+
+    ====================  =================  =========================================
+    源                    类型               关键词驱动?
+    ====================  =================  =========================================
+    ZhitongRSSClient       RSS 大池           ❌ (订阅式, 关键词反查由 dispatcher 做)
+    SinaFinanceClient      JSON API 大池      ❌ (滚动式, 关键词反查由 dispatcher 做)
+    XueqiuClient           关键词搜索         ✅ (按 IPO name 跑 N 次搜索)
+    EastmoneySearchClient  关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 全媒体)
+    ====================  =================  =========================================
+
+    设计原则 (BUG-S6.7-007):
+    - **大池 + 精搜双策略**: 大池高 recall 抓周边新闻 / 行业评论; 精搜高 precision
+      直接命中 IPO 主题文章. 两者并集后 dispatcher 统一过 IPOKeywordIndex 反查.
+    - 大池源 (Zhitong/Sina) 不需要 keywords, 直接 instantiate
+    - 精搜源 (Xueqiu/EM) 共享同一份 queries 字符串列表 (节省 IPOKeywordIndex 内部
+      ``_ipos`` 遍历; 每源最多打 ``article_ingest_xueqiu_max_queries`` 次)
     """
     queries: list[str] = []
     seen: set[str] = set()
     for ipo in keyword_index._ipos:  # noqa: SLF001 — internal access by design
         # 取每只 IPO 的"主关键词" (name 全名, name 短名) 各一份, code 不入查询
-        # (雪球 API 对纯数字 code 召回率差, 名字命中率高)
+        # (搜索 API 对纯数字 code 召回率差, 名字命中率高)
         for kw in ipo.keywords:
             if kw and not kw[0].isdigit() and kw not in seen:
                 seen.add(kw)
                 queries.append(kw)
-    # 避免一次查询太多 (雪球 API 单 ingest 走 N 次), 截取 top 限额
+    # 避免一次查询太多 (各源每 query 1 次 HTTP), 截取 top 限额
     queries = queries[: settings.article_ingest_xueqiu_max_queries]
 
     sources: list[ArticleSource] = [
         ZhitongRSSClient(settings=settings),
+        SinaFinanceClient(settings=settings),
     ]
     if queries:
         sources.append(XueqiuClient(settings=settings, queries=queries))
+        sources.append(EastmoneySearchClient(settings=settings, queries=queries))
     return sources
 
 

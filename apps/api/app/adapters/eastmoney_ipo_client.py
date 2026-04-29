@@ -98,13 +98,20 @@ _DEFAULT_HEADERS: Final[dict[str, str]] = {
 
 @dataclass(frozen=True, slots=True)
 class EastmoneyIPOFetchResult:
-    """东方财富 IPO 抓取结果. 简单 wrapper, 与 ``HKApplicantFetchResult`` 风格一致."""
+    """东方财富 IPO 抓取结果. 简单 wrapper, 与 ``HKApplicantFetchResult`` 风格一致.
+
+    ``total_shares_by_code``: BUG-S6.7-002 旁路 — ``IPOItem`` schema 顶层不带 total_shares
+    字段 (卡片不展示, 只有详情页用), 通过 ``code -> Decimal`` 映射给 ingest service 写进
+    ``ipos.extra.total_shares`` (与 ``hkex_client.HKApplicantFetchResult.prospectus_urls``
+    同款侧通道协议).
+    """
 
     items: list[IPOItem]
+    total_shares_by_code: dict[str, Decimal]
 
     @classmethod
     def empty(cls) -> EastmoneyIPOFetchResult:
-        return cls(items=[])
+        return cls(items=[], total_shares_by_code={})
 
 
 # ─── 字段解析工具 ────────────────────────────────────────────────
@@ -248,6 +255,7 @@ def parse_eastmoney_ipo_html(
 
     rows = body.find_all("tr")
     items: list[IPOItem] = []
+    total_shares_by_code: dict[str, Decimal] = {}
     seen_codes: set[str] = set()
 
     for tr in rows:
@@ -272,7 +280,8 @@ def parse_eastmoney_ipo_html(
                 continue
 
             issue_price = _parse_issue_price(cells[3].get_text(strip=True))
-            # cells[4] = 招股数 (跳)
+            # cells[4] = 招股数 (BUG-S6.7-002 旁路写入 extra)
+            total_shares = _parse_chinese_amount(cells[4].get_text(strip=True))
             raised_amount = _parse_chinese_amount(cells[5].get_text(strip=True))
             sub_start = _parse_iso_date(cells[6].get_text(strip=True))
             listing_dt = _parse_iso_date(cells[7].get_text(strip=True))
@@ -307,11 +316,16 @@ def parse_eastmoney_ipo_html(
                 )
             )
             seen_codes.add(code)
+            if total_shares is not None:
+                total_shares_by_code[code] = total_shares
         except Exception as e:  # noqa: BLE001 — 单行 fail-soft
             logger.debug(f"eastmoney_ipo.parse_row_failed: {e}")
             continue
 
-    return EastmoneyIPOFetchResult(items=items)
+    return EastmoneyIPOFetchResult(
+        items=items,
+        total_shares_by_code=total_shares_by_code,
+    )
 
 
 # ─── HTTP ────────────────────────────────────────────────────────

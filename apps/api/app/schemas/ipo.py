@@ -69,6 +69,14 @@ class IPODetail(IPOItem):
     prospectus_url: str | None = Field(default=None, description="招股书 PDF 链接")
     sponsors: list[str] | None = Field(default=None, description="保荐人 (港股) / 主承销商 (A 股)")
     underwriters: list[str] | None = Field(default=None, description="承销商联席名单")
+    # BUG-S6.7-002: 招股股数 (股) — 用户决策核心字段, 与 ``raised_amount`` 配对.
+    # 走 ``ipos.extra.total_shares`` JSONB 旁路 (与 ``highlights`` / ``risks`` 同款),
+    # 0 alembic 迁移. ingest 阶段 :func:`eastmoney_ipo_client.parse_eastmoney_ipo_html`
+    # 从 ``"4262.68万"`` / ``"5854.82万"`` / ``"-"`` 解析 → Decimal 股数.
+    total_shares: Decimal | None = Field(
+        default=None,
+        description="招股股数 (单位: 股); 来自东方财富 ipolist 列表页",
+    )
     highlights: list[str] = Field(
         default_factory=list,
         description="投资亮点要点 (BE-018 RAG 摘要; 当前从 extra.highlights 读)",
@@ -81,6 +89,10 @@ class IPODetail(IPOItem):
         default=None,
         description="财务摘要 (revenue / net_profit / gross_margin 等), 后续接 AKShare",
     )
+
+    @field_serializer("total_shares", when_used="json")
+    def _ser_total_shares(self, v: Decimal | None) -> float | None:
+        return float(v) if v is not None else None
 
 
 # ─── Sprint 4 BE-S4-003: 历史 IPO 列表 + 行业聚合 ──────────────────

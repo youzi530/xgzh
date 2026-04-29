@@ -52,6 +52,15 @@ export interface IPODetail extends IPOItem {
   highlights: string[]
   risks: string[]
   financial_summary?: Record<string, unknown> | null
+  /**
+   * BUG-S6.7-002: 招股股数 (单位: 股). 来自东方财富 ipolist 列表页, 走
+   * ``ipos.extra.total_shares`` JSONB 旁路 (与 highlights/risks 同款协议),
+   * 详情页用作"招股规模"展示, 与 ``raised_amount`` (募集资金) 配对.
+   *
+   * 缺值情景: AAStocks 源 (subscribing/upcoming) 列表页没招股股数 → 留 null,
+   * UI 显示 "--"; 等转 listed 后东方财富 ipolist 再补.
+   */
+  total_shares?: number | null
 }
 
 export interface IPOListParams {
