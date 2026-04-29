@@ -131,7 +131,7 @@ const perkMatrix: PerkRow[] = [
   { label: 'IPO 详情 + 招股书', free: true, vip: true },
   { label: '分红 / 中签率历史数据 (5 年)', free: false, vip: true },
   { label: '招股书 AI 摘要 + 关键句高亮', free: false, vip: true },
-  { label: '券商对比 + 实时费率', free: '基础信息', vip: '完整费率 + 计算器' },
+  { label: '券商开户 + 实时费率', free: '基础信息', vip: '完整费率 + 计算器' },
   { label: 'CRS 跨境税务向导', free: false, vip: true },
   { label: '自选股 + 申购窗口提醒', free: '关注 ≤ 5 只', vip: '不限关注数' },
   { label: '暗盘 / 上市 3 档窗口推送', free: false, vip: true },

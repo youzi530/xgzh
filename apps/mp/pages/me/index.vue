@@ -49,6 +49,14 @@ const KEY_BOUND_REFERRER = 'xgzh.invite.bound_referrer'
 /** 试用 / 订阅倒计时刷新间隔; 1 分钟 — 比"剩余天数"刻度细一档, 给视觉"在跑" */
 const COUNTDOWN_TICK_MS = 60_000
 
+/**
+ * BUG-S7.0-002: 商务合作微信号占位符.
+ *
+ * 上线前替换为运营实际微信号; 一处 const 维护. 走环境变量也 OK 但 MVP 阶段
+ * 单值 hardcode 最快 (用户拍板 ``placeholder`` 选项).
+ */
+const BD_WECHAT_ID = 'xinguzhihui-bd'
+
 const authStore = useAuthStore()
 const { user, loggedIn, vipMembership, vipMembershipLoading } = storeToRefs(authStore)
 const upgrade = useUpgradeModal()
@@ -69,8 +77,46 @@ const THEME_OPTIONS: ThemeOption[] = [
   { key: 'light', label: '浅色', emoji: '☀️' },
 ]
 
-function selectTheme(t: ThemeMode) {
-  themeStore.setMode(t)
+/**
+ * BUG-S7.0-004: 外观主题入口收纳进"设置/关于" link-list.
+ *
+ * 走 ``uni.showActionSheet`` 跨端原生 (H5 / 微信小程序 / App 都支持), 0 额外
+ * 组件成本. itemList 顺序与 ``THEME_OPTIONS`` 严格对齐, 用户点选后 tapIndex
+ * 直接索引数组取 key. 当前已选项前加 ``✓`` 让用户清楚状态.
+ *
+ * 与原"独立 section + segment 三块"相比, 收纳后:
+ * - 我的页一屏密度下降, 协议 / 关于这类低频项更突出
+ * - 主题切换是中频操作 (一周 1-2 次), 二级入口足够
+ * - 与 ``openLegal`` 同位置, 用户预期"设置类"操作集中在最下
+ */
+function openThemePicker() {
+  const cur = themeMode.value
+  const itemList = THEME_OPTIONS.map(
+    (t) => `${t.emoji} ${t.label}${t.key === cur ? '  ✓' : ''}`,
+  )
+  uni.showActionSheet({
+    itemList,
+    success: (res) => {
+      const picked = THEME_OPTIONS[res.tapIndex]
+      if (!picked || picked.key === cur) return
+      themeStore.setMode(picked.key)
+      uni.showToast({ title: `已切换为${picked.label}`, icon: 'success' })
+    },
+  })
+}
+
+/**
+ * BUG-S7.0-002: 复制商务合作微信号.
+ *
+ * 走 ``uni.setClipboardData``, 跨端兼容 (H5 也走 fallback execCommand);
+ * 复制成功 toast, 失败 toast. 主流程兼容剪贴板权限拒绝 (用户拒绝时 fail 回调).
+ */
+function copyBdWechat() {
+  uni.setClipboardData({
+    data: BD_WECHAT_ID,
+    success: () => uni.showToast({ title: '微信号已复制', icon: 'success' }),
+    fail: () => uni.showToast({ title: '复制失败, 请手动选中', icon: 'none' }),
+  })
 }
 
 // BUG-S6.5-006: 我的自选下沉到首页 segment-tab 后, 我的页不再展示自选 entry
@@ -534,13 +580,18 @@ onUnmounted(() => {
         首页 segment 内卡片仍可 navigateTo, 高级操作如设置提醒还在那里)。
       -->
 
-      <!-- BUG-S6.5-004b: 券商对比从首页右上角迁来 (用户相关工具集中放"我的") -->
+      <!--
+        BUG-S6.5-004b: 券商从首页右上角迁来 (用户相关工具集中放"我的")
+        BUG-S7.0-003: 改名"券商对比" → "券商开户" — 用户的真实意图是开户走优惠
+        通道, 而非纯横向对比表; 描述也调整为"开户优惠 / 佣金 / 评分".
+        navbar 标题在 pages.json 同步改, vip 套餐对比表也改, 三处一致.
+      -->
       <view class="entry-item" @tap="gotoBrokers">
         <view class="entry-left">
           <text class="entry-icon entry-icon-broker">🏦</text>
           <view class="entry-text">
-            <text class="entry-title">券商对比</text>
-            <text class="entry-desc">港 A 主流券商佣金 / 孖展利率 / 评分</text>
+            <text class="entry-title">券商开户</text>
+            <text class="entry-desc">港 A 主流券商开户优惠 / 佣金 / 评分</text>
           </view>
         </view>
         <view class="entry-right">
@@ -590,31 +641,38 @@ onUnmounted(() => {
       </view>
     </view>
 
-    <!-- FE-S4-004: 主题切换 (在 mp-weixin 端 v1 仅 navbar 染色; H5 全量) -->
+    <!--
+      BUG-S7.0-002: 商务合作 — 留运营对接微信号给商务伙伴 / 大V / 投放方;
+      点击复制即可, 不再加二级页. 与"邀请码 / 关于"低频但必要的入口同位置.
+    -->
     <view class="section">
       <view class="section-header">
-        <text class="section-title">外观主题</text>
+        <text class="section-title">商务合作</text>
+        <text class="section-subtitle">广告投放 / 大V 合作 / 内容互推</text>
       </view>
-      <view class="theme-seg">
-        <view
-          v-for="t in THEME_OPTIONS"
-          :key="t.key"
-          :class="['theme-seg-item', themeMode === t.key && 'theme-seg-item-active']"
-          hover-class="theme-seg-item-hover"
-          :hover-stay-time="80"
-          @tap="selectTheme(t.key)"
-        >
-          <text class="theme-seg-emoji">{{ t.emoji }}</text>
-          <text class="theme-seg-label">{{ t.label }}</text>
+      <view class="bd-row" hover-class="bd-row-hover" :hover-stay-time="80" @tap="copyBdWechat">
+        <view class="bd-info">
+          <text class="bd-label">微信号</text>
+          <text class="bd-code">{{ BD_WECHAT_ID }}</text>
         </view>
+        <text class="bd-copy">复制</text>
       </view>
     </view>
 
+    <!--
+      BUG-S7.0-004: 外观主题从一级 section 收纳到"设置/关于" link-list 内,
+      点击走 uni.showActionSheet 弹原生选项. 我的页一屏密度下降, 协议类
+      低频项更突出; 主题切换走二级入口符合"中频操作"定位.
+    -->
     <view class="section">
       <view class="section-header">
         <text class="section-title">设置 / 关于</text>
       </view>
       <view class="link-list">
+        <view class="link-item" @tap="openThemePicker">
+          <text class="link-text">外观主题</text>
+          <text class="link-arrow">›</text>
+        </view>
         <view class="link-item" @tap="openLegal('tos')">
           <text class="link-text">用户协议</text>
           <text class="link-arrow">›</text>
@@ -1060,39 +1118,50 @@ onUnmounted(() => {
   opacity: 0.6;
 }
 
-/* FE-S4-004: 主题切换 segment (3 列等宽; 选中态 = primary 边框 + accent 文字) */
-.theme-seg {
+/*
+  BUG-S7.0-004: ``.theme-seg*`` segment 样式已废弃 — "外观主题"收纳进
+  "设置/关于" link-list, 走 uni.showActionSheet 选项, 不再有 inline segment.
+  样式不留, 避免冗余 CSS.
+*/
+
+/* BUG-S7.0-002: 商务合作模块样式 — 与 invite-row (邀请码) 同款"可点 chip 风格" */
+.bd-row {
   display: flex;
-  gap: 12rpx;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  padding: 16rpx 20rpx;
+  background: rgba(34, 197, 94, 0.06);
+  border: 1rpx solid rgba(34, 197, 94, 0.2);
+  border-radius: 12rpx;
 }
-.theme-seg-item {
+.bd-row-hover {
+  background: rgba(34, 197, 94, 0.12);
+}
+.bd-info {
   flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 8rpx;
-  padding: 20rpx 0;
-  border-radius: 16rpx;
-  background: var(--color-surface, #131a2c);
-  border: 1rpx solid var(--color-border, rgba(255, 255, 255, 0.06));
+  gap: 4rpx;
+  min-width: 0;
 }
-.theme-seg-item-active {
-  background: rgba(79, 139, 255, 0.12);
-  border-color: var(--color-primary, #4f8bff);
-}
-.theme-seg-item-hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-.theme-seg-emoji {
-  font-size: 36rpx;
-  line-height: 1;
-}
-.theme-seg-label {
+.bd-label {
   font-size: 22rpx;
   color: var(--color-text-muted, #94a3b8);
 }
-.theme-seg-item-active .theme-seg-label {
-  color: var(--color-primary, #4f8bff);
-  font-weight: 600;
+.bd-code {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #22c55e;
+  letter-spacing: 1rpx;
+}
+.bd-copy {
+  flex-shrink: 0;
+  font-size: 22rpx;
+  color: #22c55e;
+  padding: 6rpx 16rpx;
+  border-radius: 999rpx;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1rpx solid rgba(34, 197, 94, 0.3);
 }
 </style>

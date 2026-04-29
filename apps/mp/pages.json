@@ -176,7 +176,7 @@
         {
             "path": "pages/broker/index",
             "style": {
-                "navigationBarTitleText": "券商对比",
+                "navigationBarTitleText": "券商开户",
                 "navigationBarBackgroundColor": "#0B1220",
                 "navigationBarTextStyle": "white",
                 "enablePullDownRefresh": true

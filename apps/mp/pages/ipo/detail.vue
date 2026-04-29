@@ -363,8 +363,15 @@ function selectArticleFilter(f: ArticleSourceFilter) {
   articlesExpanded.value = false
 }
 
+/**
+ * BUG-S7.0-001: article 详情页 ``onLoad`` 接收的参数名是 ``article_id``
+ * (与 article/index.vue / article/detail.vue 内部 ``gotoRelatedArticle``
+ * 一致), 这里以前传 ``id`` 导致详情页 ``getNavParam(options, 'article_id')``
+ * 拿到 undefined → 报"缺少 article_id 参数". 与 list / 相关文章保持参数名
+ * 统一即可.
+ */
 function openArticleDetail(item: ArticleListItem) {
-  void navigateWithParams('/pages/article/detail', { id: item.article_id })
+  void navigateWithParams('/pages/article/detail', { article_id: item.article_id })
 }
 
 function onTabSelect(t: Tab) {
