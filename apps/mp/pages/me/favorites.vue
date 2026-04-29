@@ -136,7 +136,11 @@ async function onLongPress(item: FavoriteItem) {
 }
 
 function gotoDiscover() {
-  uni.reLaunch({ url: '/pages/index/index' })
+  // FE-S6-001: 引导用户去首页发现新股, 不需要清栈; switchTab 保其它 tab state
+  uni.switchTab({
+    url: '/pages/index/index',
+    fail: () => uni.reLaunch({ url: '/pages/index/index' }),
+  })
 }
 
 onShow(() => {

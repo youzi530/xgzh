@@ -95,8 +95,12 @@ async function handleSubmit() {
     // 给 toast 渲染时间, 1s 后回上一页 (用户主流路径: 提交 → 离开页面)
     setTimeout(() => {
       uni.navigateBack({ delta: 1 }).catch(() => {
-        // 兜底: 没有上一页时跳个人中心 (例如直接 H5 输入 URL 进来的)
-        uni.reLaunch({ url: '/pages/me/index' })
+        // 兜底: 没有上一页时跳个人中心 tab (例如直接 H5 输入 URL 进来)
+        // FE-S6-001: tabBar 启用后, me 是 tab 页, switchTab 优于 reLaunch (保 state)
+        uni.switchTab({
+          url: '/pages/me/index',
+          fail: () => uni.reLaunch({ url: '/pages/me/index' }),
+        })
       })
     }, 1000)
   } catch (err) {

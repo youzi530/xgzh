@@ -120,13 +120,12 @@ async function handleSendOtp() {
 }
 
 function gotoHome() {
-  // #ifdef MP-WEIXIN
-  // 小程序首页是 tabbar, 用 switchTab; 但 pages.json 暂未开 tabbar, 仍走 reLaunch
-  uni.reLaunch({ url: '/pages/index/index' })
-  // #endif
-  // #ifndef MP-WEIXIN
-  uni.reLaunch({ url: '/pages/index/index' })
-  // #endif
+  // FE-S6-001: tabBar 已开启, 5 tab 都用 switchTab; 失败兜底 reLaunch
+  // (例如未来某 tab 被临时下线 / pages.json 没注册时)
+  uni.switchTab({
+    url: '/pages/index/index',
+    fail: () => uni.reLaunch({ url: '/pages/index/index' }),
+  })
 }
 
 async function handlePhoneLogin() {

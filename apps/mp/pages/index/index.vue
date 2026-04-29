@@ -17,7 +17,6 @@ import { onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
 import { storeToRefs } from 'pinia'
 import { computed, ref } from 'vue'
 
-import type { UserPublic } from '@/api/auth'
 import {
   fetchIPOList,
   type IPOItem,
@@ -56,9 +55,7 @@ const statusFilter = ref<'all' | IPOStatus>('all')
 const viewMode = ref<ViewMode>('list')
 
 const authStore = useAuthStore()
-const { user, loggedIn } = storeToRefs(authStore)
-const currentUser = computed<UserPublic | null>(() => user.value)
-
+const { loggedIn } = storeToRefs(authStore)
 const hasMore = computed(() => list.value.length < total.value)
 
 const dataSourceText = computed(() => {
@@ -78,17 +75,8 @@ const todayHotItems = computed<IPOItem[]>(() => {
   return list.value.filter((i) => i.status === 'subscribing').slice(0, 3)
 })
 
-function nicknameInitial(u: UserPublic): string {
-  if (u.nickname && u.nickname.length > 0) return u.nickname.slice(0, 1)
-  return u.invite_code.slice(0, 1)
-}
-
 function gotoLogin() {
   uni.navigateTo({ url: '/pages/auth/login' })
-}
-
-function gotoProfile() {
-  uni.navigateTo({ url: '/pages/me/index' })
 }
 
 async function load(reset = false) {
@@ -200,9 +188,6 @@ onReachBottom(() => {
         </view>
         <view v-if="!loggedIn" class="auth-pill" @tap="gotoLogin">
           <text>登录 / 注册</text>
-        </view>
-        <view v-else class="auth-avatar" @tap="gotoProfile">
-          <text class="auth-avatar-text">{{ nicknameInitial(currentUser!) }}</text>
         </view>
       </view>
     </view>
@@ -357,22 +342,6 @@ onReachBottom(() => {
   background: rgba(79, 139, 255, 0.1);
   border: 1rpx solid rgba(79, 139, 255, 0.3);
 }
-.auth-avatar {
-  flex-shrink: 0;
-  width: 64rpx;
-  height: 64rpx;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #4f8bff, #f6c453);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.auth-avatar-text {
-  font-size: 28rpx;
-  font-weight: 700;
-  color: #fff;
-}
-
 .bar {
   display: flex;
   align-items: center;

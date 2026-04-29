@@ -140,11 +140,19 @@ function startPolling() {
 }
 
 function gotoMe() {
-  uni.reLaunch({ url: '/pages/me/index' })
+  // FE-S6-001: me 是 tab 页, switchTab 切换保留其它 tab state; 失败兜底 reLaunch
+  uni.switchTab({
+    url: '/pages/me/index',
+    fail: () => uni.reLaunch({ url: '/pages/me/index' }),
+  })
 }
 
 function gotoHome() {
-  uni.reLaunch({ url: '/pages/index/index' })
+  // FE-S6-001: 同上
+  uni.switchTab({
+    url: '/pages/index/index',
+    fail: () => uni.reLaunch({ url: '/pages/index/index' }),
+  })
 }
 
 function gotoVip() {

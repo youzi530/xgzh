@@ -10,6 +10,38 @@
             }
         },
         {
+            "path": "pages/subscriptions/index",
+            "style": {
+                "navigationBarTitleText": "中签记账",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
+            "path": "pages/knowledge/index",
+            "style": {
+                "navigationBarTitleText": "打新知识",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
+            "path": "pages/community/index",
+            "style": {
+                "navigationBarTitleText": "打新社区",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
+            "path": "pages/me/index",
+            "style": {
+                "navigationBarTitleText": "个人中心",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
             "path": "pages/ipo/detail",
             "style": {
                 "navigationBarTitleText": "新股详情",
@@ -46,14 +78,6 @@
             "path": "pages/auth/login",
             "style": {
                 "navigationBarTitleText": "登录 / 注册",
-                "navigationBarBackgroundColor": "#0B1220",
-                "navigationBarTextStyle": "white"
-            }
-        },
-        {
-            "path": "pages/me/index",
-            "style": {
-                "navigationBarTitleText": "个人中心",
                 "navigationBarBackgroundColor": "#0B1220",
                 "navigationBarTextStyle": "white"
             }
@@ -135,6 +159,34 @@
             }
         }
     ],
+    "tabBar": {
+        "color": "#94a3b8",
+        "selectedColor": "#4f8bff",
+        "backgroundColor": "#0B1220",
+        "borderStyle": "black",
+        "list": [
+            {
+                "pagePath": "pages/index/index",
+                "text": "首页"
+            },
+            {
+                "pagePath": "pages/subscriptions/index",
+                "text": "中签"
+            },
+            {
+                "pagePath": "pages/knowledge/index",
+                "text": "知识"
+            },
+            {
+                "pagePath": "pages/community/index",
+                "text": "社区"
+            },
+            {
+                "pagePath": "pages/me/index",
+                "text": "我的"
+            }
+        ]
+    },
     "globalStyle": {
         "navigationBarTextStyle": "white",
         "navigationBarTitleText": "新股智汇",
