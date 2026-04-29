@@ -480,6 +480,29 @@ class Settings(BaseSettings):
         le=50,
     )
 
+    # ─── BUG-S6.9-001 搜狗微信公众号搜索 (大V 点评 tab 数据源) ──────────────
+    article_ingest_sogou_max_queries: int = Field(
+        default=10,
+        description=(
+            "搜狗微信 search 单次 ingest 最多打几个 IPO 关键词. 反爬门槛比 EM-search "
+            "低, 默认 10 (覆盖最近 10 只活跃 IPO). 触发反爬时 fail-soft 返空, "
+            "已有数据不丢. 调高需配合 IP 池 + 节流."
+        ),
+        ge=1,
+        le=50,
+    )
+    article_ingest_sogou_inter_query_delay_seconds: float = Field(
+        default=1.5,
+        description=(
+            "搜狗微信 search 两个 query 之间的 sleep 间隔 (秒). spike 期间观察到连续 "
+            "5 次 / 10s 内必触发反爬 (重定向 ``/antispider``); 1.5s 间隔下连续 10 "
+            "query 实测稳定. 0 = 立即下一 query (仅测试用, respx 注入). 调高更安全, "
+            "但 10 query × 1.5s = 15s, 30min scheduler 周期下完全可吞."
+        ),
+        ge=0,
+        le=10,
+    )
+
     # ─── BE-S3-003 simhash 同主题折叠 ─────────────────────────────────
     article_dedup_simhash_threshold: int = Field(
         default=3,

@@ -68,6 +68,9 @@ from app.services.article_ingest.sources.eastmoney_search_client import (
 from app.services.article_ingest.sources.sina_finance_client import (
     SinaFinanceClient,
 )
+from app.services.article_ingest.sources.sogou_wechat_client import (
+    SogouWechatClient,
+)
 from app.services.article_ingest.sources.xueqiu_client import XueqiuClient
 from app.services.article_ingest.sources.zhitong_rss_client import ZhitongRSSClient
 
@@ -174,23 +177,27 @@ def register_sources(
 ) -> list[ArticleSource]:
     """实例化所有数据源.
 
-    顺序无所谓 (各源并发时间互相不影响); 注册池 (Sprint 6.7 起 4 源):
+    顺序无所谓 (各源并发时间互相不影响); 注册池 (Sprint 6.9 起 5 源):
 
     ====================  =================  =========================================
     源                    类型               关键词驱动?
     ====================  =================  =========================================
     ZhitongRSSClient       RSS 大池           ❌ (订阅式, 关键词反查由 dispatcher 做)
     SinaFinanceClient      JSON API 大池      ❌ (滚动式, 关键词反查由 dispatcher 做)
-    XueqiuClient           关键词搜索         ✅ (按 IPO name 跑 N 次搜索)
-    EastmoneySearchClient  关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 全媒体)
+    XueqiuClient           关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 雪球长文)
+    EastmoneySearchClient  关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 持牌全媒体)
+    SogouWechatClient      关键词搜索         ✅ (按 IPO name 跑 N 次搜索, 微信公众号大V)
     ====================  =================  =========================================
 
-    设计原则 (BUG-S6.7-007):
+    设计原则 (BUG-S6.7-007 + BUG-S6.9-001):
     - **大池 + 精搜双策略**: 大池高 recall 抓周边新闻 / 行业评论; 精搜高 precision
       直接命中 IPO 主题文章. 两者并集后 dispatcher 统一过 IPOKeywordIndex 反查.
     - 大池源 (Zhitong/Sina) 不需要 keywords, 直接 instantiate
-    - 精搜源 (Xueqiu/EM) 共享同一份 queries 字符串列表 (节省 IPOKeywordIndex 内部
-      ``_ipos`` 遍历; 每源最多打 ``article_ingest_xueqiu_max_queries`` 次)
+    - 精搜源 (Xueqiu/EM/Sogou) 共享同一份 queries 字符串列表 (节省 IPOKeywordIndex
+      内部 ``_ipos`` 遍历; 每源最多打 ``article_ingest_xueqiu_max_queries`` 次)
+    - **维度互补 (S6.9-001)**: Xueqiu = 雪球用户长文 / EM = 持牌媒体转载 / Sogou =
+      微信公众号大V. 三者按 ``source_name`` 自然分流 (Sogou 加 ``"微信·"`` 前缀
+      让 FE 按前缀 filter 出"大V点评" tab, 与"持牌媒体" 分轨展示).
     """
     queries: list[str] = []
     seen: set[str] = set()
@@ -211,6 +218,13 @@ def register_sources(
     if queries:
         sources.append(XueqiuClient(settings=settings, queries=queries))
         sources.append(EastmoneySearchClient(settings=settings, queries=queries))
+        # S6.9-001: 搜狗微信; queries 截到 sogou 专用上限 (反爬门槛比 EM 低,
+        # 默认 max_queries 同 xueqiu, 后续可调)
+        sogou_queries = queries[: settings.article_ingest_sogou_max_queries]
+        if sogou_queries:
+            sources.append(
+                SogouWechatClient(settings=settings, queries=sogou_queries)
+            )
     return sources
 
 

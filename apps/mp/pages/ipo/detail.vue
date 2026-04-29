@@ -301,22 +301,66 @@ async function loadArticles() {
  *
  * 不做"分页"原因: 后端一次返 ≤ 20 条, 前端就地折叠最直观, 不需要二次拉。
  * 5 是约定阈值, 与"今日打新 hero 卡 ≤ 3" 同一思路 — 首屏控制密度。
+ *
+ * BUG-S6.9-001: 市场文章 → 大V点评 二级 chip.
+ *
+ * - 同一份 articlesData 不二次拉; 按 source_name 前缀 "微信·" 切分
+ * - 三个 chip [全部 / 持牌媒体 / 大V点评], v-show 切换
+ * - 切 chip 时 reset articlesExpanded (避免切到只有 2 条的 tab 还残留"收起")
+ * - 持牌媒体 = source_name 不以 "微信·" 起 (东财 / 雪球 / 新浪 / 智通)
+ * - 大V点评 = source_name 以 "微信·" 起 (搜狗微信 BUG-S6.9-001 抓的)
  */
 const ARTICLE_PREVIEW_COUNT = 5
 const articlesExpanded = ref(false)
+
+type ArticleSourceFilter = 'all' | 'media' | 'kol'
+const articleFilter = ref<ArticleSourceFilter>('all')
+const WECHAT_PREFIX = '微信·'
+
+const filteredArticles = computed(() => {
+  if (articleFilter.value === 'media') {
+    return articlesData.value.filter(
+      (a) => !(a.source_name || '').startsWith(WECHAT_PREFIX),
+    )
+  }
+  if (articleFilter.value === 'kol') {
+    return articlesData.value.filter(
+      (a) => (a.source_name || '').startsWith(WECHAT_PREFIX),
+    )
+  }
+  return articlesData.value
+})
 const visibleArticles = computed(() => {
-  if (articlesExpanded.value) return articlesData.value
-  return articlesData.value.slice(0, ARTICLE_PREVIEW_COUNT)
+  if (articlesExpanded.value) return filteredArticles.value
+  return filteredArticles.value.slice(0, ARTICLE_PREVIEW_COUNT)
 })
 const showArticleToggle = computed(
-  () => articlesData.value.length > ARTICLE_PREVIEW_COUNT,
+  () => filteredArticles.value.length > ARTICLE_PREVIEW_COUNT,
 )
 const articleToggleText = computed(() => {
   if (articlesExpanded.value) return '收起'
-  return `查看全部 ${articlesData.value.length} 篇 ↓`
+  return `查看全部 ${filteredArticles.value.length} 篇 ↓`
 })
 function toggleArticles() {
   articlesExpanded.value = !articlesExpanded.value
+}
+
+const mediaCount = computed(
+  () =>
+    articlesData.value.filter(
+      (a) => !(a.source_name || '').startsWith(WECHAT_PREFIX),
+    ).length,
+)
+const kolCount = computed(
+  () =>
+    articlesData.value.filter((a) =>
+      (a.source_name || '').startsWith(WECHAT_PREFIX),
+    ).length,
+)
+function selectArticleFilter(f: ArticleSourceFilter) {
+  if (articleFilter.value === f) return
+  articleFilter.value = f
+  articlesExpanded.value = false
 }
 
 function openArticleDetail(item: ArticleListItem) {
@@ -551,6 +595,36 @@ function openProspectus() {
             <text>暂无与「{{ item.name || code }}」相关的市场文章</text>
           </view>
           <view v-else class="article-list">
+            <!-- BUG-S6.9-001: 二级 chip [全部 / 持牌媒体 / 大V点评] -->
+            <view class="article-filter-bar">
+              <view
+                :class="['article-filter-chip', articleFilter === 'all' && 'article-filter-chip-active']"
+                hover-class="article-filter-chip-hover"
+                :hover-stay-time="60"
+                @tap="selectArticleFilter('all')"
+              >
+                <text>全部 {{ articlesData.length }}</text>
+              </view>
+              <view
+                :class="['article-filter-chip', articleFilter === 'media' && 'article-filter-chip-active']"
+                hover-class="article-filter-chip-hover"
+                :hover-stay-time="60"
+                @tap="selectArticleFilter('media')"
+              >
+                <text>持牌媒体 {{ mediaCount }}</text>
+              </view>
+              <view
+                :class="['article-filter-chip', articleFilter === 'kol' && 'article-filter-chip-active']"
+                hover-class="article-filter-chip-hover"
+                :hover-stay-time="60"
+                @tap="selectArticleFilter('kol')"
+              >
+                <text>大V点评 {{ kolCount }}</text>
+              </view>
+            </view>
+            <view v-if="filteredArticles.length === 0" class="empty">
+              <text>{{ articleFilter === 'kol' ? '暂无微信公众号大V 文章 (搜狗微信 ingest 中)' : '暂无持牌媒体文章' }}</text>
+            </view>
             <view
               v-for="a in visibleArticles"
               :key="a.article_id"
@@ -885,6 +959,36 @@ function openProspectus() {
   flex-direction: column;
   gap: 16rpx;
 }
+
+/* BUG-S6.9-001: 市场文章二级 chip — [全部 / 持牌媒体 / 大V点评] */
+.article-filter-bar {
+  display: flex;
+  flex-direction: row;
+  gap: 12rpx;
+  padding: 4rpx 0 12rpx 0;
+  flex-wrap: wrap;
+}
+.article-filter-chip {
+  padding: 8rpx 20rpx;
+  background: var(--color-surface);
+  border: 1rpx solid var(--color-border);
+  border-radius: 999rpx;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+.article-filter-chip-hover {
+  opacity: 0.7;
+}
+.article-filter-chip-active {
+  background: rgba(79, 139, 255, 0.15);
+  border-color: rgba(79, 139, 255, 0.4);
+  color: #4f8bff;
+  font-weight: 600;
+}
+
 .article-card {
   padding: 20rpx;
   background: var(--color-surface);
