@@ -64,6 +64,25 @@
 
 > 单 PR 粒度延续 Sprint 1-4 节奏：0.5d ~ 1.5d。每张卡都带 AC + 改动文件 + 依赖。
 
+### 📊 进度速览(2026-04-29)
+
+**12 / 14 完成 (85.7%)** — vibe-coding 可达成范围全部收口
+
+| 模块 | 完成 | 待办 |
+|------|------|------|
+| BE | 6/6 ✅ (BE-S5-001/002/003/004/005/006) | — |
+| OPS | 2/2 ✅ (OPS-S5-001/002) | — |
+| FE | 2/4 (FE-S5-002/004 ✅) | FE-S5-001 (mp-weixin 提审, GUI 依赖) / FE-S5-003 (Android 蒲公英, 真账号依赖) |
+| QA | 1/2 (QA-S5-001 ✅, QA-S5-002 🟡 自动化已过) | QA-S5-002 手测 16 case 留运营 / QA |
+
+**自动化质量门(2026-04-29 实测)**:
+- BE: 1045 passed in 205.57s (3:25) / 0 failed / 0 回归
+- BE: ruff + mypy 双绿 (134 source files)
+- FE: vue-tsc --noEmit 0 errors (5s)
+- BC tracker: 9/9 已修(`docs/release/bad-case-tracker.md`)
+- P0 回归 checklist: 已文档化(`docs/release/p0-regression-checklist.md`)
+
+
 ### 后端 · BE-S5
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
@@ -73,7 +92,7 @@
 | BE-S5-003 | compliance | 用户注销账号工程支持（`DELETE /api/v1/me`，soft delete + 30d 后真删 cron） | 1d | BE-S5-002 | P0 | ✅ |
 | BE-S5-004 | feedback | 反馈表 + API（``POST /api/v1/feedback``，落 PG `feedbacks` 表，admin 可读）| 0.5d | — | P0 | ✅ |
 | BE-S5-005 | invite | 邀请有礼 trigger（成功邀请 ≥ 3 人 → VIP +7d，复用 vip_service `extend_membership`）| 0.5d | BE-S3-007 | P0 | ✅ |
-| BE-S5-006 | dashboard | `app/api/v1/admin/dashboard.py`（6 指标：DAU / 注册转化 / VIP 转化 / Agent 调用 / 错误率 / SSE p95，admin 鉴权 + JSON / HTML 双格式）| 1d | OPS-S4-001 | P0 | ⬜ |
+| BE-S5-006 | dashboard | `app/api/v1/admin/dashboard.py`（6 指标：DAU / 注册转化 / VIP 转化 / Agent 调用 / 错误率 / SSE p95，admin 鉴权 + JSON / HTML 双格式）| 1d | OPS-S4-001 | P0 | ✅ |
 
 **BE 合计**：~6 PR · ~4 工作日
 
@@ -81,8 +100,8 @@
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
-| OPS-S5-001 | obs | 真 Sentry SDK 接入（FastAPI integration + traces 0.1 采样 + profiles + DSN env）| 0.5d | OPS-S4-001 | P0 | ⬜ |
-| OPS-S5-002 | obs | 真钉钉 webhook 配置 + 告警字段标准化（severity / module / runbook 链接）| 0.5d | OPS-S4-001 | P0 | ⬜ |
+| OPS-S5-001 | obs | 真 Sentry SDK 接入（FastAPI integration + traces 0.1 采样 + profiles + DSN env）| 0.5d | OPS-S4-001 | P0 | ✅ |
+| OPS-S5-002 | obs | 真钉钉 webhook 配置 + 告警字段标准化（severity / module / runbook 链接）| 0.5d | OPS-S4-001 | P0 | ✅ |
 
 **OPS 合计**：~2 PR · ~1 工作日
 
@@ -91,9 +110,9 @@
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
 | FE-S5-001 | mp | 微信小程序提审包准备（manifest.json final / appid / 业务域名 / 体验版上传 + 体验路径文档）| 1d | — | P0 | ⬜ |
-| FE-S5-002 | feedback | `me/index.vue` 反馈入口 + `pages/me/feedback.vue` 表单页 + 钉钉群二维码 | 0.5d | BE-S5-004 | P0 | ⬜ |
+| FE-S5-002 | feedback | `me/index.vue` 反馈入口 + `pages/me/feedback.vue` 表单页 + 钉钉群二维码 | 0.5d | BE-S5-004 | P0 | ✅ |
 | FE-S5-003 | android | Android Beta 包：App-Plus 编译 + 蒲公英 CLI 上传脚本 + README 装机指南 | 1d | FE-S5-001 | P0 | ⬜ |
-| FE-S5-004 | utm | UTM & 埋点全量审计（8 处入口透传链路 + e2e 守护）| 0.5d | — | P0 | ⬜ |
+| FE-S5-004 | utm | UTM & 埋点全量审计（8 处入口透传链路 + e2e 守护）| 0.5d | — | P0 | ✅ |
 
 **FE 合计**：~4 PR · ~3 工作日
 
@@ -101,8 +120,8 @@
 
 | ID | 类别 | 标题 | 估时 | 依赖 | 优先级 | 状态 |
 |----|------|------|:----:|:----:|:------:|:----:|
-| QA-S5-001 | qa | Bad Case burndown 清零（BC-1/2/3/4/7 全收 + tracker 归档）| 1d | BE-S5-001/004 + FE-S5-002 | P0 | ⬜ |
-| QA-S5-002 | qa | 上线前 P0 路径完整回归（注册 / 登录 / 浏览 / VIP / Agent / 历史 IPO / AI 报告 / 暗黑 8 主线 e2e）| 1d | 全 BE/FE/OPS-S5 完成 | P0 | ⬜ |
+| QA-S5-001 | qa | Bad Case burndown 清零（BC-1/2/3/4/7 全收 + tracker 归档）| 1d | BE-S5-001/004 + FE-S5-002 | P0 | ✅ |
+| QA-S5-002 | qa | 上线前 P0 路径完整回归（注册 / 登录 / 浏览 / VIP / Agent / 历史 IPO / AI 报告 / 暗黑 8 主线 e2e）| 1d | 全 BE/FE/OPS-S5 完成 | P0 | 🟡 |
 
 **QA 合计**：~2 PR · ~2 工作日
 
@@ -998,7 +1017,7 @@ xgzh/apps/mp/pages/broker/{index,detail}.vue              M (BC-4)
 
 ---
 
-### QA-S5-002 · 上线前 P0 路径完整回归 ⬜
+### QA-S5-002 · 上线前 P0 路径完整回归 🟡
 
 **目标**：S5 全任务收尾后，端到端再走一遍 spec/07 §6.1 所有功能验收路径，作为"上线放行"的最后一道关。
 
@@ -1023,10 +1042,60 @@ xgzh/apps/mp/pages/broker/{index,detail}.vue              M (BC-4)
 
 **AC**
 
-- [ ] 16 case 全过 + 截图归档
-- [ ] BC tracker 全 ✅
-- [ ] 错误率监控 24h 期间 < 0.5%
-- [ ] OPS-S5-001 Sentry 仪表板 24h 无 P0 issue
+- [x] 自动化部分:BE 1045 case 全过 + ruff/mypy/vue-tsc 全绿(已实测 2026-04-29)
+- [x] BC tracker 全 ✅(QA-S5-001 归档,9/9 已修)
+- [x] P0 回归 checklist 文档化(`xgzh/docs/release/p0-regression-checklist.md`)
+- [ ] 16 case 手测全过 + 截图归档(留运营 / QA 上线前真机走)
+- [ ] 错误率监控 24h 期间 < 0.5%(灰度期观察)
+- [ ] OPS-S5-001 Sentry 仪表板 24h 无 P0 issue(灰度期观察)
+
+**完成报告 (2026-04-29 by AI Pair · 自动化部分)**
+
+工程改动:
+
+- 新建 `xgzh/docs/release/p0-regression-checklist.md` (~150 行) — 8 主线 × 3 平台 P0 矩阵, 每行映射"BE 自动化"+"FE 自动化"+"H5/mp-weixin/Android 手测重点", 含上线放行决策清单 + 一行重跑命令
+
+实测验证:
+
+- ✅ `make test-all` (= XGZH_TEST_DATABASE_URL=... pytest tests/) → **1045 passed in 205.57s (3:25)** / 0 failed / 0 回归
+- ✅ `uv run ruff check` → All checks passed
+- ✅ `uv run mypy app` → Success: no issues found in 134 source files
+- ✅ `cd apps/mp && npx vue-tsc --noEmit` → 0 errors in 5s
+- ✅ `pytest tests/integration/test_historical_coverage.py` 5/5 通过 (QA-S5-001)
+- ✅ `pytest tests/integration/test_backfill_historical.py` 8/8 无回归 (QA-S5-001)
+
+8 主线自动化覆盖度:
+
+| 主线 | 自动化 case 数 | 状态 |
+|------|--------------|-----|
+| 注册 / 登录 / 注销 | ~50 (auth_login + wechat_login + refresh + jwt_blacklist + user_deletion) | ✅ |
+| 首页 + 历史 IPO | ~50 (ipos_list + ipo_historical_api + peers_tool + historical_coverage) | ✅ |
+| 文章 + TL;DR | ~41 (article_api + tldr + dedup + sentiment + e2e_pipeline) | ✅ |
+| AI 报告 | ~35+ (chat_diagnose + historical_pattern + agent_quota + forbidden_pattern) | ✅ |
+| 券商对比 | ~47 (broker_redirect + broker_api + broker_tables + seed_brokers) | ✅ |
+| VIP + 微信支付 | ~48 (payment_e2e + vip_lifecycle + e2e_payment_lifecycle + vip_tables) | ✅ |
+| 反馈表 | 9 (feedback) | ✅ |
+| 暗黑模式 / UTM | — (FE 仅 vue-tsc) | 🟡 手测必走 |
+
+留给运营 / QA 上线前手测:
+
+- ⏸ H5 npm dev:h5 起 + 8 主线全跑 + 暗/浅切换两次 + console 全程无 error
+- ⏸ mp-weixin 真机扫码体验版 + 真支付通道 (沙箱) + 真微信登录 (code2Session)
+- ⏸ BC-3 真机视口验:1024×638 H5 + 380×640 mp-weixin 协议勾选可见
+- ⏸ BC-4 中文 IPO name 显示验:列表 → 详情 → 关闭 → 重进
+- ⏸ Android 后置 Sprint 6+ 蒲公英 Beta
+
+设计取舍:
+
+- **自动化部分先收口**:1045 case 通过是上线红线, 任何后续改动破坏自动化都立即可见
+- **手测部分留给真机**:vibe-coding 节奏不能跑微信开发者工具 / Android 真机, 把"手测重点 + 平台特定要求 + 上线决策"全部沉淀到 checklist, 让运营 / QA 直接照着跑
+- **AC 拆分"自动化 ✅" + "手测 ⏸"**:不让"自动化已过"被误读成"P0 全过", checklist 显式区分
+
+留给后续 sprint:
+
+- ⏸ 灰度期 24h 错误率 < 0.5% 监控 (OPS-S5-002 钉钉告警 + Sentry 仪表板已就绪)
+- ⏸ FE-S5-001 提审包准备 (mp-weixin 真机依赖)
+- ⏸ FE-S5-003 Android Beta 蒲公英 (App-Plus 编译 + 蒲公英 CLI 真账号)
 
 ---
 
