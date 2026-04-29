@@ -693,6 +693,7 @@ function openProspectus() {
 <style lang="scss" scoped>
 .page {
   min-height: 100vh;
+  background: var(--color-bg, #0b1220);
   padding: 24rpx;
   display: flex;
   flex-direction: column;

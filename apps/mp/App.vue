@@ -140,34 +140,11 @@ uni-page-body {
   color: var(--color-text);
 }
 
-/* BUG-S7.1-004: H5 端 tabBar 主题切换.
- * pages.json 的 ``tabBar`` 配置一套深色 PNG icon + 灰底, 主题切换不动 tabBar.
- * 浅色主题下用 CSS filter 反色让单色 icon 视觉适配 (无需出第二套 PNG).
- *
- * - invert(0.7) brightness(0.6): 把白灰 icon 反成深灰; 选这两个值是经验值,
- *   纯 invert(1) 太黑, brightness 兜回亮度
- * - saturate(0): 防止 invert 后 icon 走味带蓝/绿色
- * - selected (.uni-tabbar__bd--active) icon 不反色 — selected 是品牌蓝
- *   #2563eb 在浅底已可见, 反色反而走味
- *
- * mp 端不进 H5 条件块, mp 用 ``setTabBarStyle`` 改色; icon path 不变 (灰
- * icon 在白底视觉勉强能识别, 留待 v2 出第二套).
+/* BUG-S7.2-003: tabBar 主题切换改用 ``uni.setTabBarStyle`` 跨端统一(theme.ts
+ * applyTheme 中调用), 不再依赖 CSS filter hack. H5 端原 ``filter: invert`` 反色
+ * 方案 (Sprint 7.1 BUG-S7.1-004) 已删除 — setTabBarStyle 直接修改 tabBar 的
+ * inline style, 与 mp 端视觉 100% 一致, icon 用原 PNG 中灰色 (RGB 144/255 实测
+ * 在浅深底都可识别). icon 路径升级路径仍是 v2 出第二套浅色 PNG.
  */
-:root[data-theme='light'] uni-tabbar {
-  background-color: #ffffff !important;
-  border-top: 1rpx solid rgba(15, 23, 42, 0.08) !important;
-}
-:root[data-theme='light'] uni-tabbar .uni-tabbar__icon img {
-  filter: invert(0.7) brightness(0.6) saturate(0);
-}
-:root[data-theme='light'] uni-tabbar .uni-tabbar__bd--active .uni-tabbar__icon img {
-  filter: none;
-}
-:root[data-theme='light'] uni-tabbar .uni-tabbar__label {
-  color: #64748b !important;
-}
-:root[data-theme='light'] uni-tabbar .uni-tabbar__bd--active .uni-tabbar__label {
-  color: #2563eb !important;
-}
 /* #endif */
 </style>

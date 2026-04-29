@@ -132,7 +132,7 @@ onLoad((options) => {
 .page {
   min-height: 100vh;
   padding: 32rpx 24rpx;
-  background: var(--color-bg, #0f172a);
+  background: var(--color-bg, #0b1220);
   color: var(--color-text, #e2e8f0);
   display: flex;
   flex-direction: column;

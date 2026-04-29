@@ -173,28 +173,17 @@ function gotoOriginal() {
   const url: string | undefined = article.value?.original_url
   if (!url) return
   const safeUrl: string = url
-  // BUG-S7.1-001 H5 端浏览器主场, 直接新标签打开原文; 0 反盗链 0 备案问题.
-  // noopener,noreferrer 是 window.open 安全最佳实践 — 防 phishing + 不传 referrer
-  // 防原文站做 origin 黑名单. mp 端走合规黑洞分支 (公众号文章不能 webview).
+  // BUG-S7.1-001 / BUG-S7.2-004:
+  // - H5 浏览器主场, 直接新标签打开原文 (0 反盗链 0 备案 0 跨域)
+  // - mp/app 跳本应用内的 ``/pages/article/webview`` 中转页用 ``<web-view>`` 渲染;
+  //   微信公众号文章 (mp.weixin.qq.com) 在中转页内自动 fallback setClipboard
+  //   (微信禁 webview 内打开公众号文章, 反垄断/防套娃)
   // #ifdef H5
   window.open(safeUrl, '_blank', 'noopener,noreferrer')
   return
   // #endif
   // #ifndef H5
-  // MP-WEIXIN 不能直接打开任意 url; 走"复制 URL + 提示在浏览器粘贴" 兜底.
-  // 真实部署时如果第三方域名已备案, 这里换成 navigateTo 一个 web-view 中转页
-  uni.setClipboardData({
-    data: safeUrl,
-    success: () => {
-      uni.showModal({
-        title: '查看原文',
-        content: '原文链接已复制到剪贴板, 请在浏览器中粘贴打开. 由原作者提供, XGZH 不承担投资责任.',
-        showCancel: false,
-        confirmText: '我知道了',
-      })
-    },
-    fail: () => uni.showToast({ title: '复制失败', icon: 'none' }),
-  })
+  void navigateWithParams('/pages/article/webview', { url: safeUrl })
   // #endif
 }
 

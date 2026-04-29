@@ -581,6 +581,7 @@ onLoad((query) => {
 <style lang="scss" scoped>
 .page {
   min-height: 100vh;
+  background: var(--color-bg, #0b1220);
   padding: 24rpx 24rpx 80rpx;
   display: flex;
   flex-direction: column;

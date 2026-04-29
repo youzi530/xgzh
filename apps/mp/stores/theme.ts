@@ -48,17 +48,18 @@ function detectSystemTheme(): EffectiveTheme {
 }
 
 /**
- * 应用主题到 H5 documentElement + mp navbar + tabBar.
+ * 应用主题到 H5 documentElement + mp navbar + tabBar (跨端统一).
  *
  * - H5: ``data-theme`` 属性挂 ``<html>``, CSS 变量自动重算; 不再手动设 navbar.
- *   tabBar 通过 App.vue 的 ``:root[data-theme='light'] uni-tabbar`` CSS filter
- *   反色生效, 这里不需要 JS 调用 (BUG-S7.1-004).
- * - mp-weixin / app:
- *   - ``uni.setNavigationBarColor`` 给当前页 navbar 染色
- *   - ``uni.setTabBarStyle`` 同步 tabBar 底色/字色 (BUG-S7.1-004); icon 走 PNG
- *     path 不能动态换色, 留待 v2 出第二套浅色 PNG
- *   - page 内容层 CSS 变量切换走 ``view.theme-light`` 选择器 (BUG-S7.1-003);
- *     各页面顶层 view ``:class="[ 'page', themeClass ]"`` 注入即可
+ * - mp-weixin / app: ``uni.setNavigationBarColor`` 给当前页 navbar 染色
+ *   (H5 没有原生 navbar, 通过 ``data-theme`` + CSS 控制).
+ * - **tabBar (BUG-S7.2-003)**: ``uni.setTabBarStyle`` H5/mp/app 全端官方支持,
+ *   Sprint 7.2 把这个调用从 ``// #ifndef H5`` 移出, 统一调用 — H5 不再依赖
+ *   App.vue 的 CSS ``filter: invert`` hack, 视觉与 mp 100% 一致.
+ *   (icon 走 PNG path 不能动态换色, 但 PNG 实测 RGB 144/255 中等亮度, 浅深底
+ *    都可识别; v2 出第二套浅色 icon 升级.)
+ * - page 内容层 CSS 变量切换走 ``view.theme-light`` 选择器 (BUG-S7.1-003);
+ *   各页面顶层 view ``:class="[ 'page', themeClass ]"`` 注入即可.
  */
 function applyTheme(effective: EffectiveTheme) {
   // #ifdef H5
@@ -83,9 +84,11 @@ function applyTheme(effective: EffectiveTheme) {
   } catch {
     // 部分 mp 端 (调试器 / 早期版本) 不支持; 静默吞
   }
-  // BUG-S7.1-004: mp 端 tabBar 主题同步. borderStyle 仅接 white/black 字面量
-  // (mp 协议限制), 不接任意色值; 浅色主题用 white 给 tabBar 浅色边框.
-  // setTabBarStyle 在 mp/app 端通用; 部分老版本调试器不支持, 静默吞.
+  // #endif
+
+  // BUG-S7.2-003: tabBar 主题同步 (跨端统一). H5/mp/app 都官方支持 setTabBarStyle.
+  // borderStyle 仅接 white/black 字面量 (mp 协议限制), 不接任意色值;
+  // 浅色主题用 white 给 tabBar 浅色边框.
   try {
     if (effective === 'light') {
       uni.setTabBarStyle({
@@ -103,9 +106,8 @@ function applyTheme(effective: EffectiveTheme) {
       })
     }
   } catch {
-    // 调试器不支持 setTabBarStyle, 静默吞
+    // 调试器 / 部分 H5 早期版本不支持 setTabBarStyle, 静默吞
   }
-  // #endif
 }
 
 export const useThemeStore = defineStore('theme', () => {
