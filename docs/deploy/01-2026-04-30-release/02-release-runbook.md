@@ -85,7 +85,7 @@ cat .env | grep -E '^(JWT_SECRET|WECHAT_MP_APP_ID|DEEPSEEK_API_KEY|OPS_ADMIN_TOK
 # 期望全部非空 (除 WECHATPAY_DEV_MODE=true 是本次发版的预期值)
 # 任何 = 后面是空的 → STOP, 先填值
 
-uv run alembic current           # 期望: 输出 0014_community (head)
+uv run alembic current           # 期望: 输出 0015_ipos_price_range (head)
 curl -fsSL https://api.<你的域名>/healthz   # 期望: {"status":"ok"}
 curl -fsSL -H "X-Admin-Token: $OPS_ADMIN_TOKEN" \
      https://api.<你的域名>/api/v1/admin/dashboard?days=1&format=json | jq .total_users
@@ -354,7 +354,7 @@ git push origin v1.0.0 --force-with-lease
 | 发版日期 | 2026-04-30 ~ 2026-05-06 |
 | Git tag | v1.0.0 |
 | Git commit sha | (D2 最后一个 hotfix 后填) |
-| 后端 alembic head | 0014_community |
+| 后端 alembic head | 0015_ipos_price_range |
 | 后端镜像 tag | (生产部署后填, 例: `xgzh-api:v1.0.0`) |
 | 微信审核通过日期 | (D4 实际填) |
 | 全量发布日期 | (D5 实际填) |

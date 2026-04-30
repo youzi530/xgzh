@@ -156,7 +156,7 @@
   - `SENTRY_DSN` (错误追踪)
   - `OPS_ADMIN_TOKEN` (32+ 字节随机串, 不要 commit)
   - `WECHATPAY_DEV_MODE=true` (本次发版保持 stub, 见 §1.2)
-- [ ] alembic head 上到 `0014_community` (Sprint 6 三新表族)
+- [ ] alembic head 上到 `0015_ipos_price_range` (Sprint 6 三新表族)
 - [ ] `apps/api/Makefile` `make ci-integration` 在生产数据库一次绿
 - [ ] `uv run python -m scripts.check_historical_coverage` 退出码 = 0 (industry / first_day coverage 达 AC)
 - [ ] `seed_brokers.py` + `seed_articles_initial.py` (如有) + `backfill_historical_ipos.py --source synthetic` 全跑一次

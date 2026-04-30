@@ -26,7 +26,7 @@ uv run python -m scripts.check_historical_coverage
 - [ ] **A2** `uv run ruff check` → All checks passed!
 - [ ] **A3** `uv run mypy app` → Success
 - [ ] **A4** `check_historical_coverage` 退出码 0
-- [ ] **A5** alembic head = `0014_community` (`uv run alembic current`)
+- [ ] **A5** alembic head = `0015_ipos_price_range` (`uv run alembic current`)
 
 ### B. 前端类型 + build smoke (10 min)
 
@@ -105,7 +105,7 @@ curl -fsSL https://api.<你的域名>/healthz
 - [ ] **F5** `SENTRY_DSN` 填好 (生产环境必须)
 - [ ] **F6** `ALERT_DINGTALK_WEBHOOK` + `ALERT_DINGTALK_SECRET` 填好
 - [ ] **F7** `WECHATPAY_DEV_MODE=true` (本次发版预期保持 stub, 不切真支付)
-- [ ] **F8** `alembic current` = `0014_community`
+- [ ] **F8** `alembic current` = `0015_ipos_price_range`
 - [ ] **F9** `curl https://api.<你的域名>/healthz` → 200 OK
 - [ ] **F10** Admin dashboard 能打开: `curl -H "X-Admin-Token: $OPS_ADMIN_TOKEN" https://api.<你的域名>/api/v1/admin/dashboard?days=1&format=json | jq .`
 

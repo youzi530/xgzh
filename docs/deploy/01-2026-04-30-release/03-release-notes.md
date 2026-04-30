@@ -206,7 +206,7 @@
 - **11 主线 P0 矩阵** 自动化全绿; 手测 H5 + mp-weixin 在 D1/D2 完成 (本目录配套 checklist)
 - **PIPL 审计** + Sentry PII scrub 已落地
 - **DingTalk 告警链路** 已接通 + runbook 就位
-- **alembic head** = `0014_community`
+- **alembic head** = `0015_ipos_price_range`
 
 ### C.5 部署版本
 
@@ -214,7 +214,7 @@
 |------|---------|------|
 | 微信小程序 | `apps/mp/dist/build/mp-weixin/` | 1.0.0 (versionCode 100) |
 | 后端 API | `apps/api/` (uvicorn + FastAPI) | tag v1.0.0 / commit (D2 后填) |
-| 后端 alembic | `apps/api/alembic/` | head = `0014_community` |
+| 后端 alembic | `apps/api/alembic/` | head = `0015_ipos_price_range` |
 | Agent 服务 (RAG) | `apps/agent/` | 同后端 (本次未独立部署) |
 | 数据 | seed_brokers + backfill_historical_ipos --source synthetic + (运营接管) 30 篇知识 | — |
 

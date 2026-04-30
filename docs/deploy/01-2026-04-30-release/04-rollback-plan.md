@@ -119,7 +119,7 @@ uv sync
 pm2 restart xgzh-api
 ```
 
-**注意**: 后端回退前必须确认数据库 schema 兼容. v1.0.0 alembic 是 `0014_community`, 如果回退到 v0.9.0 (假设是 `0011`), DB 不会自动 downgrade — 这没事 (旧 BE 不读新表), 但**绝对不要 `alembic downgrade`**, 那会丢数据.
+**注意**: 后端回退前必须确认数据库 schema 兼容. v1.0.0 alembic 是 `0015_ipos_price_range`, 如果回退到 v0.9.0 (假设是 `0011`), DB 不会自动 downgrade — 这没事 (旧 BE 不读新表), 但**绝对不要 `alembic downgrade`**, 那会丢数据.
 
 ### 2.3 P1 · 单功能故障
 
