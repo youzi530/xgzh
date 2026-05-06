@@ -22,3 +22,6 @@ fileignoreconfig:
     checksum: dc4eabf3ff34dfc14d972da37b338560c6686d618181e386e977eb76b89a8dce
   - filename: spec/25-deployment-strategy.md
     checksum: c6a3d1375805f3361f5bb577d90e33440dd32fbd45be67e642fc9797e2839cba
+  # bug-2305-v2 修 hk test isolation: monkeypatch.setattr 被误判 secret
+  - filename: apps/api/tests/test_ipo_ingest.py
+    checksum: 9d4df925ffd1f64f22a7d9858d3a46c52f82aa59e92277f3f85d4be4d2bf998c

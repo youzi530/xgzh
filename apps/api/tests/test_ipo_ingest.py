@@ -408,6 +408,29 @@ def test_register_jobs_is_reentrant() -> None:
 # =====================================================================
 
 
+@pytest.fixture
+def mock_em_aa_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 HK 三源中的 eastmoney + aastocks 两个 mock 成空, 让 hk_test 能聚焦验证 hkex_client.
+
+    BUG-2305-v2 retro: ``run_ingest_hk_job`` BUG-S6.7-004 引入三源合并 (eastmoney /
+    aastocks / hkexnews), 但历史 hk test 只 mock 了 hkexnews, 另外两个真去网络抓
+    导致 stats["received"] 多了 50+3=53 条脏数据 → assert 失败. 用此 fixture 把另两源
+    mock 成 empty, test 只关心 hkex 这一个待测源.
+    """
+    from app.adapters import aastocks_ipo_client, eastmoney_ipo_client
+    from app.adapters.aastocks_ipo_client import AAStocksIPOFetchResult
+    from app.adapters.eastmoney_ipo_client import EastmoneyIPOFetchResult
+
+    async def em_empty(*args, **kwargs) -> EastmoneyIPOFetchResult:
+        return EastmoneyIPOFetchResult.empty()
+
+    async def aa_empty(*args, **kwargs) -> AAStocksIPOFetchResult:
+        return AAStocksIPOFetchResult.empty()
+
+    monkeypatch.setattr(eastmoney_ipo_client, "fetch_eastmoney_ipo_list", em_empty)
+    monkeypatch.setattr(aastocks_ipo_client, "fetch_aastocks_upcoming", aa_empty)
+
+
 def _hk_item(
     code: str,
     *,
@@ -434,6 +457,7 @@ async def test_run_ingest_hk_job_happy_with_prospectus_url(
     session_factory: async_sessionmaker[AsyncSession],
     truncate_ipos: None,  # noqa: ARG001
     patch_session_factory: None,  # noqa: ARG001
+    mock_em_aa_empty: None,  # noqa: ARG001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """BE-S2-000: HK ingest 写库后, ``ipos.extra.prospectus_url`` 也得落上."""
@@ -476,9 +500,16 @@ async def test_run_ingest_hk_job_happy_with_prospectus_url(
 async def test_run_ingest_hk_job_swallows_fetch_error(
     truncate_ipos: None,  # noqa: ARG001
     patch_session_factory: None,  # noqa: ARG001
+    mock_em_aa_empty: None,  # noqa: ARG001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """fetch 抛 → 不冒泡, ``stats["errors"] == 1`` (与 A 股 run_ingest_a_job 行为一致)."""
+    """fetch 抛 → 不冒泡, hkex 单源失败被 fail-soft 转 empty.
+
+    与 A 股 run_ingest_a_job 不同 (A 股单源, fetch fail 直接 errors=1):
+    HK 是三源 (em + aa + hkexnews), 任一 fetch 失败都 fail-soft (转 empty 后续源继续跑),
+    errors 只在 upsert 失败时才 +=1. 这里三源都 empty (em/aa 被 mock 成 empty,
+    hkex 抛了被转 empty) → upsert 没机会跑 → errors=0.
+    """
     from app.adapters import hkex_client
 
     async def boom(*, settings=None, limit=None):
@@ -487,9 +518,9 @@ async def test_run_ingest_hk_job_swallows_fetch_error(
     monkeypatch.setattr(hkex_client, "fetch_hk_applicants", boom)
 
     stats = await ipo_ingest_service.run_ingest_hk_job()
-    assert stats["errors"] == 1
     assert stats["received"] == 0
     assert stats["inserted"] == 0
+    assert stats["errors"] == 0  # 三源 fail-soft 设计
 
 
 @pytest.mark.db
@@ -497,6 +528,7 @@ async def test_run_ingest_hk_job_empty_result_is_safe(
     session_factory: async_sessionmaker[AsyncSession],
     truncate_ipos: None,  # noqa: ARG001
     patch_session_factory: None,  # noqa: ARG001
+    mock_em_aa_empty: None,  # noqa: ARG001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """fetch 返回空 → ``stats["received"] == 0``, DB 一行没多."""
