@@ -1,4 +1,4 @@
-# bug-fix-2305 / spec/25 — 生产 compose (阿里云 ECS 8.130.156.2)
+# bug-fix-2305 / spec/25 / Sprint 9 — 生产 compose (阿里云 ECS 8.130.156.2)
 #
 # 与 ``docker-compose.yml`` (dev) 的关键区别:
 #
@@ -9,7 +9,16 @@
 # 5. **healthcheck** 严格, 启动失败 docker compose up -d 会失败让 deploy.yml 抓到
 # 6. **restart: unless-stopped** PG/Redis 重启自动起, BE 不重启 (避免反复 crash)
 #
-# 用法 (服务器上):
+# Sprint 9 自动化重构:
+# - **公开配置全在 environment 块** (`${VAR:-default}` 语法), 改值直接改本文件 push
+#   即生效, 不用 SSH 改 .env. 服务器 .env 仅留 secrets (deploy.yml 自动从 GH Secrets
+#   同步) + IMAGE_TAG (deploy.yml 自动写). 加新非 secret 配置 → 改本文件就行.
+# - **secrets 列表** 在 ``.github/workflows/deploy.yml`` 的 "Sync .env from
+#   GitHub Secrets" step 里. 加新 secret → 改 deploy.yml 加一行 + GH UI 加 secret.
+# - **服务器 .env.local 优先级最高** (deploy.yml 的 sync 步骤会 cat .env.local >> .env),
+#   GH Secrets 不可用 / 调试时可写 .env.local 即时覆盖, 不进 git.
+#
+# 用法 (服务器上, 通常都由 GH Actions 触发, 极少手动):
 #   cd /opt/xgzh
 #   docker compose -f docker-compose.production.yml up -d        # 起所有
 #   docker compose -f docker-compose.production.yml pull xgzh-api # 拉新镜像
@@ -28,28 +37,197 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # ─── environment 块: 配置事实来源 ─────────────────────────────────
+    # 规约:
+    # - 公开配置: 直接写默认值 (``KEY: value`` 或 ``KEY: ${VAR:-default}``), 改值
+    #   = 改本文件 + git push, GH Actions 自动 docker compose up -d 重建容器即生效.
+    # - Secret: ``KEY: ${VAR}`` (无 default), 必须从服务器 .env 注入,
+    #   .env 的内容由 deploy.yml 的 "Sync .env from GitHub Secrets" 自动生成.
+    #   .env 缺该字段时 docker compose 启动会报警, 但容器仍起来 (BE 内部按 settings
+    #   default = 空字符串处理, 该功能 503 但其它功能不受影响).
+    # - 想临时覆盖某个值: 服务器写 ``/opt/xgzh/.env.local`` 文件, deploy.yml 会 cat 追加.
     environment:
-      # 数据库 / Redis 走容器名解析 (xgzh-prod_default network)
-      # 注意: BE 用 pydantic-settings 默认 (无 env_prefix), 读 field name 大写 = DATABASE_URL,
-      # 不是 XGZH_DATABASE_URL. 历史 spec/25 v1 错写过 XGZH_ 前缀, 导致 BE fallback 到 default
-      # localhost:5432 连不上 PG (但 /healthz 不查 DB 仍 healthy 误导排查). v2 修正.
+      # === 数据库 / Redis (容器内网, 用 service 名解析) ===
+      # 注意: BE 用 pydantic-settings 默认 (无 env_prefix), 字段名大写 = DATABASE_URL,
+      # 不是 XGZH_DATABASE_URL. 历史 spec/25 v1 错写过前缀, BE fallback localhost
+      # 连不上 PG (但 /healthz 不查 DB 仍 healthy 误导排查). v2 修正.
       DATABASE_URL: postgresql+asyncpg://xgzh:${POSTGRES_PASSWORD}@postgres:5432/xgzh
       REDIS_URL: redis://redis:6379/0
-      # 应用配置
+      DB_ECHO_SQL: "false"
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "10"
+
+      # === 应用 / CORS / Server ===
+      APP_NAME: xgzh-api
       APP_ENV: production
-      LOG_LEVEL: INFO
-      # 鉴权
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # CORS 默认收紧到 H5 dev + 生产域名; 加新前端来源在这加, 别用 *
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,https://api.xgzh.top,https://www.xgzh.top}
+
+      # === 鉴权 (JWT_SECRET 是 secret, 必须从 .env 注入) ===
       JWT_SECRET: ${JWT_SECRET}
-      # CORS (生产要收紧, 默认本机 + H5)
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,https://your-domain.com}
-      # LLM keys (按需配)
+      JWT_ALGORITHM: HS256
+      JWT_ISSUER: xgzh-api
+      JWT_AUDIENCE: xgzh-mp
+      JWT_ACCESS_TTL_SECONDS: "1800"
+      JWT_REFRESH_TTL_SECONDS: "2592000"
+
+      # === LLM Provider keys (secrets; 至少配 1 个, 否则 /agent endpoint 全 hint) ===
+      # 当前用户主力 zhipu/glm-4-flash (免费); 其它备用. 全空时 BE 启动 warning 但不挂.
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
-      # 长桥 (Sprint 7.3 token-gated)
+      LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-zhipu/glm-4-flash}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-zhipu/glm-4-flash}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-openai/BAAI/bge-m3}
+      LLM_EMBEDDING_DIM: "1024"
+      LLM_EMBEDDING_BATCH_SIZE: "32"
+      LLM_RERANK_MODEL: BAAI/bge-reranker-v2-m3
+      LLM_CHAT_DEFAULT_TEMPERATURE: "0.3"
+      LLM_REQUEST_TIMEOUT_SECONDS: "60.0"
+
+      # === 数据源 (Tushare 可选, AKShare 不需 token) ===
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+
+      # === SMS / OTP ===
+      # SMS_ADAPTER=mock 时不真发短信 (公司资质未拿到, 当前默认); 改 aliyun 后下面 KEY 必填.
+      SMS_ADAPTER: ${SMS_ADAPTER:-mock}
+      ALIYUN_SMS_ACCESS_KEY_ID: ${ALIYUN_SMS_ACCESS_KEY_ID:-}
+      ALIYUN_SMS_ACCESS_KEY_SECRET: ${ALIYUN_SMS_ACCESS_KEY_SECRET:-}
+      ALIYUN_SMS_SIGN_NAME: ${ALIYUN_SMS_SIGN_NAME:-}
+      ALIYUN_SMS_TEMPLATE_ID: ${ALIYUN_SMS_TEMPLATE_ID:-}
+      ALIYUN_SMS_INTL_TEMPLATE_ID: ${ALIYUN_SMS_INTL_TEMPLATE_ID:-}
+      OTP_TTL_SECONDS: "300"
+      OTP_RESEND_INTERVAL_SECONDS: "60"
+      OTP_VERIFY_MAX_ATTEMPTS: "5"
+      # OTP dev 白名单: 命中的手机号不真发短信, 用固定验证码; 生产 (APP_ENV=prod) 自动忽略
+      OTP_DEV_FIXED_PHONES: ${OTP_DEV_FIXED_PHONES:-}
+      OTP_DEV_FIXED_CODE: ${OTP_DEV_FIXED_CODE:-888888}
+
+      # === VIP 白名单 (BE-S2-008) ===
+      VIP_USER_ID_WHITELIST: ${VIP_USER_ID_WHITELIST:-}
+      VIP_USER_PHONE_WHITELIST: ${VIP_USER_PHONE_WHITELIST:-}
+
+      # === 微信小程序登录 (BUG-S9-001) ===
+      # AppID 公开 (前端代码也明文用); AppSecret 是 secret. 留空时
+      # /auth/login/wechat-mp 返 503 wechat_mp_disabled (用户原报现象)
+      WECHAT_MP_APP_ID: ${WECHAT_MP_APP_ID:-}
+      WECHAT_MP_APP_SECRET: ${WECHAT_MP_APP_SECRET:-}
+      WECHAT_CODE2SESSION_URL: https://api.weixin.qq.com/sns/jscode2session
+      WECHAT_CODE2SESSION_TIMEOUT_SECONDS: "5.0"
+
+      # === 头像上传 (BUG-S9-002) ===
+      # AVATAR_STORAGE_DIR 默认 /var/lib/xgzh/avatars (容器内, 已 mount 到 host volume)
+      # AVATAR_PUBLIC_BASE_URL 留空时 POST /me/avatar 返 503 avatar_storage_unconfigured
+      AVATAR_STORAGE_DIR: /var/lib/xgzh/avatars
+      AVATAR_PUBLIC_BASE_URL: ${AVATAR_PUBLIC_BASE_URL:-http://8.130.156.2:8000/static/avatars}
+      AVATAR_MAX_BYTES: "2097152"
+
+      # === 长桥 (Sprint 7.3 token-gated; 暂未启用, 保留接口) ===
       LONGBRIDGE_API_TOKEN: ${LONGBRIDGE_API_TOKEN:-}
+
+      # === Scheduler / IPO Ingest (BE-007) ===
+      SCHEDULER_ENABLED: "true"
+      IPO_INGEST_INITIAL_DELAY_SECONDS: "5"
+      IPO_INGEST_CRON_HOURS: "8,20"
+      IPO_INGEST_A_LIMIT: "200"
+      IPO_INGEST_TIMEZONE: Asia/Shanghai
+
+      # === HK IPO Ingest (BE-S2-000) ===
+      HKEX_BASE_URL: https://www1.hkexnews.hk
+      IPO_INGEST_HK_CRON_HOURS: "9,17"
+      IPO_INGEST_HK_INITIAL_DELAY_SECONDS: "10"
+      IPO_INGEST_HK_TIMEZONE: Asia/Hong_Kong
+      IPO_INGEST_HK_LIMIT: "100"
+      IPO_INGEST_HK_REQUEST_CONCURRENCY: "2"
+      IPO_INGEST_HK_REQUEST_TIMEOUT_SECONDS: "10.0"
+
+      # === RAG 流水线 (BE-S2-004 / 005) ===
+      PDF_MAX_SIZE_MB: "50"
+      PDF_REQUEST_TIMEOUT_SECONDS: "60.0"
+      RAG_CHUNK_SIZE_TOKENS: "500"
+      RAG_CHUNK_OVERLAP_TOKENS: "50"
+      RAG_VECTOR_TOP_K: "50"
+      RAG_BM25_TOP_K: "50"
+      RAG_RRF_K: "60"
+      RAG_RERANK_POOL_SIZE: "20"
+      RAG_FINAL_TOP_K: "5"
+      RAG_USE_RERANK: "true"
+
+      # === Article Ingest / Dedup / Sentiment / TLDR (BE-S3-002~005) ===
+      ARTICLE_INGEST_INITIAL_DELAY_SECONDS: "15"
+      ARTICLE_INGEST_CRON_EXPR: "0"
+      ARTICLE_INGEST_REQUEST_CONCURRENCY: "3"
+      ARTICLE_INGEST_REQUEST_TIMEOUT_SECONDS: "10.0"
+      XUEQIU_BASE_URL: https://xueqiu.com
+      ARTICLE_INGEST_XUEQIU_COUNT_PER_QUERY: "20"
+      ARTICLE_INGEST_XUEQIU_MAX_QUERIES: "20"
+      ZHITONG_RSS_URL: https://www.zhitongcaijing.com/rss/news.xml
+      ARTICLE_DEDUP_SIMHASH_THRESHOLD: "3"
+      ARTICLE_DEDUP_WINDOW_HOURS: "24"
+      ARTICLE_DEDUP_RECLUSTER_CRON_HOURS: "*/4"
+      ARTICLE_DEDUP_RECLUSTER_INITIAL_DELAY_SECONDS: "30"
+      ARTICLE_SENTIMENT_MODEL: zhipu/glm-4-flash
+      ARTICLE_SENTIMENT_BATCH_SIZE: "10"
+      ARTICLE_SENTIMENT_CRON_MINUTES: "*/30"
+      ARTICLE_SENTIMENT_INITIAL_DELAY_SECONDS: "45"
+      ARTICLE_SENTIMENT_BACKFILL_WINDOW_HOURS: "24"
+      ARTICLE_SENTIMENT_BACKFILL_LIMIT: "200"
+      ARTICLE_TLDR_MODEL: zhipu/glm-4-flash
+      ARTICLE_TLDR_WINDOW_DAYS: "7"
+      ARTICLE_TLDR_POOL_SIZE: "30"
+      ARTICLE_TLDR_CACHE_TTL_SECONDS: "1800"
+
+      # === Free quota / 反 spam ===
+      FREE_AGENT_DAILY_LIMIT: "5"
+      # 生产 7 天保护期 (反垃圾灌水); dev/staging 应覆盖为 0
+      COMMUNITY_NEW_USER_READONLY_DAYS: ${COMMUNITY_NEW_USER_READONLY_DAYS:-7}
+
+      # === Admin / Feature Flags / 错误监控 (OPS-S4-001) ===
+      OPS_ADMIN_TOKEN: ${OPS_ADMIN_TOKEN:-}
+      FEATURE_FLAGS_DEFAULT: ${FEATURE_FLAGS_DEFAULT:-}
+      FEATURE_FLAGS_CACHE_TTL_SECONDS: "60"
+      ERROR_ALERT_THRESHOLD_PCT: "1.0"
+      ERROR_ALERT_WINDOW_SECONDS: "60"
+      ALERT_DINGTALK_WEBHOOK: ${ALERT_DINGTALK_WEBHOOK:-}
+      ALERT_DINGTALK_SECRET: ${ALERT_DINGTALK_SECRET:-}
+      ALERT_RUNBOOK_BASE_URL: ${ALERT_RUNBOOK_BASE_URL:-}
+      ALERT_AT_USER_IDS: ${ALERT_AT_USER_IDS:-}
+      ALERT_AT_MOBILES: ${ALERT_AT_MOBILES:-}
+      ALERT_MODULE_NAME: xgzh-api
+
+      # === Sentry (OPS-S5-001) ===
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_TRACES_SAMPLE_RATE: "0.1"
+      SENTRY_PROFILES_SAMPLE_RATE: "0.1"
+      SENTRY_RELEASE: ${IMAGE_TAG:-latest}
+
+      # === VIP 订阅 (BE-S3-009) ===
+      VIP_TRIAL_DAYS: "7"
+      VIP_MEMBERSHIP_EXPIRE_INITIAL_DELAY_SECONDS: "20"
+      VIP_MEMBERSHIP_EXPIRE_CRON_HOURS: "*"
+      VIP_MEMBERSHIP_EXPIRE_CRON_MINUTE: "15"
+
+      # === 微信支付 v3 (BE-S3-010) ===
+      # WECHATPAY_DEV_MODE=true 时所有 _MCH_ID / _APIV3_KEY / _CERT_* 可空, 走 Stub.
+      # 切真实支付时 deploy.yml 必须提供这些 secrets.
+      WECHATPAY_DEV_MODE: ${WECHATPAY_DEV_MODE:-true}
+      WECHATPAY_MCH_ID: ${WECHATPAY_MCH_ID:-}
+      WECHATPAY_APIV3_KEY: ${WECHATPAY_APIV3_KEY:-}
+      WECHATPAY_CERT_SERIAL_NO: ${WECHATPAY_CERT_SERIAL_NO:-}
+      WECHATPAY_PRIVATE_KEY_PATH: ${WECHATPAY_PRIVATE_KEY_PATH:-}
+      WECHATPAY_NOTIFY_URL: ${WECHATPAY_NOTIFY_URL:-}
+      # 默认复用 WECHAT_MP_APP_ID; 如果商户号绑了别的小程序, .env 里单独配 WECHATPAY_APP_ID 覆盖
+      WECHATPAY_APP_ID: ${WECHATPAY_APP_ID:-}
+      WECHATPAY_ORDER_IDEMPOTENCY_SECONDS: "300"
     ports:
       - "8000:8000"
+    volumes:
+      # BUG-S9-002 头像 host volume mount, 容器重启 / 重建镜像后头像不丢.
+      # ./data/avatars 相对 docker-compose.production.yml 所在目录 (即 /opt/xgzh-prod);
+      # 必要时改成 /var/lib/xgzh/avatars 等绝对路径.
+      - ./data/avatars:/var/lib/xgzh/avatars
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
       interval: 30s

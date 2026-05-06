@@ -10,14 +10,16 @@
 # 这里加白只针对 6 个明确审过的文件 + 其 sha256 checksum (改文件后需更新).
 
 fileignoreconfig:
+  # Sprint 9 自动化重写 (加 Sync .env from GitHub Secrets step), checksum 更新
   - filename: .github/workflows/deploy.yml
-    checksum: 537fdcc49ab508cd6e65ff12a639a6041c14c6eafba73a6e139e1c8573e1efea
+    checksum: 4dc58cd4573d81ecc099c8573033ed4cf4f39b430fb03390383d4bd52d2ecbc0
   - filename: docs/bug/2026.04.30-bug.md
     checksum: 85e0e5ea87f0e793d7bc6dcc710000f511e2fae08f1af2ed2c107c644e59e845
   - filename: infra/.env.production.example
     checksum: 45e856480689ae72d7237a6cd01e593012c7f142b924e1e9c200babd948f7479
+  # Sprint 9 environment 块大扩 (~30 → ~180 行), checksum 更新
   - filename: infra/docker-compose.production.yml
-    checksum: 6ab61ecb80c48c9a39788469057027ee04b77a4bc9e8ac783fb879b43f86ffe8
+    checksum: 8c8172c5b6c592e9b830a4afd7b30af02affa46979ae082a389a92f53831dcaa
   - filename: infra/server-setup.sh
     checksum: dc4eabf3ff34dfc14d972da37b338560c6686d618181e386e977eb76b89a8dce
   - filename: spec/25-deployment-strategy.md
@@ -61,3 +63,6 @@ fileignoreconfig:
     checksum: 7002db0210e79c3d28b7fc0cca06fc315e27893283ee399df07aecc23749d932
   - filename: apps/mp/pages/auth/profile-complete.vue
     checksum: eba1b3d5086c7f0864ba6865ca6baf937dfd0795f57bf391ed01b70be6ad29a9
+  # Sprint 9 IaC 迁移文档: 注释提到 secret / API key / token 字面量, 不是真值
+  - filename: docs/deploy/02-2026-05-06-secrets-automation.md
+    checksum: 165a6439c6704031c0da68508e178a108d6edba88ac55a9292b21d06ddb92fd0

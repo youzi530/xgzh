@@ -1,14 +1,16 @@
-# bug-fix-2305 / spec/25 — Production deploy workflow
+# bug-fix-2305 / spec/25 / Sprint 9 — Production deploy workflow
 #
 # 触发: push to main + ci.yml 全绿后
 #
-# 流程 (单 job 4 步):
+# 流程 (单 job, Sprint 9 起 5 步):
 #
+#   0. Sync .env: 从 GH Secrets 自动重写 /opt/xgzh/.env, 并保留 .env.local 覆盖.
 #   1. Build:  docker buildx 构建 xgzh-api 镜像, tag = git sha + latest
 #   2. Push:   登录阿里云 ACR, push 两个 tag
 #   3. Deploy: SSH 到 ECS:
 #                ├── 写 IMAGE_TAG=<sha> 到 .env
 #                ├── docker compose pull
+#                ├── alembic upgrade head (BUG-S9 起自动)
 #                └── docker compose up -d xgzh-api  (滚动重建 BE, PG/Redis 不动)
 #   4. Verify: curl http://localhost:8000/healthz (5 retry, 各 5s)
 #                ├── 成功 → 输出 ✅ + 镜像 sha
@@ -20,8 +22,15 @@
 # - **手动 trigger** (workflow_dispatch) 也开放, 让用户能手动重跑 (rollback / hotfix)
 # - **rollback 设计**: 每次 deploy 把上一个 IMAGE_TAG 写到 .env.previous, 失败时回退
 # - **健康检查 5 retry × 5s = 25s** 足以判别 BE 启动成功 (uvicorn cold start ~3s)
-# - **不在 deploy job 里跑 alembic** (用户首次手动跑过一次). 如果新版本带 migration,
-#   走 ``alembic upgrade head`` 在 SSH 步骤里加; 当前用户场景不带, 简化先走
+# - **alembic upgrade head 自动跑** (BUG-S9-001 起): 新镜像 pull 完后, 用
+#   ``docker compose run --rm xgzh-api alembic upgrade head`` 跑一次性短任务,
+#   跑完即销毁; 再 ``up -d xgzh-api`` 滚动重启 BE. 迁移失败立即 exit 1 阻断部署,
+#   不会让带 schema gap 的新代码起来污染生产 (历史: 不跑 alembic 时, /healthz 不查
+#   users 表, 5xx 在登录接口才暴露, 自动回退抓不到, 线上炸过).
+# - **.env 自动同步** (BUG-S9 自动化): 历史每次加新 env 字段都要 SSH 改 .env 容易漏,
+#   现在 secrets 在 GH UI 配, 公开配置在 docker-compose.production.yml 写, 都自动同步.
+#   .env.local 是逃生口 (应急覆盖, 不在 git, 优先级最高).
+#   详见 docs/deploy/02-2026-05-06-secrets-automation.md.
 
 name: Deploy
 
@@ -96,6 +105,163 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ─── 1.5 Sync .env from GitHub Secrets (Sprint 9 自动化) ──────────
+      # 把 GH Secrets 里的 secrets 重写到服务器 /opt/xgzh/.env, 保留 .env.local 覆盖.
+      # 加新 secret = 改本 step 的 envs: 列表 + heredoc + GH UI 加 secret. 这是 secret 来源唯一处.
+      # 公开配置 (LOG_LEVEL / CORS_ORIGINS 等) 都在 docker-compose.production.yml 的 environment 块里,
+      # 不要写到 .env (除非要服务器 override 默认值).
+      #
+      # 安全: secrets 通过 SSH envs 传输 (TLS), 不在 GH log 里输出明文. .env 在服务器 chmod 600.
+      # heredoc 用 'EOF' 不带引号 → shell 变量展开 (这是想要的); 注意 secrets 不能含 ``$`` ``\`` `` ` ``,
+      # 否则会被 shell 解释 (实测: random hex / base64 / URL token 都安全; webhook URL 含 ``&`` 也安全).
+      - name: Sync .env from GitHub Secrets
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
+          ACR_REPOSITORY: ${{ secrets.ACR_REPOSITORY }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          WECHAT_MP_APP_ID: ${{ secrets.WECHAT_MP_APP_ID }}
+          WECHAT_MP_APP_SECRET: ${{ secrets.WECHAT_MP_APP_SECRET }}
+          AVATAR_PUBLIC_BASE_URL: ${{ secrets.AVATAR_PUBLIC_BASE_URL }}
+          CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          ALIYUN_SMS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_SMS_ACCESS_KEY_ID }}
+          ALIYUN_SMS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_SMS_ACCESS_KEY_SECRET }}
+          ALIYUN_SMS_SIGN_NAME: ${{ secrets.ALIYUN_SMS_SIGN_NAME }}
+          ALIYUN_SMS_TEMPLATE_ID: ${{ secrets.ALIYUN_SMS_TEMPLATE_ID }}
+          ALIYUN_SMS_INTL_TEMPLATE_ID: ${{ secrets.ALIYUN_SMS_INTL_TEMPLATE_ID }}
+          SMS_ADAPTER: ${{ secrets.SMS_ADAPTER }}
+          LONGBRIDGE_API_TOKEN: ${{ secrets.LONGBRIDGE_API_TOKEN }}
+          OPS_ADMIN_TOKEN: ${{ secrets.OPS_ADMIN_TOKEN }}
+          ALERT_DINGTALK_WEBHOOK: ${{ secrets.ALERT_DINGTALK_WEBHOOK }}
+          ALERT_DINGTALK_SECRET: ${{ secrets.ALERT_DINGTALK_SECRET }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          WECHATPAY_DEV_MODE: ${{ secrets.WECHATPAY_DEV_MODE }}
+          WECHATPAY_MCH_ID: ${{ secrets.WECHATPAY_MCH_ID }}
+          WECHATPAY_APIV3_KEY: ${{ secrets.WECHATPAY_APIV3_KEY }}
+          WECHATPAY_CERT_SERIAL_NO: ${{ secrets.WECHATPAY_CERT_SERIAL_NO }}
+          WECHATPAY_NOTIFY_URL: ${{ secrets.WECHATPAY_NOTIFY_URL }}
+          WECHATPAY_APP_ID: ${{ secrets.WECHATPAY_APP_ID }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 2m
+          envs: ACR_REGISTRY,ACR_NAMESPACE,ACR_REPOSITORY,POSTGRES_PASSWORD,JWT_SECRET,WECHAT_MP_APP_ID,WECHAT_MP_APP_SECRET,AVATAR_PUBLIC_BASE_URL,CORS_ORIGINS,ZHIPU_API_KEY,SILICONFLOW_API_KEY,DEEPSEEK_API_KEY,TUSHARE_TOKEN,ALIYUN_SMS_ACCESS_KEY_ID,ALIYUN_SMS_ACCESS_KEY_SECRET,ALIYUN_SMS_SIGN_NAME,ALIYUN_SMS_TEMPLATE_ID,ALIYUN_SMS_INTL_TEMPLATE_ID,SMS_ADAPTER,LONGBRIDGE_API_TOKEN,OPS_ADMIN_TOKEN,ALERT_DINGTALK_WEBHOOK,ALERT_DINGTALK_SECRET,SENTRY_DSN,WECHATPAY_DEV_MODE,WECHATPAY_MCH_ID,WECHATPAY_APIV3_KEY,WECHATPAY_CERT_SERIAL_NO,WECHATPAY_NOTIFY_URL,WECHATPAY_APP_ID
+          script: |
+            set -euo pipefail
+            cd /opt/xgzh
+
+            mkdir -p /opt/xgzh
+            # 备份现有 .env (如果存在), 应急回滚用
+            if [ -f .env ]; then
+              cp .env .env.bak
+            fi
+
+            # 保留现有 IMAGE_TAG (Deploy step 后续会再 sed 改; 没 IMAGE_TAG 时给 latest 兜底)
+            EXISTING_IMAGE_TAG=$(grep -E '^IMAGE_TAG=' .env 2>/dev/null | cut -d= -f2 || echo latest)
+            if [ -z "$EXISTING_IMAGE_TAG" ]; then
+              EXISTING_IMAGE_TAG=latest
+            fi
+
+            # 重写 .env (注: heredoc 不带引号, shell 变量自动展开)
+            cat > .env <<EOF
+            # ╔══════════════════════════════════════════════════════════════════╗
+            # ║ ⚠ AUTO-GENERATED by .github/workflows/deploy.yml                 ║
+            # ║ ⚠ DO NOT EDIT MANUALLY — every push to main overwrites this file.║
+            # ║                                                                  ║
+            # ║ 改 secret  → GitHub UI → Settings → Secrets and variables        ║
+            # ║ 改非 secret 配置 → 改 docker-compose.production.yml + push        ║
+            # ║ 应急覆盖 → 写 /opt/xgzh/.env.local (自动追加到本文件末尾)          ║
+            # ╚══════════════════════════════════════════════════════════════════╝
+            # Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+            # === Image Tag (deploy.yml subsequent step will overwrite) ===
+            IMAGE_TAG=$EXISTING_IMAGE_TAG
+
+            # === ACR registry (compose pull 用) ===
+            ACR_REGISTRY=$ACR_REGISTRY
+            ACR_NAMESPACE=$ACR_NAMESPACE
+            ACR_REPOSITORY=$ACR_REPOSITORY
+
+            # === DB / Cache 密码 ===
+            POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+
+            # === Auth ===
+            JWT_SECRET=$JWT_SECRET
+
+            # === WeChat Mini Program ===
+            WECHAT_MP_APP_ID=$WECHAT_MP_APP_ID
+            WECHAT_MP_APP_SECRET=$WECHAT_MP_APP_SECRET
+
+            # === Avatar 公网 URL (BUG-S9-002) ===
+            AVATAR_PUBLIC_BASE_URL=$AVATAR_PUBLIC_BASE_URL
+
+            # === CORS (生产域名 + H5) ===
+            CORS_ORIGINS=$CORS_ORIGINS
+
+            # === LLM Providers (至少 1 个非空) ===
+            ZHIPU_API_KEY=$ZHIPU_API_KEY
+            SILICONFLOW_API_KEY=$SILICONFLOW_API_KEY
+            DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY
+
+            # === 数据源 ===
+            TUSHARE_TOKEN=$TUSHARE_TOKEN
+
+            # === SMS / OTP (mock=不真发; aliyun=真发, 需公司资质 + 下面 4 个 KEY) ===
+            SMS_ADAPTER=$SMS_ADAPTER
+            ALIYUN_SMS_ACCESS_KEY_ID=$ALIYUN_SMS_ACCESS_KEY_ID
+            ALIYUN_SMS_ACCESS_KEY_SECRET=$ALIYUN_SMS_ACCESS_KEY_SECRET
+            ALIYUN_SMS_SIGN_NAME=$ALIYUN_SMS_SIGN_NAME
+            ALIYUN_SMS_TEMPLATE_ID=$ALIYUN_SMS_TEMPLATE_ID
+            ALIYUN_SMS_INTL_TEMPLATE_ID=$ALIYUN_SMS_INTL_TEMPLATE_ID
+
+            # === 长桥 (Sprint 7.3, 暂未启用) ===
+            LONGBRIDGE_API_TOKEN=$LONGBRIDGE_API_TOKEN
+
+            # === Admin endpoint token + 钉钉告警 + Sentry ===
+            OPS_ADMIN_TOKEN=$OPS_ADMIN_TOKEN
+            ALERT_DINGTALK_WEBHOOK=$ALERT_DINGTALK_WEBHOOK
+            ALERT_DINGTALK_SECRET=$ALERT_DINGTALK_SECRET
+            SENTRY_DSN=$SENTRY_DSN
+
+            # === 微信支付 (DEV_MODE=true 时其余可空, 走 Stub) ===
+            WECHATPAY_DEV_MODE=$WECHATPAY_DEV_MODE
+            WECHATPAY_MCH_ID=$WECHATPAY_MCH_ID
+            WECHATPAY_APIV3_KEY=$WECHATPAY_APIV3_KEY
+            WECHATPAY_CERT_SERIAL_NO=$WECHATPAY_CERT_SERIAL_NO
+            WECHATPAY_NOTIFY_URL=$WECHATPAY_NOTIFY_URL
+            WECHATPAY_APP_ID=$WECHATPAY_APP_ID
+            EOF
+
+            # 应急覆盖 (Escape Hatch): 若服务器有 .env.local 就追加, 它的值会覆盖上面同名 key.
+            # 用途: GH Actions 不可用时本地热修 / 临时调参 / GH Secret 没及时更新.
+            if [ -f .env.local ]; then
+              echo "" >> .env
+              echo "# === .env.local override (NOT in git, server-local only) ===" >> .env
+              cat .env.local >> .env
+              echo "[INFO] Appended /opt/xgzh/.env.local to .env"
+            fi
+
+            # 600 权限: 防 host 上其它账号读 secret
+            chmod 600 .env
+
+            # 校验关键 secret 没空 (必填项缺了立即 exit 1, 阻断部署)
+            for k in POSTGRES_PASSWORD JWT_SECRET; do
+              v=$(grep -E "^${k}=" .env | cut -d= -f2-)
+              if [ -z "$v" ]; then
+                echo "❌ Required secret $k is empty — set it in GitHub Secrets and re-run."
+                exit 1
+              fi
+            done
+
+            echo "✅ /opt/xgzh/.env synced ($(wc -l < .env) lines, perms $(stat -c %a .env))"
+
       # ─── 2. SSH 到 ECS 部署 ─────────────────────────────────────
       - name: Deploy to ECS via SSH
         uses: appleboy/ssh-action@v1.0.3
@@ -103,28 +269,42 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          # 防止脚本卡住, 设 5min timeout
+          # 防止脚本卡住, 设 5min timeout (alembic 大表迁移可能数十秒, 不够时改 10m)
           command_timeout: 5m
           envs: ACR_REGISTRY,ACR_NAMESPACE,ACR_REPOSITORY
           script: |
             set -euo pipefail
             cd /opt/xgzh
 
-            # 备份当前 IMAGE_TAG (用于 rollback)
+            # ── (a) 备份当前 IMAGE_TAG (用于 rollback) ──
             CURRENT_TAG=$(grep -E '^IMAGE_TAG=' .env | cut -d= -f2 || echo "latest")
             echo "Current IMAGE_TAG (will be backup): $CURRENT_TAG"
             echo "PREVIOUS_IMAGE_TAG=$CURRENT_TAG" > .env.previous
 
-            # 写新 tag
+            # ── (b) 写新 tag 到 .env ──
             NEW_TAG="${{ steps.tag.outputs.tag }}"
             echo "Deploy new tag: $NEW_TAG"
             sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=$NEW_TAG|" .env || echo "IMAGE_TAG=$NEW_TAG" >> .env
 
-            # 拉新镜像 + 滚动重建 BE (PG/Redis 不动)
+            # ── (c) 拉新镜像 (PG/Redis 不动, 仅 BE 镜像) ──
             docker compose -f docker-compose.production.yml pull xgzh-api
+
+            # ── (d) BUG-S9-001 自动跑 alembic upgrade head ──
+            # 用 ``run --rm`` 创建一次性容器跑迁移, 跑完即销毁;
+            # 不影响在跑的 xgzh-api (旧版本仍在工作), 失败 exit 非 0 立即阻断后续步骤,
+            # 让旧镜像继续服务不替换. 迁移幂等 (alembic 自带 version table 去重).
+            echo "==> Applying alembic migrations (idempotent, may be no-op)..."
+            docker compose -f docker-compose.production.yml run --rm \
+              --entrypoint /app/.venv/bin/alembic xgzh-api upgrade head
+
+            echo "==> Current alembic head:"
+            docker compose -f docker-compose.production.yml run --rm \
+              --entrypoint /app/.venv/bin/alembic xgzh-api current
+
+            # ── (e) 滚动重建 BE 容器 (用新镜像) ──
             docker compose -f docker-compose.production.yml up -d xgzh-api
 
-            # 显示当前容器状态
+            # ── (f) 显示当前容器状态 ──
             sleep 3
             docker compose -f docker-compose.production.yml ps
 
