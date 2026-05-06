@@ -1,0 +1,116 @@
+# bug-fix-2305 / spec/25 — 生产 compose (阿里云 ECS 8.130.156.2)
+#
+# 与 ``docker-compose.yml`` (dev) 的关键区别:
+#
+# 1. **不部署 Meili** (用户拍板 A 适配 2G ECS, dev 同台跑 4 容器会 OOM)
+# 2. **PG 内存调优** (shared_buffers / work_mem / max_connections 显式压低)
+# 3. **走 .env** 配密码 / IMAGE_TAG / 端口 (不硬编码 dev_pass)
+# 4. **xgzh-api 容器** 拉 ACR 镜像 (ci push, server pull)
+# 5. **healthcheck** 严格, 启动失败 docker compose up -d 会失败让 deploy.yml 抓到
+# 6. **restart: unless-stopped** PG/Redis 重启自动起, BE 不重启 (避免反复 crash)
+#
+# 用法 (服务器上):
+#   cd /opt/xgzh
+#   docker compose -f docker-compose.production.yml up -d        # 起所有
+#   docker compose -f docker-compose.production.yml pull xgzh-api # 拉新镜像
+#   docker compose -f docker-compose.production.yml up -d xgzh-api # 滚动重建 BE
+
+name: xgzh-prod
+
+services:
+  # ─── BE FastAPI (从 ACR 拉镜像) ──────────────────────────────────────
+  xgzh-api:
+    image: ${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG:-latest}
+    container_name: xgzh-api
+    restart: unless-stopped  # 不用 always — 持续 crash 时停下让 deploy.yml 抓
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 数据库 / Redis 走容器名解析 (xgzh-prod_default network)
+      XGZH_DATABASE_URL: postgresql+asyncpg://xgzh:${POSTGRES_PASSWORD}@postgres:5432/xgzh
+      XGZH_REDIS_URL: redis://redis:6379/0
+      # 应用配置
+      APP_ENV: production
+      LOG_LEVEL: INFO
+      # 鉴权
+      JWT_SECRET: ${JWT_SECRET}
+      # CORS (生产要收紧, 默认本机 + H5)
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,https://your-domain.com}
+      # LLM keys (按需配)
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      # 长桥 (Sprint 7.3 token-gated)
+      LONGBRIDGE_API_TOKEN: ${LONGBRIDGE_API_TOKEN:-}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # 内存上限 (容器级硬限制, 防 BE 内存泄漏吃光主机)
+    deploy:
+      resources:
+        limits:
+          memory: 700M
+
+  # ─── PostgreSQL 16 + pgvector ───────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: xgzh-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xgzh
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: xgzh
+      PGDATA: /var/lib/postgresql/data/pgdata
+    # 2G ECS 内存压缩配置 (默认 shared_buffers 128MB 占 25% 内存太多)
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c effective_cache_size=512MB
+      -c max_connections=50
+      -c log_min_duration_statement=1000
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      # 注: 生产不挂 init/postgres 目录 (alembic 接管 schema)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xgzh -d xgzh"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # 不暴露 5432 给公网! 仅 docker 内网通信
+    expose:
+      - "5432"
+    deploy:
+      resources:
+        limits:
+          memory: 600M
+
+  # ─── Redis 7 ─────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: xgzh-redis
+    restart: unless-stopped
+    # 200M 上限 + LRU 淘汰; appendonly 可关 (生产缓存重启可重建, 不需持久化)
+    command: ["redis-server", "--appendonly", "no", "--maxmemory", "200mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    expose:
+      - "6379"
+    deploy:
+      resources:
+        limits:
+          memory: 250M

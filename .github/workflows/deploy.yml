@@ -1,0 +1,201 @@
+# bug-fix-2305 / spec/25 — Production deploy workflow
+#
+# 触发: push to main + ci.yml 全绿后
+#
+# 流程 (单 job 4 步):
+#
+#   1. Build:  docker buildx 构建 xgzh-api 镜像, tag = git sha + latest
+#   2. Push:   登录阿里云 ACR, push 两个 tag
+#   3. Deploy: SSH 到 ECS:
+#                ├── 写 IMAGE_TAG=<sha> 到 .env
+#                ├── docker compose pull
+#                └── docker compose up -d xgzh-api  (滚动重建 BE, PG/Redis 不动)
+#   4. Verify: curl http://localhost:8000/healthz (5 retry, 各 5s)
+#                ├── 成功 → 输出 ✅ + 镜像 sha
+#                └── 失败 → SSH rollback 上一个 sha, exit 1 让 GH Actions 标红
+#
+# 关键设计取舍:
+# - **needs: ci.yml** 没用; GH Actions 不支持跨 workflow needs.
+#   改用 ``workflow_run`` 监听 ci.yml conclusion=success, 才启动这个 workflow.
+# - **手动 trigger** (workflow_dispatch) 也开放, 让用户能手动重跑 (rollback / hotfix)
+# - **rollback 设计**: 每次 deploy 把上一个 IMAGE_TAG 写到 .env.previous, 失败时回退
+# - **健康检查 5 retry × 5s = 25s** 足以判别 BE 启动成功 (uvicorn cold start ~3s)
+# - **不在 deploy job 里跑 alembic** (用户首次手动跑过一次). 如果新版本带 migration,
+#   走 ``alembic upgrade head`` 在 SSH 步骤里加; 当前用户场景不带, 简化先走
+
+name: Deploy
+
+on:
+  # 监听 ci.yml 跑完, 全绿才触发
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  # 手动触发 (rollback / 跳过 ci 的 hotfix)
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "镜像 tag (默认 git sha; 写 'rollback-<sha>' 回退)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+  ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
+  ACR_REPOSITORY: ${{ secrets.ACR_REPOSITORY }}
+
+jobs:
+  deploy:
+    name: Build & Deploy to ECS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # workflow_run 触发时, ci.yml 全绿才进; manual dispatch 直接进
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ─── 1. Build & Push 镜像到阿里云 ACR ─────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+            echo "::notice::Manual deploy with tag=${{ github.event.inputs.image_tag }}"
+          else
+            SHA="${{ github.sha }}"
+            echo "tag=${SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push image
+        if: ${{ github.event.inputs.image_tag == '' }}  # 手动 dispatch 指定 tag 时跳过 build (rollback 场景)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/api
+          file: ./apps/api/Dockerfile
+          push: true
+          # tag 双写: <sha> (回退用) + latest (默认拉取)
+          tags: |
+            ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/${{ secrets.ACR_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/${{ secrets.ACR_REPOSITORY }}:latest
+          # 用 GH Actions cache 加速 buildx
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ─── 2. SSH 到 ECS 部署 ─────────────────────────────────────
+      - name: Deploy to ECS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # 防止脚本卡住, 设 5min timeout
+          command_timeout: 5m
+          envs: ACR_REGISTRY,ACR_NAMESPACE,ACR_REPOSITORY
+          script: |
+            set -euo pipefail
+            cd /opt/xgzh
+
+            # 备份当前 IMAGE_TAG (用于 rollback)
+            CURRENT_TAG=$(grep -E '^IMAGE_TAG=' .env | cut -d= -f2 || echo "latest")
+            echo "Current IMAGE_TAG (will be backup): $CURRENT_TAG"
+            echo "PREVIOUS_IMAGE_TAG=$CURRENT_TAG" > .env.previous
+
+            # 写新 tag
+            NEW_TAG="${{ steps.tag.outputs.tag }}"
+            echo "Deploy new tag: $NEW_TAG"
+            sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=$NEW_TAG|" .env || echo "IMAGE_TAG=$NEW_TAG" >> .env
+
+            # 拉新镜像 + 滚动重建 BE (PG/Redis 不动)
+            docker compose -f docker-compose.production.yml pull xgzh-api
+            docker compose -f docker-compose.production.yml up -d xgzh-api
+
+            # 显示当前容器状态
+            sleep 3
+            docker compose -f docker-compose.production.yml ps
+
+      # ─── 3. 健康检查 (5 retry × 5s = 25s) ──────────────────────
+      - name: Health check (retry 5×)
+        id: healthcheck
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 2m
+          script: |
+            set -e
+            echo "Waiting for xgzh-api to be healthy..."
+            for i in 1 2 3 4 5; do
+              if curl -fsS http://localhost:8000/healthz > /dev/null 2>&1; then
+                echo "✅ Health check passed (attempt $i)"
+                curl -fsS http://localhost:8000/healthz
+                exit 0
+              fi
+              echo "Attempt $i/5 failed, sleep 5s..."
+              sleep 5
+            done
+            echo "❌ Health check failed after 5 attempts"
+            echo "--- Last 50 lines of xgzh-api logs ---"
+            docker logs xgzh-api --tail 50
+            exit 1
+
+      # ─── 4. 失败自动 rollback ───────────────────────────────────
+      - name: Rollback on failure
+        if: failure() && steps.healthcheck.conclusion == 'failure'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            cd /opt/xgzh
+            if [ ! -f .env.previous ]; then
+              echo "❌ No .env.previous found, can't rollback automatically"
+              exit 1
+            fi
+            PREVIOUS_TAG=$(cat .env.previous | grep PREVIOUS_IMAGE_TAG | cut -d= -f2)
+            echo "🔄 Rolling back to $PREVIOUS_TAG"
+            sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=$PREVIOUS_TAG|" .env
+            docker compose -f docker-compose.production.yml pull xgzh-api
+            docker compose -f docker-compose.production.yml up -d xgzh-api
+            sleep 5
+            curl -fsS http://localhost:8000/healthz && echo "✅ Rolled back to $PREVIOUS_TAG"
+
+      # ─── 5. Summary ────────────────────────────────────────────
+      - name: Deploy summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            {
+              echo "## ✅ Deploy succeeded"
+              echo ""
+              echo "- **Image tag**: \`${{ steps.tag.outputs.tag }}\`"
+              echo "- **Server**: ${{ secrets.DEPLOY_HOST }}"
+              echo "- **API**: http://${{ secrets.DEPLOY_HOST }}:8000"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## ❌ Deploy failed (auto-rollback triggered if applicable)"
+              echo ""
+              echo "- **Failed image tag**: \`${{ steps.tag.outputs.tag }}\`"
+              echo "- 检查 SSH 日志: 上面 'Health check' / 'Rollback' step"
+              echo "- 手动 rollback: GitHub Actions UI → Run workflow → image_tag 填上次 sha"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

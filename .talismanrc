@@ -1,0 +1,24 @@
+# Talisman ignore config (Sprint 9 / bug-fix-2305)
+#
+# 6 个 Sprint 9 部署体系文件被 talisman 标了 22 条 low-severity 误报:
+#   - 占位符 CHANGE_ME_TO_STRONG_PASSWORD / CHANGE_ME_64_CHAR_RANDOM_HEX_STRING
+#   - GitHub Actions ${{ secrets.X }} 引用 (这是正确用法,不是 secret 本体)
+#   - docker-compose 变量插值 ${POSTGRES_PASSWORD} (变量名,不是值)
+#   - .env 文件名匹配 \.?env pattern
+#
+# 真正的密码 / token 永远不进 git (.gitignore 已屏蔽 .env / infra/.env).
+# 这里加白只针对 6 个明确审过的文件 + 其 sha256 checksum (改文件后需更新).
+
+fileignoreconfig:
+  - filename: .github/workflows/deploy.yml
+    checksum: 537fdcc49ab508cd6e65ff12a639a6041c14c6eafba73a6e139e1c8573e1efea
+  - filename: docs/bug/2026.04.30-bug.md
+    checksum: de4ab367d13136621827771f31465adf9650e8fbc6869177ac8372f566f0fe65
+  - filename: infra/.env.production.example
+    checksum: 45e856480689ae72d7237a6cd01e593012c7f142b924e1e9c200babd948f7479
+  - filename: infra/docker-compose.production.yml
+    checksum: d925ef3b41acc27d02ec115e77e469b0c829e33324f86a02fc796ec139163b94
+  - filename: infra/server-setup.sh
+    checksum: dc4eabf3ff34dfc14d972da37b338560c6686d618181e386e977eb76b89a8dce
+  - filename: spec/25-deployment-strategy.md
+    checksum: c6a3d1375805f3361f5bb577d90e33440dd32fbd45be67e642fc9797e2839cba
