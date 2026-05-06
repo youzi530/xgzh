@@ -102,7 +102,10 @@ async def update_me(
             )
         current_user.nickname = new_nickname
 
-    await session.flush()
+    # 注: update_me 没走 service 层 (单字段 patch 不必抽象), 由 endpoint 自己控制
+    # 事务边界: flush 触发 ORM SQL 写入 + commit 落库 (`get_session` 默认不 commit).
+    # bug-2305-v2 retro 8.4: 历史只 flush 没 commit, 导致 200 OK 但下次 GET /me 读不到.
+    await session.commit()
     await session.refresh(current_user)
     logger.info(
         f"me.update.ok user_id={current_user.user_id} fields={list(patch.keys())}"
