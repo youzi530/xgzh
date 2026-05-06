@@ -30,6 +30,8 @@ from app.schemas.auth import (
     LogoutResponse,
     OTPSendRequest,
     OTPSendResponse,
+    PasswordLoginRequest,
+    PasswordRegisterRequest,
     PhoneLoginRequest,
     RefreshRequest,
     TokenPair,
@@ -46,8 +48,12 @@ from app.security import (
 )
 from app.services import auth_service, otp_service
 from app.services.auth_service import (
+    EmailAlreadyExistsError,
+    IdentifierFormatError,
+    InvalidCredentialsError,
     OTPInvalidError,
     OTPNotFoundError,
+    PhoneAlreadyExistsError,
     RefreshTokenExpired,
     RefreshTokenInvalid,
     RefreshTokenRevoked,
@@ -390,4 +396,139 @@ async def login_wechat_mp(
             refresh_expires_in=tokens.refresh_expires_in,
         ),
         is_new_user=is_new,
+    )
+
+
+# ----------------------------- BUG-S9-001 密码注册 / 登录 -----------------------------
+
+
+def _password_login_rate_limit_key(req: PasswordLoginRequest, **_: object) -> str:
+    """同 identifier 5次/5min 防暴力试密码. 用 strip + lower 做粗 normalize,
+    精确归一在 service 层做 (这里是限流 bucket key, 不需精确)."""
+    return f"identifier:{req.identifier.strip().lower()[:64]}"
+
+
+def _password_register_rate_limit_key(
+    req: PasswordRegisterRequest, **_: object
+) -> str:
+    """注册场景的限流: 同 identifier 5次/小时, 防恶意刷注册."""
+    ident = req.phone or req.email or ""
+    return f"register:{ident.strip().lower()[:64]}"
+
+
+@router.post(
+    "/register/password",
+    response_model=LoginResponse,
+    status_code=status.HTTP_200_OK,
+    summary="密码注册 (phone OR email + password)",
+    responses={
+        400: {"description": "格式错 (phone / email / password 校验失败)"},
+        409: {"description": "phone / email 已存在"},
+        429: {"description": "同 identifier 1 小时内注册尝试过多"},
+    },
+)
+@rate_limit(
+    times=5,
+    per_seconds=3600,
+    namespace="password_register",
+    key_func=_password_register_rate_limit_key,
+)
+async def register_with_password(
+    req: PasswordRegisterRequest,
+    session: AsyncSession = Depends(get_session),
+) -> LoginResponse:
+    """密码注册 — phone 或 email 二选一(都填也允许), 走 bcrypt hash 落库.
+
+    成功直接返回 LoginResponse + token, 用户立刻进入登录态. invite_code 可选,
+    成功绑定后给 referrer +1 invitee count (可能触发邀请奖励).
+    """
+    try:
+        user, tokens = await auth_service.register_with_password(
+            session,
+            phone=req.phone,
+            email=req.email,
+            password=req.password,
+            invite_code=req.invite_code,
+        )
+    except IdentifierFormatError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "identifier_format_invalid", "message": str(e)},
+        ) from e
+    except PhoneAlreadyExistsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "phone_already_exists",
+                "message": "该手机号已注册, 请直接登录",
+            },
+        ) from e
+    except EmailAlreadyExistsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "email_already_exists",
+                "message": "该邮箱已注册, 请直接登录",
+            },
+        ) from e
+
+    return LoginResponse(
+        user=UserPublic.model_validate(user),
+        tokens=TokenPair(
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            expires_in=tokens.access_expires_in,
+            refresh_expires_in=tokens.refresh_expires_in,
+        ),
+        is_new_user=True,
+    )
+
+
+@router.post(
+    "/login/password",
+    response_model=LoginResponse,
+    status_code=status.HTTP_200_OK,
+    summary="密码登录 (phone 或 email + password 自动识别)",
+    responses={
+        401: {"description": "凭据无效 (统一返 invalid_credentials 防 enumeration)"},
+        429: {"description": "同 identifier 5 分钟内尝试过多"},
+    },
+)
+@rate_limit(
+    times=5,
+    per_seconds=300,
+    namespace="password_login",
+    key_func=_password_login_rate_limit_key,
+)
+async def login_with_password(
+    req: PasswordLoginRequest,
+    session: AsyncSession = Depends(get_session),
+) -> LoginResponse:
+    """密码登录. identifier 自动判断 (含 @ → email; 否则 phone).
+
+    所有错误统一返 401 ``invalid_credentials`` 防 enumeration attack;
+    bcrypt verify 走常量时间 + 即使 user 不存在也跑一次 dummy verify 防侧信道.
+    """
+    try:
+        user, tokens = await auth_service.verify_password_login(
+            session, identifier=req.identifier, password=req.password
+        )
+    except InvalidCredentialsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "invalid_credentials",
+                "message": "账号或密码错误",
+            },
+        ) from e
+
+    return LoginResponse(
+        user=UserPublic.model_validate(user),
+        tokens=TokenPair(
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            expires_in=tokens.access_expires_in,
+            refresh_expires_in=tokens.refresh_expires_in,
+        ),
+        is_new_user=False,
     )

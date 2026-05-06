@@ -13,9 +13,10 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache import rate_limit
+from app.core.config import get_settings
 from app.db import get_session
 from app.db.models import User
-from app.schemas.invite import InviteBindRequest, InviteBindResponse
+from app.schemas.invite import InviteBindRequest, InviteBindResponse, InviteRewardConfig
 from app.security import get_current_user
 from app.services import invite_service
 from app.services.invite_service import (
@@ -29,6 +30,35 @@ from app.services.invite_service import (
 )
 
 router = APIRouter(prefix="/invite", tags=["invite"])
+
+
+# ─── BUG-S9-005 邀请奖励配置 ──────────────────────────────────────────
+
+
+@router.get(
+    "/reward-config",
+    response_model=InviteRewardConfig,
+    status_code=status.HTTP_200_OK,
+    summary="邀请奖励配置 (公开, 无需登录)",
+)
+async def get_reward_config() -> InviteRewardConfig:
+    """返当前邀请奖励配置, 让 FE 在"绑定邀请人"边上的 ⓘ 弹窗里
+    展示"成功邀请 N 人 → +M 天 VIP" 文案.
+
+    BUG-S9-005 用户原话: "在绑定邀请人边上放一个小图标, 用来解释邀请别人的福利,
+    比如当前我们系统是设计, 邀请一个人, 会员日期加多少来着?"
+
+    匿名访问 OK — 没暴露任何用户 PII. 走 settings 暴露而非 hardcode 前端,
+    后续运营调阈值无需 FE 发版.
+    """
+    s = get_settings()
+    n = s.invite_reward_n_users
+    days = s.invite_reward_vip_days
+    return InviteRewardConfig(
+        threshold_n=n,
+        vip_days=days,
+        enabled=(n > 0 and days > 0),
+    )
 
 
 def _bind_rate_limit_key(

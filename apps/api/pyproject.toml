@@ -32,6 +32,12 @@ dependencies = [
     "feedparser>=6.0.11",
     "wechatpayv3>=1.2.0",
     "sentry-sdk[fastapi]>=2.0.0",
+    # BUG-S9-001 密码登录 — 直接用 bcrypt 库 (官方维护, 5.x 严格 72-byte cap).
+    # 不走 passlib: 它 1.7.4 与 bcrypt 5.x 的 detect_wrap_bug 不兼容 (会用 > 72 字节
+    # hash 自检触发 ValueError), 而 passlib 2.x 还没正式 release. bcrypt 库本身
+    # 提供的 hashpw / checkpw 接口就够用, 不需要 passlib 中间层.
+    "bcrypt>=4.2.0",
+    "email-validator>=2.2.0",
 ]
 
 [dependency-groups]

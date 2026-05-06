@@ -28,6 +28,9 @@ from app.db.models._mixins import SoftDeleteMixin, TimestampMixin
 
 class User(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "users"
+    # ⚠️ ``uq_users_email`` 是 partial unique (PG WHERE email IS NOT NULL),
+    # 在 alembic/0016 用 raw SQL 创建; 这里不在 __table_args__ 重复声明,
+    # 避免 SQLAlchemy autogenerate 时把 partial 退化成 full UNIQUE 误判 diff.
     __table_args__ = (
         UniqueConstraint("phone", name="uq_users_phone"),
         UniqueConstraint("wechat_openid", name="uq_users_wechat_openid"),
@@ -43,6 +46,12 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         server_default=text("gen_random_uuid()"),
     )
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # BUG-S9-001 邮箱凭据. RFC 5321 max 254 字符. 后端 normalize 成小写,
+    # partial unique (alembic 0016) 保证非 NULL 时全局唯一.
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    # BUG-S9-001 bcrypt 密码 hash. 固定 60 字符 ($2b$12$<22 salt><31 hash>).
+    # NULL = 用户尚未设置密码 (首次密码登录前走 PUT /me/password).
+    password_hash: Mapped[str | None] = mapped_column(String(60), nullable=True)
     wechat_openid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     wechat_unionid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     apple_id: Mapped[str | None] = mapped_column(String(128), nullable=True)

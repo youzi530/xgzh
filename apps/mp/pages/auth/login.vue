@@ -26,6 +26,7 @@ import { computed, onUnmounted, reactive, ref } from 'vue'
 import {
   loginPhone,
   loginWechatMp,
+  loginWithPassword,
   parseAuthError,
   sendOtp,
 } from '@/api/auth'
@@ -33,14 +34,28 @@ import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 
-type Tab = 'phone' | 'wechat'
+/**
+ * BUG-S9-001: 密码登录入口同 OTP 同级 tab.
+ * - ``password``: 手机/邮箱+密码 (主流方式, 默认)
+ * - ``phone``: 手机+OTP (兼容老用户 / "忘记密码"找回兜底)
+ * - ``wechat``: 微信一键 (仅 MP-WEIXIN)
+ *
+ * Sprint 1 默认是 ``phone``; Sprint 9 起改 ``password`` 优先 (用户主流登录方式),
+ * 但 OTP 仍保留作"忘记密码"路径 — `forgotPassword` 链接直接 `tab = 'phone'`。
+ */
+type Tab = 'password' | 'phone' | 'wechat'
 
-const tab = ref<Tab>('phone')
+const tab = ref<Tab>('password')
 
 const form = reactive({
   phone: '',
   code: '',
+  // BUG-S9-001 密码登录: identifier 自动识别 phone vs email
+  identifier: '',
+  password: '',
 })
+
+const showPassword = ref(false)
 
 const agreed = ref(false)
 const loading = ref(false)
@@ -73,6 +88,24 @@ const canSendOtp = computed(
 
 const canSubmit = computed(
   () => phoneValid.value && codeValid.value && agreed.value && !loading.value,
+)
+
+/** BUG-S9-001 密码登录字段校验 — identifier 必须 ≥ 4 字符 (phone 最短或 email).
+ * 实际格式校验在后端做 (这里只挡明显空 / 太短, 减少 422 噪音). */
+const identifierValid = computed(() => form.identifier.trim().length >= 4)
+
+/** BUG-S9-001 后端策略: 6-32 字符 + 至少含一位数字; 前端镜像同款规则 */
+const passwordValid = computed(() => {
+  const p = form.password
+  return p.length >= 6 && p.length <= 32 && /\d/.test(p)
+})
+
+const canSubmitPassword = computed(
+  () =>
+    identifierValid.value &&
+    passwordValid.value &&
+    agreed.value &&
+    !loading.value,
 )
 
 function showError(msg: string) {
@@ -131,6 +164,82 @@ function gotoHome() {
   })
 }
 
+/**
+ * BUG-S9-002 + Q4: 登录成功后的跳转决策.
+ * - profile_complete=false (老 OTP 用户没设密码 / 微信用户没补手机邮箱) → reLaunch 完善资料页
+ * - profile_complete=true (或字段缺失向下兼容) → 走 tab home
+ *
+ * profile_complete 字段由 BE ``UserPublic._derive_has_flags`` 派生:
+ * has_password AND (has_phone OR has_email). 见 schemas/auth.py.
+ */
+function gotoNext(resp: { user: { profile_complete?: boolean } }) {
+  if (resp.user.profile_complete === false) {
+    uni.reLaunch({ url: '/pages/auth/profile-complete' })
+  } else {
+    gotoHome()
+  }
+}
+
+async function handlePasswordLogin() {
+  if (!canSubmitPassword.value) {
+    if (!agreed.value) {
+      showError('请先勾选并同意协议')
+    } else if (!identifierValid.value) {
+      showError('请输入手机号或邮箱')
+    } else if (!passwordValid.value) {
+      showError('密码 6-32 位且至少含一个数字')
+    }
+    return
+  }
+  loading.value = true
+  try {
+    const resp = await loginWithPassword({
+      identifier: form.identifier.trim(),
+      password: form.password,
+    })
+    auth.setSession(resp)
+    uni.showToast({
+      title: resp.is_new_user ? '欢迎加入新股智汇' : '登录成功',
+      icon: 'success',
+    })
+    setTimeout(() => gotoNext(resp), 600)
+  } catch (e) {
+    const { code, message } = parseAuthError(e)
+    // BUG-S9-001 后端统一 ``invalid_credentials`` 防 enumeration; FE 同款处理
+    if (code === 'invalid_credentials') {
+      showError('账号或密码错误, 请检查后重试')
+      // 错过密码的安全反应: 清空密码框 (仿微信登录失败行为)
+      form.password = ''
+    } else if (code === 'password_login_rate_limited' || code === 'http_429') {
+      showError('错误次数过多, 请 5 分钟后再试')
+    } else if (code === 'identifier_format_invalid') {
+      showError('账号格式错误, 请输入手机号或邮箱')
+    } else {
+      showError(message || '登录失败')
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+function gotoRegister() {
+  // BUG-S9-001 跳独立注册页 (FE pages/auth/register.vue);
+  // 注册成功 store.setSession 后由 register 页自己 reLaunch /pages/index/index
+  uni.navigateTo({ url: '/pages/auth/register' })
+}
+
+function forgotPassword() {
+  // BUG-S9-001 拍板 Q4: OTP 路径作"忘记密码"找回兜底.
+  // FE 当前简化: 切到 OTP tab 让用户用验证码登录, 进入后引导设置新密码 (Step 3 of profile-complete).
+  // 后续可加独立 reset-password 流程 (输 phone/email → 收 OTP → 设新密码 → 不登录), 待 Sprint 10+.
+  tab.value = 'phone'
+  uni.showToast({
+    title: '请用验证码登录, 登录后可重设密码',
+    icon: 'none',
+    duration: 2500,
+  })
+}
+
 async function handlePhoneLogin() {
   if (!canSubmit.value) {
     if (!agreed.value) {
@@ -153,7 +262,7 @@ async function handlePhoneLogin() {
       title: resp.is_new_user ? '欢迎加入新股智汇' : '登录成功',
       icon: 'success',
     })
-    setTimeout(() => gotoHome(), 600)
+    setTimeout(() => gotoNext(resp), 600)
   } catch (e) {
     const { code, message } = parseAuthError(e)
     if (code === 'otp_invalid') {
@@ -202,7 +311,7 @@ async function handleWechatLogin() {
       title: resp.is_new_user ? '欢迎加入新股智汇' : '登录成功',
       icon: 'success',
     })
-    setTimeout(() => gotoHome(), 600)
+    setTimeout(() => gotoNext(resp), 600)
   } catch (e) {
     const { code, message } = parseAuthError(e)
     if (code === 'wechat_code_invalid') {
@@ -249,22 +358,91 @@ onUnmounted(() => {
     </view>
 
     <view class="card">
-      <view v-if="showWechatTab" class="tabs">
+      <!-- BUG-S9-001 三 tab 切换: 密码 (主) / OTP / 微信 (mp-only).
+           tab 顺序按用户主流频次: 密码 (90%) > OTP (~5% 找回密码) > 微信 (mp 独有 5%) -->
+      <view class="tabs">
+        <view
+          :class="['tab', tab === 'password' && 'tab-active']"
+          @tap="tab = 'password'"
+        >
+          密码登录
+        </view>
         <view
           :class="['tab', tab === 'phone' && 'tab-active']"
           @tap="tab = 'phone'"
         >
-          手机号登录
+          短信验证码
         </view>
         <view
+          v-if="showWechatTab"
           :class="['tab', tab === 'wechat' && 'tab-active']"
           @tap="tab = 'wechat'"
         >
-          微信一键登录
+          微信
         </view>
       </view>
 
-      <!-- 手机号登录 -->
+      <!-- BUG-S9-001 密码登录 -->
+      <view v-if="tab === 'password'" class="form">
+        <view class="field">
+          <text class="label">账号</text>
+          <input
+            v-model="form.identifier"
+            class="input"
+            type="text"
+            maxlength="254"
+            placeholder="手机号 / 邮箱"
+            placeholder-class="input-placeholder"
+          />
+        </view>
+
+        <view class="field">
+          <text class="label">密码</text>
+          <view class="row">
+            <input
+              v-model="form.password"
+              class="input input-flex"
+              :password="!showPassword"
+              maxlength="32"
+              placeholder="6-32 位含数字"
+              placeholder-class="input-placeholder"
+            />
+            <view
+              class="password-toggle"
+              @tap="showPassword = !showPassword"
+            >
+              {{ showPassword ? '隐藏' : '显示' }}
+            </view>
+          </view>
+        </view>
+
+        <view class="agree-row" @tap="agreed = !agreed">
+          <view :class="['checkbox', agreed && 'checkbox-on']">
+            <text v-if="agreed" class="check">✓</text>
+          </view>
+          <view class="agree-text">
+            <text>我已阅读并同意</text>
+            <text class="link" @tap.stop="openAgreement('tos')">《用户协议》</text>
+            <text class="link" @tap.stop="openAgreement('privacy')">《隐私政策》</text>
+            <text class="link" @tap.stop="openAgreement('disclaimer')">《免责声明》</text>
+          </view>
+        </view>
+
+        <view
+          :class="['btn-primary', !canSubmitPassword && 'btn-disabled']"
+          @tap="handlePasswordLogin"
+        >
+          {{ loading ? '登录中…' : '登录' }}
+        </view>
+
+        <view class="auth-footer-links">
+          <text class="link" @tap="forgotPassword">忘记密码?</text>
+          <text class="divider">·</text>
+          <text class="link" @tap="gotoRegister">立即注册</text>
+        </view>
+      </view>
+
+      <!-- 手机号 OTP 登录 (兼容老用户 / 找回密码兜底) -->
       <view v-if="tab === 'phone'" class="form">
         <view class="field">
           <text class="label">手机号</text>
@@ -490,6 +668,39 @@ onUnmounted(() => {
   color: var(--color-text-muted, #94a3b8);
   background: rgba(148, 163, 184, 0.08);
   border-color: rgba(148, 163, 184, 0.2);
+}
+
+/* BUG-S9-001 密码 显示/隐藏 toggle, 与 .otp-btn 同款样式 */
+.password-toggle {
+  flex: 0 0 auto;
+  padding: 0 24rpx;
+  height: 88rpx;
+  line-height: 88rpx;
+  font-size: 24rpx;
+  color: var(--color-text-muted, #94a3b8);
+  background: rgba(148, 163, 184, 0.08);
+  border-radius: 16rpx;
+  border: 1rpx solid rgba(148, 163, 184, 0.2);
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* BUG-S9-001 登录按钮下方"忘记密码 · 立即注册"链接行 */
+.auth-footer-links {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16rpx;
+  margin-top: 16rpx;
+
+  .link {
+    font-size: 24rpx;
+  }
+
+  .divider {
+    color: var(--color-text-muted, #94a3b8);
+    opacity: 0.5;
+  }
 }
 
 .btn-primary {

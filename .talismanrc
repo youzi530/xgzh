@@ -25,3 +25,39 @@ fileignoreconfig:
   # bug-2305-v2 修 hk test isolation: monkeypatch.setattr 被误判 secret
   - filename: apps/api/tests/test_ipo_ingest.py
     checksum: 9d4df925ffd1f64f22a7d9858d3a46c52f82aa59e92277f3f85d4be4d2bf998c
+  # ─── Sprint 9 (BUG-S9-001/002 password + WeChat profile) 误报白名单 ────────
+  # 16 个文件全是 false positive: 注释含 "password" / UI form 字段 / 测试用 fake password.
+  # 真 secret (JWT_SECRET / API key / 微信 AppSecret) 在 GH Secrets, 走 deploy.yml 自动注入,
+  # 永远不进 git. 文件改动后需更新 checksum (talisman 跑完会输出新值).
+  - filename: apps/api/alembic/versions/0016_users_password_email.py
+    checksum: 79e1efe9ba9078023649397405d110a39a8ed0a3556a40715297433f7c69efc4
+  - filename: apps/api/app/services/security_password.py
+    checksum: d67b4639c189242af1a552db249fab78bd3d0d097b6057c1ee0a83ccb728c73e
+  - filename: apps/api/tests/test_password_auth.py
+    checksum: 1c4798bb6124bec1788632046e677a5756a73e314623f1f0b6725d2449f27ca9
+  - filename: spec/26-sprint-9-bug-fix-backlog.md
+    checksum: 7b3a3a8868af7d0f01ca1f824cdcc6515404528813b68ec11a2128629802fad9
+  - filename: apps/api/uv.lock
+    checksum: f26c54c548a7f494fe1a2892d5cc5fa3d7fe5e2fb021b42ca73672d1eb126886
+  - filename: apps/api/app/db/models/user.py
+    checksum: c8140b502f23a013f7f14149870132367fad2c0412a03d4592d2cf9999ff3505
+  - filename: apps/api/app/schemas/auth.py
+    checksum: 08d637fd0d4c70b2363f77a0f031d4acbb82f04be8668e1f8dae334cd9f575a3
+  - filename: apps/mp/api/auth.ts
+    checksum: 7f40f0a24a05be18b5a230e9f4600a14efd6842c02d8cccef9199469ae0b680d
+  - filename: apps/api/app/api/v1/auth.py
+    checksum: 38c38d1d0b5957c461ab41f01e3f47ac46c6484721a1a7f4b3ec8171865e1a57
+  - filename: apps/api/app/services/auth_service.py
+    checksum: d538599de6903abcae67321e464fe251f5e23d1a413ac6fa565832dc17e41cd0
+  - filename: apps/api/app/api/v1/me.py
+    checksum: ecfd5f54c5224761e9a4f0aae09f813c191f2c25906e01d31694bdabac314fe7
+  - filename: apps/mp/pages/auth/login.vue
+    checksum: 56ea6845c3c44bbb4f9c9ccfd37c045794d763d8c9bca0d22f8454fc5c94d515
+  - filename: apps/api/pyproject.toml
+    checksum: 7217f4b460fdb23e1c1e1d486b854b7d9f69f9ed897bb464d5565aff18422851
+  - filename: docs/bug/2026.05.06-bug.md
+    checksum: 11587c9f1db8e4d45448fe564e083f6bedf551e962b22dd04fc1bbb5e1c5e4d7
+  - filename: apps/mp/pages/auth/register.vue
+    checksum: 7002db0210e79c3d28b7fc0cca06fc315e27893283ee399df07aecc23749d932
+  - filename: apps/mp/pages/auth/profile-complete.vue
+    checksum: eba1b3d5086c7f0864ba6865ca6baf937dfd0795f57bf391ed01b70be6ad29a9

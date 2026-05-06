@@ -26,6 +26,22 @@ async def find_user_by_phone(session: AsyncSession, phone: str) -> User | None:
     return result.scalar_one_or_none()
 
 
+async def find_user_by_email(session: AsyncSession, email: str) -> User | None:
+    """BUG-S9-001: 按 email (lowercased) 精确查找. 软删用户视为不存在.
+
+    调用方应该已经把 email normalize 成小写 (用 ``normalize_email``).
+    DB partial unique 也只保证非 NULL 时唯一, 这里 limit(1) 是 defense-in-depth.
+    """
+    stmt = (
+        select(User)
+        .where(User.email == email)
+        .where(User.deleted_at.is_(None))
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def find_user_by_id(session: AsyncSession, user_id: uuid.UUID) -> User | None:
     stmt = select(User).where(User.user_id == user_id).where(User.deleted_at.is_(None))
     result = await session.execute(stmt)

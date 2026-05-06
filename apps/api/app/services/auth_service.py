@@ -37,7 +37,18 @@ from app.security import (
     is_jti_blacklisted,
 )
 from app.services import invite_service, otp_service, user_service, vip_service
-from app.utils.phone import mask_phone
+from app.services.security_password import (
+    PasswordTooLongError,
+    hash_password,
+    verify_password,
+)
+from app.utils.email import (
+    InvalidEmailError,
+    looks_like_email,
+    mask_email,
+    normalize_email,
+)
+from app.utils.phone import InvalidPhoneError, mask_phone, normalize_phone
 
 INVITE_CODE_ALPHABET = string.ascii_uppercase + string.digits  # 去歧义留待 BE-006 优化
 INVITE_CODE_LENGTH = 8
@@ -70,6 +81,48 @@ class RefreshTokenRevoked(RefreshTokenError):
 
 class RefreshUserUnavailable(RefreshTokenError):
     """sub 对应用户不存在 / 被禁用。token 合法但用户已不可用。"""
+
+
+# ----------------------------- BUG-S9-001 密码登录异常 -----------------------------
+
+
+class PasswordAuthError(Exception):
+    """密码鉴权相关业务异常基类."""
+
+
+class PhoneAlreadyExistsError(PasswordAuthError):
+    """注册时 phone 已被其它账号占用 (unique 撞 → 应该让用户去登录)."""
+
+
+class EmailAlreadyExistsError(PasswordAuthError):
+    """注册时 email 已被其它账号占用."""
+
+
+class InvalidCredentialsError(PasswordAuthError):
+    """密码错 / 用户不存在 — **统一**抛这个异常防 enumeration attack.
+
+    永远不让攻击者通过观察异常类型来推断"这个 phone/email 是不是真存在".
+    路由层映射 401 ``invalid_credentials``.
+    """
+
+
+class PasswordNotSetError(PasswordAuthError):
+    """老 OTP 用户 / 微信用户用密码登录 — DB 里 password_hash IS NULL.
+
+    与 InvalidCredentialsError 区分: 这是**已知用户**, 但他还没设过密码,
+    应该提示"用 OTP / 微信登录后去设置密码", 而不是泄露存在性. 但实际
+    路由层仍然映射成 401 ``invalid_credentials`` 防 enum.
+    内部用这个区分主要是给 logger / 监控用.
+    """
+
+
+class CurrentPasswordInvalidError(PasswordAuthError):
+    """改密时旧密码错. 与 InvalidCredentialsError 区分: 这是**已登录**用户,
+    我们已经知道他是谁, 错误就是字面错, 路由层映射 401 ``current_password_invalid``."""
+
+
+class IdentifierFormatError(PasswordAuthError):
+    """登录 / 注册时 identifier 格式错 (既不是合法 phone 也不是合法 email)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,11 +483,276 @@ async def revoke_refresh_token(
     return await blacklist_jti(payload.jti, payload.expires_at, reason=reason)
 
 
+# ----------------------------- BUG-S9-001 密码注册 / 登录 / 设密码 -----------------------------
+
+
+async def _create_user_with_password(
+    session: AsyncSession,
+    *,
+    phone: str | None,
+    email: str | None,
+    password_hash: str,
+) -> User:
+    """新建密码用户 + 生成唯一 invite_code (冲突重试) + 同事务镜像 invite_codes (BE-006).
+
+    与 ``_create_user_with_phone`` 区别: 同事务把 password_hash 落 DB, 并支持
+    ``email`` (phone 单值或 phone+email 双值都行). 并发场景的 unique 撞:
+    - phone 撞 → ``PhoneAlreadyExistsError``
+    - email 撞 → ``EmailAlreadyExistsError``
+    """
+    last_err: Exception | None = None
+    for _ in range(INVITE_CODE_RETRY):
+        invite_code = _generate_invite_code()
+        user = User(
+            phone=phone,
+            email=email,
+            password_hash=password_hash,
+            invite_code=invite_code,
+        )
+        session.add(user)
+        try:
+            await session.flush()
+        except IntegrityError as e:
+            await session.rollback()
+            last_err = e
+            origin = str(e.orig).lower()
+            if "uq_users_phone" in origin:
+                raise PhoneAlreadyExistsError(
+                    f"phone {mask_phone(phone) if phone else '?'} already registered"
+                ) from e
+            if "uq_users_email" in origin:
+                raise EmailAlreadyExistsError(
+                    f"email {mask_email(email) if email else '?'} already registered"
+                ) from e
+            # invite_code 冲突, 重试
+            continue
+        # BE-006 + BE-S3-009: 同事务镜像 invite_codes + 赠 7d VIP 试用
+        await invite_service.register_invite_code_for_user(session, user)
+        try:
+            await vip_service.grant_trial(session, user)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"vip.grant_trial.fail_password user_id={user.user_id} err={e!r}"
+            )
+        await session.refresh(user)
+        return user
+
+    assert last_err is not None
+    raise RuntimeError(
+        f"failed to allocate unique invite_code after {INVITE_CODE_RETRY} retries"
+    ) from last_err
+
+
+async def register_with_password(
+    session: AsyncSession,
+    *,
+    phone: str | None = None,
+    email: str | None = None,
+    password: str,
+    invite_code: str | None = None,
+    settings: Settings | None = None,
+) -> tuple[User, IssuedTokens]:
+    """密码注册 — phone OR email 二选一(或都填), 走 bcrypt hash 落库.
+
+    流程:
+    1. normalize phone / email (raise 格式错)
+    2. 查 phone / email 是否已存在 (raise *AlreadyExistsError 让 user 去登录)
+    3. hash 密码 + 同事务建 user + invite_code + VIP trial
+    4. (optional) invite_code 同事务绑邀请人 (与 POST /invite/bind 等价)
+    5. 颁发 token, 返回 (user, tokens)
+
+    Raises:
+        IdentifierFormatError: phone / email 格式错
+        PhoneAlreadyExistsError / EmailAlreadyExistsError: 已被注册
+        PasswordTooLongError: UTF-8 > 72 字节 (schema 应该已挡)
+    """
+    settings = settings or get_settings()
+
+    # 1. normalize
+    if not phone and not email:
+        raise IdentifierFormatError("phone 或 email 至少填一个")
+    norm_phone: str | None = None
+    norm_email: str | None = None
+    if phone:
+        try:
+            norm_phone = normalize_phone(phone)
+        except InvalidPhoneError as e:
+            raise IdentifierFormatError(f"invalid phone: {e.reason}") from e
+    if email:
+        try:
+            norm_email = normalize_email(email)
+        except InvalidEmailError as e:
+            raise IdentifierFormatError(f"invalid email: {e.reason}") from e
+
+    # 2. 已存在检查 (减少撞 IntegrityError 的场景)
+    if norm_phone:
+        existing = await user_service.find_user_by_phone(session, norm_phone)
+        if existing is not None:
+            raise PhoneAlreadyExistsError(
+                f"phone {mask_phone(norm_phone)} already registered"
+            )
+    if norm_email:
+        existing = await user_service.find_user_by_email(session, norm_email)
+        if existing is not None:
+            raise EmailAlreadyExistsError(
+                f"email {mask_email(norm_email)} already registered"
+            )
+
+    # 3. hash + 建 user
+    try:
+        pwd_hash = hash_password(password)
+    except PasswordTooLongError as e:
+        # schema 应该已挡, 这里是 defense-in-depth — 转 IdentifierFormatError
+        raise IdentifierFormatError("password too long after UTF-8 encoding") from e
+
+    user = await _create_user_with_password(
+        session, phone=norm_phone, email=norm_email, password_hash=pwd_hash
+    )
+
+    # 4. 邀请码 (失败不阻塞注册主路径)
+    if invite_code:
+        try:
+            await invite_service.bind_invite(
+                session, current_user=user, code=invite_code
+            )
+        except invite_service.InviteError as e:
+            logger.info(
+                f"register.invite_bind.fail user_id={user.user_id} code={invite_code} err={e!r}"
+            )
+            # 不抛 — 注册主路径成功就好, 邀请绑定失败让用户后续在 me 页手动重试
+    else:
+        # bind_invite 内部会 commit; 没邀请码时这里手动 commit 让 user 落库
+        await _touch_last_active(session, user.user_id)
+        await session.commit()
+
+    logger.info(
+        f"auth.register.password.ok user_id={user.user_id} "
+        f"phone={mask_phone(norm_phone) if norm_phone else 'none'} "
+        f"email={mask_email(norm_email) if norm_email else 'none'} "
+        f"invite={'bound' if invite_code else 'none'}"
+    )
+
+    tokens = _issue_token_pair(user.user_id, settings)
+    return user, tokens
+
+
+async def verify_password_login(
+    session: AsyncSession,
+    *,
+    identifier: str,
+    password: str,
+    settings: Settings | None = None,
+) -> tuple[User, IssuedTokens]:
+    """密码登录 — identifier 自动判断 phone vs email (含 @ → email).
+
+    安全设计:
+    - **所有错误统一抛 InvalidCredentialsError** (不区分 user 不存在 vs 密码错 vs
+      未设密码) 防 enumeration attack
+    - bcrypt verify 走常量时间, ``security_password.verify_password`` 内部已保证
+    - 限流由路由 ``@rate_limit`` 装饰器负责 (5次/5min 同 identifier)
+
+    Raises:
+        InvalidCredentialsError: 用户不存在 / 密码错 / 未设密码 / 用户被禁用
+    """
+    settings = settings or get_settings()
+    identifier = identifier.strip()
+
+    # 1. 找用户 (按 identifier 类型分流)
+    user: User | None = None
+    log_id = identifier
+    if looks_like_email(identifier):
+        try:
+            email = normalize_email(identifier)
+            log_id = mask_email(email)
+            user = await user_service.find_user_by_email(session, email)
+        except InvalidEmailError:
+            user = None
+    else:
+        try:
+            phone = normalize_phone(identifier)
+            log_id = mask_phone(phone)
+            user = await user_service.find_user_by_phone(session, phone)
+        except InvalidPhoneError:
+            user = None
+
+    if user is None:
+        logger.info(f"auth.password.fail.no_user identifier={log_id}")
+        # 即使没 user 也走一次 bcrypt 防侧信道 (timing attack 防御)
+        verify_password(password, "$2b$12$" + "x" * 53)
+        raise InvalidCredentialsError("identifier or password invalid")
+
+    if user.password_hash is None:
+        logger.info(f"auth.password.fail.no_password user_id={user.user_id}")
+        # 同样跑一次 verify 防 timing attack
+        verify_password(password, "$2b$12$" + "x" * 53)
+        raise InvalidCredentialsError("identifier or password invalid")
+
+    if user.status != USER_STATUS_ACTIVE:
+        logger.info(f"auth.password.fail.disabled user_id={user.user_id}")
+        raise InvalidCredentialsError("identifier or password invalid")
+
+    if not verify_password(password, user.password_hash):
+        logger.info(f"auth.password.fail.bad_password user_id={user.user_id}")
+        raise InvalidCredentialsError("identifier or password invalid")
+
+    # 2. 成功 — touch last_active + 颁 token
+    await _touch_last_active(session, user.user_id)
+    await session.commit()
+
+    tokens = _issue_token_pair(user.user_id, settings)
+    logger.info(f"auth.password.ok user_id={user.user_id}")
+    return user, tokens
+
+
+async def set_user_password(
+    session: AsyncSession,
+    *,
+    user: User,
+    password: str,
+    current_password: str | None = None,
+) -> None:
+    """老用户首次设密 / 改密.
+
+    规则 (拍板 q4=A 强制设密码):
+    - 用户没 password_hash (老 OTP / 微信新用户): current_password 应留空,
+      直接 hash + 写库
+    - 用户已有 password_hash (改密路径): current_password 必填且必须验证通过
+
+    成功后 ``user.password_hash`` 在 session 里更新, 调用方负责 commit.
+
+    Raises:
+        CurrentPasswordInvalidError: 改密时旧密码错
+        PasswordTooLongError: UTF-8 > 72 字节 (schema 应该已挡)
+    """
+    if user.password_hash is not None:
+        # 改密路径 — 必须验证旧密码
+        if not current_password:
+            raise CurrentPasswordInvalidError("current_password required")
+        if not verify_password(current_password, user.password_hash):
+            logger.info(f"auth.password.set.bad_current user_id={user.user_id}")
+            raise CurrentPasswordInvalidError("current_password mismatch")
+
+    new_hash = hash_password(password)
+    user.password_hash = new_hash
+    await session.flush()
+    logger.info(
+        f"auth.password.set.ok user_id={user.user_id} "
+        f"first_time={current_password is None}"
+    )
+
+
 __all__ = [
     "INVITE_CODE_LENGTH",
+    "CurrentPasswordInvalidError",
+    "EmailAlreadyExistsError",
+    "IdentifierFormatError",
+    "InvalidCredentialsError",
     "IssuedTokens",
     "OTPInvalidError",
     "OTPNotFoundError",
+    "PasswordAuthError",
+    "PasswordNotSetError",
+    "PhoneAlreadyExistsError",
     "RefreshTokenError",
     "RefreshTokenExpired",
     "RefreshTokenInvalid",
@@ -443,8 +761,11 @@ __all__ = [
     "find_or_create_user_by_phone",
     "find_or_create_user_by_wechat",
     "refresh_tokens",
+    "register_with_password",
     "revoke_access_token",
     "revoke_refresh_token",
+    "set_user_password",
+    "verify_password_login",
     "verify_phone_login",
     "verify_wechat_mp_login",
 ]

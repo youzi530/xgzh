@@ -44,6 +44,30 @@ export function bindInvite(req: InviteBindRequest) {
 }
 
 /**
+ * BUG-S9-005 邀请奖励配置 (无需登录).
+ *
+ * 让 me 页"绑定邀请人"边上的 ⓘ 弹窗展示"邀请 N 人 → +M 天 VIP". 走 settings
+ * 暴露而非 hardcode, 运营改阈值不需 FE 发版.
+ *
+ * - threshold_n: 0 = 关闭奖励
+ * - vip_days: 0 = 关闭奖励
+ * - enabled: 便利字段, threshold_n > 0 && vip_days > 0
+ */
+export interface InviteRewardConfig {
+  threshold_n: number
+  vip_days: number
+  enabled: boolean
+}
+
+export function fetchInviteRewardConfig() {
+  return request<InviteRewardConfig>({
+    url: '/api/v1/invite/reward-config',
+    method: 'GET',
+    skipAuth: true,
+  })
+}
+
+/**
  * 把后端 ``HTTPException(detail={"code","message"})`` 解析成 ``{code,message}``.
  * 网络错 / 拦截器抛的非 APIError 兜底成 ``{code: 'unknown'}``。
  */

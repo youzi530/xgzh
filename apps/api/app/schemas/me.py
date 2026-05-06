@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class DeleteMeRequest(BaseModel):
@@ -48,11 +48,12 @@ class DeleteMeResponse(BaseModel):
 
 
 class UpdateMeRequest(BaseModel):
-    """``PATCH /me`` 请求体 (BUG-S6.8-002): 当前仅支持改昵称.
+    """``PATCH /me`` 请求体 (BUG-S6.8-002 + BUG-S9-001 / 002).
 
-    后续若要扩展 (avatar_url / region / 简介), 加 ``Optional[str]`` 字段即可.
-    全字段 optional, 用 ``model_dump(exclude_unset=True)`` 拿到非 None patch
-    集, 不写空覆盖 (与 ``COALESCE`` 保护字段同款思路).
+    Sprint 6.8 仅支持 ``nickname``; Sprint 9 扩展 ``email`` 与 ``avatar_url``,
+    让微信用户在"完善资料"页里一次 PATCH 请求把头像 + 邮箱补齐.
+
+    全字段 optional, 用 ``model_dump(exclude_unset=True)`` 拿到非 None patch.
     """
 
     nickname: str | None = Field(
@@ -60,6 +61,18 @@ class UpdateMeRequest(BaseModel):
         min_length=1,
         max_length=20,
         description="新昵称 (1-20 字; 不传则不改).",
+    )
+    # BUG-S9-001 邮箱 — 走 EmailStr 让 Pydantic 拦掉格式错; 后端落库前归一小写
+    email: EmailStr | None = Field(
+        default=None,
+        description="新邮箱 (RFC 5321; 不传则不改). 后端落库前 normalize 成小写.",
+    )
+    # BUG-S9-002 头像 — mp 端 chooseAvatar 后, FE 把临时 path 上传到 OSS / BE
+    # disk 后拿到 https URL, 再走 PATCH /me 写库
+    avatar_url: str | None = Field(
+        default=None,
+        max_length=512,
+        description="头像 https URL (≤ 512 字符; 不传则不改).",
     )
 
 

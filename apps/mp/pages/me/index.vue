@@ -34,7 +34,12 @@ import { storeToRefs } from 'pinia'
 import { computed, defineAsyncComponent, onUnmounted, reactive, ref } from 'vue'
 
 import { updateMe } from '@/api/auth'
-import { bindInvite, parseInviteError } from '@/api/invite'
+import {
+  bindInvite,
+  fetchInviteRewardConfig,
+  type InviteRewardConfig,
+  parseInviteError,
+} from '@/api/invite'
 import type { APIError } from '@/utils/request'
 // PE-S4-001 首屏 lazy-load: VIP 升级 modal 仅在用户点"立即升级" 后弹, 95% 用户
 // 进个人中心不会触发. defineAsyncComponent 让它独立成 chunk, 首屏不下载.
@@ -129,6 +134,15 @@ const inviteSubmitting = ref(false)
 // 用 storage 兜一份; 服务端是 source of truth, 重复绑定时拦截器会抛 400 ``invite_already_bound``
 const boundReferrer = ref<string | null>(null)
 
+// BUG-S9-005: 邀请奖励配置 — 懒加载, 用户点 ⓘ 时第一次拉, 拉到后缓存. 失败兜底
+// 走 hardcode 默认值 (3 人 +7 天) 让弹窗仍可显示.
+const rewardCfg = ref<InviteRewardConfig | null>(null)
+const REWARD_CFG_FALLBACK: InviteRewardConfig = {
+  threshold_n: 3,
+  vip_days: 7,
+  enabled: true,
+}
+
 const loggingOut = ref(false)
 
 const nicknameInitial = computed(() => {
@@ -164,6 +178,41 @@ function refreshAuthGate() {
   // 时由 useFavoritesStore.ensureLoaded() 自己处理。
   // 刷新 VIP 状态; 失败也不影响页面渲染, 卡片走 fallback 文案
   void authStore.refreshMembership()
+  // BUG-S9-004: 兜底 hydrate stale — 用户改完昵称又退出/重登, 个别极端 race
+  // 路径上 store hydrate 可能拿到 storage 旧 user. 主动拉 GET /me 让昵称 / 头像 /
+  // email 与后端真值对齐. 失败 swallow, 不阻塞页面 (沿用 hydrate 旧 user).
+  void authStore.refreshUser()
+}
+
+/**
+ * BUG-S9-005: 邀请福利说明弹窗.
+ *
+ * 第一次点 ⓘ 时拉一次 ``GET /invite/reward-config``, 后续点都用缓存. 失败
+ * 走 fallback (3 人 +7 天) 让弹窗仍能显示, 不让网络错阻塞 UX.
+ *
+ * 文案规则:
+ * - enabled = true: "邀请 N 位 → +M 天 VIP, 翻倍累加"
+ * - enabled = false (运营关闭奖励): "邀请有礼活动暂未开启"
+ */
+async function showInviteRewardInfo() {
+  if (!rewardCfg.value) {
+    try {
+      rewardCfg.value = await fetchInviteRewardConfig()
+    } catch (e) {
+      console.warn('[me] fetchInviteRewardConfig failed, use fallback', e)
+      rewardCfg.value = REWARD_CFG_FALLBACK
+    }
+  }
+  const cfg = rewardCfg.value
+  const content = cfg.enabled
+    ? `成功邀请 ${cfg.threshold_n} 位好友注册并完成绑定, 即可获得 +${cfg.vip_days} 天 VIP 时长.\n\n邀请人数翻倍 → 奖励翻倍累加 (邀请 ${cfg.threshold_n * 2} 人 → +${cfg.vip_days * 2} 天, 以此类推).\n\n好友需通过你的邀请码完成注册并保持账号活跃, 才计入有效邀请.`
+    : '邀请有礼活动暂未开启, 敬请期待.'
+  uni.showModal({
+    title: '邀请福利',
+    content,
+    showCancel: false,
+    confirmText: '我知道了',
+  })
 }
 
 // ─── VIP 卡四态 ─────────────────────────────────────────────
@@ -614,8 +663,24 @@ onUnmounted(() => {
     </view>
 
     <view class="section">
+      <!--
+        BUG-S9-005: 在"绑定邀请人"标题边上加 ⓘ chip, 点击弹窗解释邀请福利.
+        使用 .stop 阻止事件冒泡, 避免触发外层 section 任何点击 handler (虽然
+        当前 section 没绑定 tap, 仍是防御性写法). 不用 emoji ⓘ 而用纯文字
+        圆圈, 跨端字体渲染更一致 (mp 端 emoji 字号不一)。
+      -->
       <view class="section-header">
-        <text class="section-title">绑定邀请人</text>
+        <view class="section-title-row">
+          <text class="section-title">绑定邀请人</text>
+          <view
+            class="info-chip"
+            hover-class="info-chip-hover"
+            :hover-stay-time="80"
+            @tap.stop="showInviteRewardInfo"
+          >
+            <text class="info-chip-text">i</text>
+          </view>
+        </view>
         <text class="section-subtitle">仅可绑定一次, 不可更改</text>
       </view>
       <view v-if="boundReferrer" class="invite-bound">
@@ -1009,6 +1074,13 @@ onUnmounted(() => {
 .section-header {
   margin-bottom: 20rpx;
 }
+/* BUG-S9-005: section-title 与 ⓘ chip 同行 (邀请人 section 用); 其它 section
+   不用 .section-title-row, .section-title 仍能独立 block 渲染. */
+.section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
 .section-title {
   display: block;
   font-size: 28rpx;
@@ -1020,6 +1092,33 @@ onUnmounted(() => {
   margin-top: 4rpx;
   font-size: 22rpx;
   color: var(--color-text-muted, #94a3b8);
+}
+/*
+  BUG-S9-005: ⓘ chip — 28rpx 圆形, 蓝色描边 + 居中字母 i, 与设计语言里
+  "可点击的次级提示" (例如 invite-copy / nickname-edit chip) 风格一致.
+  hover-class 走轻微背景反转, mp / h5 跨端通用. tap target 至少 28rpx
+  + 8rpx 内边距 ≈ 44rpx 命中, 满足 iOS HIG 触控.
+*/
+.info-chip {
+  width: 32rpx;
+  height: 32rpx;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1rpx solid rgba(79, 139, 255, 0.5);
+  background: rgba(79, 139, 255, 0.1);
+}
+.info-chip-hover {
+  background: rgba(79, 139, 255, 0.25);
+}
+.info-chip-text {
+  font-size: 22rpx;
+  font-weight: 700;
+  color: var(--color-primary, #4f8bff);
+  line-height: 1;
+  /* italic 让 i 看起来更像传统的 ⓘ icon, 又避免依赖 emoji 字体 */
+  font-style: italic;
 }
 
 .invite-bound {

@@ -1008,6 +1008,33 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── BUG-S9-002 Avatar 上传 (mp 端 chooseAvatar 后转 https URL) ──────────
+    avatar_storage_dir: str = Field(
+        default="./var/avatars",
+        description=(
+            "用户头像本地 disk 存储目录. 相对路径 = 工作目录, 绝对路径直接用. "
+            "MVP 走 disk; 后续切阿里云 OSS 时改这里 + ``avatar_public_base_url``. "
+            "目录不存在时启动会自动 mkdir(parents=True, exist_ok=True)."
+        ),
+    )
+    avatar_public_base_url: str = Field(
+        default="",
+        description=(
+            "Avatar 公网访问基础 URL (无尾斜杠). 例: ``https://api.xgzh.com/static/avatars``. "
+            "上传成功后, BE 拼成 ``{base_url}/{user_id}/{filename}`` 写入 ``users.avatar_url``. "
+            "留空时 ``POST /me/avatar`` 返 503 (强制运维配置, 防止 dev 误用 file://)."
+        ),
+    )
+    avatar_max_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        description=(
+            "上传头像最大字节数. 默认 2 MiB — 微信 chooseAvatar 出来的图通常 < 200 KB, "
+            "2 MiB 给海外 / 转码场景留余量. 超限 413 + ``avatar_too_large``."
+        ),
+        ge=10_000,
+        le=20 * 1024 * 1024,
+    )
+
     @property
     def cors_origin_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":

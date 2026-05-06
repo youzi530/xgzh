@@ -5,11 +5,13 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import router as v1_router
 from app.cache import RateLimitExceeded
@@ -123,6 +125,18 @@ def create_app() -> FastAPI:
             "docs": "/docs",
             "healthz": "/healthz",
         }
+
+    # BUG-S9-002: dev 期把 ``avatar_storage_dir`` 直接挂在 ``/static/avatars``,
+    # 让 mp / h5 端能访问刚上传的头像. 生产应走 nginx/Caddy 反代 (性能 / 缓存 / 鉴权
+    # 都更可控), 留下 mount 也无害 (反代会先命中, 不会落到 FastAPI). 路径不存在时
+    # 自动 mkdir, 防止首次启动 mount 失败.
+    avatar_dir = Path(settings.avatar_storage_dir).resolve()
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/static/avatars",
+        StaticFiles(directory=str(avatar_dir)),
+        name="avatars",
+    )
 
     app.include_router(v1_router)
     return app

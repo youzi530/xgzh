@@ -36,4 +36,30 @@ class InviteBindResponse(BaseModel):
     )
 
 
-__all__ = ["InviteBindRequest", "InviteBindResponse"]
+class InviteRewardConfig(BaseModel):
+    """BUG-S9-005 ``GET /invite/reward-config`` 响应.
+
+    给 FE 渲染"邀请 N 人 → +M 天 VIP" 文案的源头配置. 走 settings 暴露,
+    后续运营调整 ``invite_reward_n_users`` / ``invite_reward_vip_days``
+    无需 FE 发版, 重启 BE 即可生效.
+
+    匿名也可访问 (没用户敏感信息). 限流由 nginx / 全局 rate_limit 兜底.
+    """
+
+    threshold_n: int = Field(
+        ...,
+        ge=0,
+        description="触发阈值: 累计成功邀请 ≥ N 个活跃用户 → 触发一次奖励. 0 = 关闭奖励",
+    )
+    vip_days: int = Field(
+        ...,
+        ge=0,
+        description="奖励 VIP 天数. 0 = 关闭奖励",
+    )
+    enabled: bool = Field(
+        ...,
+        description="便利字段: threshold_n > 0 AND vip_days > 0 时为 true",
+    )
+
+
+__all__ = ["InviteBindRequest", "InviteBindResponse", "InviteRewardConfig"]

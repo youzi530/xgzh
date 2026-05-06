@@ -243,17 +243,14 @@ onReachBottom(() => {
         <text class="hero-title">新股智汇</text>
         <text class="hero-subtitle">港 A 股打新 · AI 分析 · 跨境合规</text>
       </view>
-      <view class="hero-actions">
-        <!--
-          BUG-S6.5-004 整组拆解后, hero 右侧只保留登录入口:
-          - 📰 市场文章 → IPO 详情页 sub-tab (BUG-S6.5-004a)
-          - 🏦 券商对比 → "我的"页 entry (BUG-S6.5-004b)
-          - 📊 历史新股 → "中签"页入口卡 (BUG-S6.5-004c)
-        -->
-        <view v-if="!loggedIn" class="auth-pill" @tap="gotoLogin">
-          <text>登录 / 注册</text>
-        </view>
-      </view>
+      <!--
+        BUG-S9-003: hero 右上角"登录 / 注册"按钮整段移除.
+        理由 (用户原话): 未登录态下 5 个 tab 中 4 个 (社区 / 中签 / 知识 / 我的)
+        都自动 reLaunch 到登录页, 这个右上角 pill 是冗余入口, 反而增加视觉噪音.
+        gotoLogin 函数仍保留 — favorites segment 切换时还要用 (modal 引导登录).
+        Sprint 6.5 拆掉 3 个图标后, hero-actions 变只剩 auth-pill, 现在彻底空了,
+        整段移除让 hero 仅保留"新股智汇 + 副标题", 视觉更聚焦.
+      -->
     </view>
 
     <view class="bar">
@@ -401,15 +398,15 @@ onReachBottom(() => {
   flex-direction: column;
   gap: 24rpx;
 }
+/*
+  BUG-S9-003: hero 右上角 auth-pill 已移除, hero 改单列布局 (无 actions),
+  仅保留 .hero-left (品牌区). 历史 .hero-actions / .hero-icon-btn / .auth-pill
+  样式整段删除, 避免 dead css.
+*/
 .hero {
   padding: 16rpx 8rpx 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16rpx;
 }
 .hero-left {
-  flex: 1;
   min-width: 0;
 }
 .hero-title {
@@ -423,39 +420,6 @@ onReachBottom(() => {
   margin-top: 8rpx;
   font-size: 24rpx;
   color: var(--color-text-muted);
-}
-.hero-actions {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 12rpx;
-}
-.hero-icon-btn {
-  width: 64rpx;
-  height: 64rpx;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1rpx solid rgba(255, 255, 255, 0.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.hero-icon-btn-hover {
-  background: rgba(255, 255, 255, 0.16);
-}
-.hero-icon {
-  font-size: 32rpx;
-  line-height: 1;
-}
-.auth-pill {
-  flex-shrink: 0;
-  padding: 12rpx 24rpx;
-  border-radius: 999rpx;
-  font-size: 24rpx;
-  color: var(--color-primary);
-  background: rgba(79, 139, 255, 0.1);
-  border: 1rpx solid rgba(79, 139, 255, 0.3);
 }
 .bar {
   display: flex;

@@ -27,6 +27,7 @@ import {
   type LoginResponse,
   type TokenPair,
   type UserPublic,
+  fetchMe as fetchMeAPI,
   logout as logoutAPI,
   refreshToken as refreshTokenAPI,
 } from '@/api/auth'
@@ -312,6 +313,34 @@ export const useAuthStore = defineStore('auth', () => {
     saveUser(u)
   }
 
+  /**
+   * BUG-S9-004: 主动从 ``GET /me`` 拉最新 user 兜底 hydrate stale.
+   *
+   * 触发场景:
+   * - me 页 onShow (用户刚改完昵称又退出/登录回来, 防 hydrate 拿到 storage 旧值)
+   * - 其它页 onLoad 想确认头像/昵称是最新 (例如 community/edit 显示当前昵称头像)
+   *
+   * 设计:
+   * - 未登录直接返 null, 不发请求 (防 401 拦截器把用户踢回登录)
+   * - 失败 swallow, 不阻塞 UI (沿用 hydrate 旧 user, 至少不闪)
+   * - 拉到新 user 后走 ``setUser`` 同步 storage, 跨页面立即响应式
+   *
+   * 与 ``setUser`` 的分工:
+   * - ``setUser(u)``: 已经知道最新 user (PATCH 返回 / login 返回) 时调
+   * - ``refreshUser()``: 不知道最新 user 时主动去拉, 然后内部走 setUser
+   */
+  async function refreshUser(): Promise<UserPublic | null> {
+    if (!loggedIn.value) return null
+    try {
+      const u = await fetchMeAPI()
+      setUser(u)
+      return u
+    } catch (e) {
+      console.warn('[auth] refreshUser failed', e)
+      return null
+    }
+  }
+
   return {
     accessToken,
     refreshToken: refreshTokenRef,
@@ -327,6 +356,7 @@ export const useAuthStore = defineStore('auth', () => {
     setSession,
     setTokens,
     setUser,
+    refreshUser,
     clearSession,
     refresh,
     refreshMembership,

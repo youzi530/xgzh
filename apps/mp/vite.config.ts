@@ -64,4 +64,13 @@ export default defineConfig({
       '@': path.resolve(__dirname, '.'),
     },
   },
+  // host: true → 监听 0.0.0.0, 真机同 WiFi 用本机 IP 访问 H5 dev server.
+  // 注: uniapp vite plugin 内部默认 proxy 把 /api / /healthz 转发到本机 8000 (本地
+  // dev BE),所以这里不用配 vite.server.proxy (配了也被 uniapp 忽略). 想 H5 直连
+  // 公网 BE 时,改 utils/request.ts 的 getBaseURL() H5 分支返回 DEFAULT_BASE_URL.
+  server: {
+    host: true,
+    port: 5173,
+    strictPort: false,
+  },
 })
