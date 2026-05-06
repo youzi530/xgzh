@@ -13,11 +13,11 @@ fileignoreconfig:
   - filename: .github/workflows/deploy.yml
     checksum: 537fdcc49ab508cd6e65ff12a639a6041c14c6eafba73a6e139e1c8573e1efea
   - filename: docs/bug/2026.04.30-bug.md
-    checksum: de4ab367d13136621827771f31465adf9650e8fbc6869177ac8372f566f0fe65
+    checksum: 85e0e5ea87f0e793d7bc6dcc710000f511e2fae08f1af2ed2c107c644e59e845
   - filename: infra/.env.production.example
     checksum: 45e856480689ae72d7237a6cd01e593012c7f142b924e1e9c200babd948f7479
   - filename: infra/docker-compose.production.yml
-    checksum: d925ef3b41acc27d02ec115e77e469b0c829e33324f86a02fc796ec139163b94
+    checksum: 6ab61ecb80c48c9a39788469057027ee04b77a4bc9e8ac783fb879b43f86ffe8
   - filename: infra/server-setup.sh
     checksum: dc4eabf3ff34dfc14d972da37b338560c6686d618181e386e977eb76b89a8dce
   - filename: spec/25-deployment-strategy.md

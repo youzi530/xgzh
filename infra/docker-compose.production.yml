@@ -30,8 +30,11 @@ services:
         condition: service_healthy
     environment:
       # 数据库 / Redis 走容器名解析 (xgzh-prod_default network)
-      XGZH_DATABASE_URL: postgresql+asyncpg://xgzh:${POSTGRES_PASSWORD}@postgres:5432/xgzh
-      XGZH_REDIS_URL: redis://redis:6379/0
+      # 注意: BE 用 pydantic-settings 默认 (无 env_prefix), 读 field name 大写 = DATABASE_URL,
+      # 不是 XGZH_DATABASE_URL. 历史 spec/25 v1 错写过 XGZH_ 前缀, 导致 BE fallback 到 default
+      # localhost:5432 连不上 PG (但 /healthz 不查 DB 仍 healthy 误导排查). v2 修正.
+      DATABASE_URL: postgresql+asyncpg://xgzh:${POSTGRES_PASSWORD}@postgres:5432/xgzh
+      REDIS_URL: redis://redis:6379/0
       # 应用配置
       APP_ENV: production
       LOG_LEVEL: INFO
