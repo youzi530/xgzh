@@ -9,28 +9,34 @@
 
 ## 本目录是什么
 
-这是 **首次正式发版的工作包**, 5 份文档配 1 份原始输入, 按发版动作的时间线串起来:
+这是 **首次正式发版的工作包**, 7 份文档配 1 份原始输入, 按发版动作的时间线串起来:
 
 | # | 文件 | 给谁看 | 核心问题 |
 |---|------|--------|----------|
 | 0 | [`00-input.md`](./00-input.md) | 自己留底 | 用户最初提的需求清单, 用来对照交付 |
+| 0' | [`00-backend-deploy-spike.md`](./00-backend-deploy-spike.md) | 自己 / 决策 | **后端怎么部?** (3 档方案对比 + 3-4 小时 SOP, 部署**前**做的方案选型) |
 | 1 | [`01-release-plan.md`](./01-release-plan.md) | 老板 / 团队对齐 | **发布什么? 什么时候? 怎么放量?** (灰度策略 + 时间表) |
 | 2 | [`02-release-runbook.md`](./02-release-runbook.md) | 操作的人 (你自己) | **一步一步怎么做?** (从 build 到提审到发布的命令级 SOP) |
 | 3 | [`03-release-notes.md`](./03-release-notes.md) | 提审审核员 / 用户 | **这一版到底有什么?** (功能清单 + 合规说明 + 用户能感知的能力) |
 | 4 | [`04-rollback-plan.md`](./04-rollback-plan.md) | 出事时的你 | **崩了怎么办?** (按严重级 P0/P1/P2 分别的止损动作) |
 | 5 | [`05-pre-release-checklist.md`](./05-pre-release-checklist.md) | 自己 / QA 同伴 | **能不能放行?** (可勾选, 走完才敢上传体验版) |
+| 6 | [`06-server-bootstrap-log.md`](./06-server-bootstrap-log.md) | 自己 / 灾备 / 团队 onboard | **2026-04-30 真实部署复盘** (3 个真坑 + 时间线 + 灾后 1h 重建 SOP, 部署**后**的实战记录) |
 
 ---
 
 ## 推荐阅读顺序
 
-**第一次看**: 0 → 1 → 5 → 2 → 3 → 4
+**第一次看 (从 0 开始)**: 0 → 0' → 1 → 5 → 2 → 3 → 4 → 6
 
 **正式发版时**:
 1. 先把 [`05-pre-release-checklist.md`](./05-pre-release-checklist.md) 全勾过 (任何一项 ❌ 都不要点 "上传")
 2. 按 [`02-release-runbook.md`](./02-release-runbook.md) 逐步执行 (build → 体验版 → 提审 → 发布)
 3. 把 [`03-release-notes.md`](./03-release-notes.md) 的 "提审填写卡" 一段贴到微信小程序提审表单
 4. 万一出事翻 [`04-rollback-plan.md`](./04-rollback-plan.md), 不要现凑
+
+**后端部署 / 灾备时**:
+1. 先看 [`00-backend-deploy-spike.md`](./00-backend-deploy-spike.md) 选好方案档位 (X/Y/Z)
+2. 跟 [`06-server-bootstrap-log.md`](./06-server-bootstrap-log.md) §11.6 "灾后重建 SOP", 复制粘贴 ≤ 1h 重建
 
 ---
 

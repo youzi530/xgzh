@@ -11,7 +11,10 @@
 
 import { readAccessTokenSync, useAuthStore } from '@/stores/auth'
 
-const DEFAULT_BASE_URL = 'http://localhost:8000'
+// ⚠️ 内测期临时硬编码生产后端公网 IP (HTTP, 还没 HTTPS).
+// ICP 备案 + Caddy 上线后改成 'https://api.xgzh.top', 见 docs/deploy/01-2026-04-30-release/06-server-bootstrap-log.md §12.
+// 想本地连本地后端跑 e2e: 这里改回 'http://localhost:8000'.
+const DEFAULT_BASE_URL = 'http://8.130.156.2:8000'
 
 const LOGIN_PAGE_URL = '/pages/auth/login'
 

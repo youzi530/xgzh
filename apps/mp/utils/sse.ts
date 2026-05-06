@@ -30,7 +30,9 @@
 
 import { readAccessTokenSync } from '@/stores/auth'
 
-const DEFAULT_BASE_URL = 'http://localhost:8000'
+// ⚠️ 内测期临时硬编码生产后端公网 IP, 与 utils/request.ts 同步.
+// 备案 + HTTPS 后改成 'https://api.xgzh.top'.
+const DEFAULT_BASE_URL = 'http://8.130.156.2:8000'
 
 export interface SSEEvent {
   event: string
