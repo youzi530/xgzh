@@ -192,9 +192,17 @@ async def update_me(
 # ─── PUT /me/password (BUG-S9-001 设置/修改密码) ────────────────────
 
 
-def _password_set_rate_limit_key(_: SetPasswordRequest, **kwargs: object) -> str:
+def _password_set_rate_limit_key(**kwargs: object) -> str:
     """同用户 5次/小时 防被旁人改密 (设置场景: current_password=None 时不限,
-    修改场景: 5次/小时已够). 用 user_id 做 key."""
+    修改场景: 5次/小时已够). 用 user_id 做 key.
+
+    注意: rate_limit 装饰器在 FastAPI endpoint 上调用 key_func 时, 全部走 **kwargs
+    (因为 FastAPI dependency injection 都是 keyword 参数). 这里不能写位置参数
+    (旧版 ``_: SetPasswordRequest`` 会报 missing 1 required positional argument).
+    参见 ``auth.py`` 的 ``_password_register_rate_limit_key`` (那里 endpoint 参数
+    叫 ``req``, 所以 key_func 也用 ``req`` 同名 + ``**_`` 兜底, 但那是同名匹配,
+    本 endpoint 参数叫 ``body`` 不是 ``req``, 用 ``**kwargs`` 全收最简单).
+    """
     user = kwargs.get("current_user")
     if isinstance(user, User):
         return f"user:{user.user_id}"
@@ -278,6 +286,8 @@ async def set_or_change_password(
             detail={"code": "password_format_invalid", "message": str(e)},
         ) from e
 
+    # ⚠ 必须显式 commit (set_user_password 内部只 flush, 不 commit). 历史 b5b71eb 同款.
+    await session.commit()
     await session.refresh(current_user)
     logger.info(f"me.password.set.ok user_id={current_user.user_id}")
     return UserPublic.model_validate(current_user)
@@ -415,8 +425,12 @@ _ALLOWED_AVATAR_MIME: dict[str, str] = {
 }
 
 
-def _avatar_rate_limit_key(_: object = None, **kwargs: object) -> str:
-    """同用户 10 次/小时上传头像; 防恶意刷文件占满 disk."""
+def _avatar_rate_limit_key(**kwargs: object) -> str:
+    """同用户 10 次/小时上传头像; 防恶意刷文件占满 disk.
+
+    rate_limit key_func 在 FastAPI endpoint 上必须 ``**kwargs`` (dependency
+    injection 走 keyword), 不能写裸位置参数 — 见 ``_password_set_rate_limit_key`` 注释.
+    """
     user = kwargs.get("current_user")
     if isinstance(user, User):
         return f"user:{user.user_id}"

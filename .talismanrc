@@ -52,7 +52,7 @@ fileignoreconfig:
   - filename: apps/api/app/services/auth_service.py
     checksum: d538599de6903abcae67321e464fe251f5e23d1a413ac6fa565832dc17e41cd0
   - filename: apps/api/app/api/v1/me.py
-    checksum: ecfd5f54c5224761e9a4f0aae09f813c191f2c25906e01d31694bdabac314fe7
+    checksum: 79966c3b43dca5e31120db248aed25889ebca9e6557c56cb867101f77f0db2f9
   - filename: apps/mp/pages/auth/login.vue
     checksum: 56ea6845c3c44bbb4f9c9ccfd37c045794d763d8c9bca0d22f8454fc5c94d515
   - filename: apps/api/pyproject.toml
