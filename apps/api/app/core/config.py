@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     app_env: str = Field(default="dev")
     log_level: str = Field(default="INFO")
     cors_origins: str = Field(default="*")
+    # OPS-S10: 部署验证锚点. 由 ``deploy.yml`` 的 docker build ``--build-arg APP_GIT_SHA``
+    # 注入 (Dockerfile ``ENV APP_GIT_SHA=$APP_GIT_SHA``). 本机开发不设置默认值 ``unknown``,
+    # ``/version`` endpoint 据此判断"当前跑的是哪次提交". 必须与 ECS ``.env IMAGE_TAG``
+    # 一致, 否则说明镜像 tag 与代码 sha 错位 (历史踩过 ACR 缓存 latest 不更新的坑).
+    app_git_sha: str = Field(default="unknown")
 
     siliconflow_api_key: str = Field(default="")
     siliconflow_base_url: str = Field(default="https://api.siliconflow.cn/v1")

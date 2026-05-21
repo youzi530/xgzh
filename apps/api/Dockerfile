@@ -34,6 +34,13 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 
+# OPS-S10 部署验证锚点: build 时由 .github/workflows/deploy.yml 通过 --build-arg
+# APP_GIT_SHA=<short-sha> 注入, runtime 通过 ``GET /version`` 暴露; 验证脚本
+# infra/verify-deploy.sh 据此判断 ECS 上跑的镜像 tag 是否真等于 git commit sha.
+# 默认 "unknown" 保证本地直接 ``docker build`` 无 build-arg 也能跑.
+ARG APP_GIT_SHA=unknown
+ENV APP_GIT_SHA=$APP_GIT_SHA
+
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD curl -fsS http://localhost:8000/healthz || exit 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,12 +22,22 @@ from app.observability import init_sentry
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.services import error_monitor, feature_flags
 
+# OPS-S10 部署验证锚点: module-level "进程启动时刻".
+# 故意不放 lifespan / app.state — lifespan 在 uvicorn worker 模型下每 worker 跑一次,
+# 但 starlette TestClient/ASGITransport 不会 trigger lifespan, 导致测试时无值. module
+# load 时间在所有运行模式 (uvicorn / pytest / TestClient) 下都是 "worker 进程启动时刻",
+# 跟 /version 想表达的 "这个 worker 跑了多久" 语义恰好一致.
+_PROCESS_STARTED_AT = datetime.now(UTC)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     setup_logging(settings.log_level)
-    logger.info(f"app.start name={settings.app_name} env={settings.app_env}")
+    logger.info(
+        f"app.start name={settings.app_name} env={settings.app_env} "
+        f"git_sha={settings.app_git_sha}"
+    )
 
     # OPS-S5-001: Sentry SDK 初始化要先于 scheduler / 业务 bootstrap, 这样下游
     # 任何异常 / unhandled exception 都被 Sentry 捕获. DSN 留空时直接 skip.
@@ -118,12 +129,54 @@ def create_app() -> FastAPI:
             "llm_configured": settings.has_llm_credential,
         }
 
+    @app.get("/version", tags=["meta"])
+    async def version() -> dict[str, Any]:
+        """OPS-S10 部署验证锚点.
+
+        三件信息让运维 / verify-deploy.sh 一眼判断"代码是否真上线":
+        - ``git_sha``: docker build 时 ``--build-arg APP_GIT_SHA`` 注入的 short sha;
+          ``unknown`` 表示本地直接跑 (无 build-arg) 或镜像没传 build-arg
+        - ``alembic_head``: 启动后查 ``alembic_version`` 表 (lazy + 不缓存 — 单次
+          SELECT < 1ms, 不值得为这个加缓存复杂度); 表不存在 / 查询失败返 ``unknown``
+        - ``started_at``: lifespan 启动时刻; 跟当前时间差 > 24h 时人会自然警觉
+          "这服务多久没重启了"
+
+        不暴露 settings 全集 (那是 /docs 的事), 这里只关心"上线版本对账"。
+        无鉴权 — 与 /healthz 同级公开 (sha 不是敏感信息, 反而 ops 大家都需要)。
+        """
+        # alembic head 不在 startup 查 (启动时 DB 可能还没 ready, 不应阻塞 lifespan);
+        # 走 lazy SELECT, 查不到不抛, 返 unknown.
+        alembic_head = "unknown"
+        try:
+            from sqlalchemy import text  # noqa: PLC0415 — 避免顶层 import 增加冷启动
+
+            from app.db.base import get_session_factory  # noqa: PLC0415
+
+            async with get_session_factory()() as session:
+                row = await session.execute(
+                    text("SELECT version_num FROM alembic_version LIMIT 1")
+                )
+                head = row.scalar_one_or_none()
+                if head:
+                    alembic_head = head
+        except Exception as e:  # noqa: BLE001 — /version 是 ops 通道, 不应 500
+            logger.warning(f"version.alembic_query_failed: {e!r}")
+
+        return {
+            "app": settings.app_name,
+            "env": settings.app_env,
+            "git_sha": settings.app_git_sha,
+            "alembic_head": alembic_head,
+            "started_at": _PROCESS_STARTED_AT.isoformat(),
+        }
+
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, str]:
         return {
             "name": "XGZH API",
             "docs": "/docs",
             "healthz": "/healthz",
+            "version": "/version",
         }
 
     # BUG-S9-002: dev 期把 ``avatar_storage_dir`` 直接挂在 ``/static/avatars``,

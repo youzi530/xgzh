@@ -97,6 +97,10 @@ jobs:
           context: ./apps/api
           file: ./apps/api/Dockerfile
           push: true
+          # OPS-S10 部署验证: 把 short sha 注入镜像 ENV, runtime ``GET /version`` 可读;
+          # 配合 ECS .env IMAGE_TAG 双向比对, 锁定 "镜像 = 代码" 的对应关系.
+          build-args: |
+            APP_GIT_SHA=${{ steps.tag.outputs.tag }}
           # tag 双写: <sha> (回退用) + latest (默认拉取)
           tags: |
             ${{ secrets.ACR_REGISTRY }}/${{ secrets.ACR_NAMESPACE }}/${{ secrets.ACR_REPOSITORY }}:${{ steps.tag.outputs.tag }}

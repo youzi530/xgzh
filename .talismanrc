@@ -66,3 +66,8 @@ fileignoreconfig:
   # Sprint 9 IaC 迁移文档: 注释提到 secret / API key / token 字面量, 不是真值
   - filename: docs/deploy/02-2026-05-06-secrets-automation.md
     checksum: 165a6439c6704031c0da68508e178a108d6edba88ac55a9292b21d06ddb92fd0
+  # Sprint 12 (今日): verify-deploy.sh 烟雾测试脚本; 含 "401" / "PASS:" / "FAIL:"
+  # 等字符串字面量被 talisman entropy 误判. 脚本里无任何 secret (走 SSH key + GH gh
+  # cli + curl 公网 endpoint). 注: talisman 自己算的 checksum 跟 shasum 不一样, 用前者.
+  - filename: infra/verify-deploy.sh
+    checksum: e0d5a31b0294c604b59e82e53d12b51b7b01e318a679a01c689d554ac7027c2e
