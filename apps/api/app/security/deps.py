@@ -143,8 +143,45 @@ async def get_optional_user(
         return None
 
 
+def _forbidden(code: str, message: str) -> HTTPException:
+    """403 Forbidden — 与 401 区分: 401 = 没登录, 403 = 登录了但权限不够."""
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"code": code, "message": message},
+    )
+
+
+async def get_current_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    """Sprint 10 BE-S10-002 admin RBAC 依赖.
+
+    在 ``get_current_user`` 基础上再校验 ``user.is_admin == True``. 不满足 403.
+
+    - 401 (token 缺失/无效/过期) 由 ``get_current_user`` 抛, 不在本函数内重复判断
+    - 403 ``admin_required`` 是登录态但 is_admin=False 时的明确信号; FE 可据此
+      在我的页隐藏 admin 入口, 或在被禁后弹"权限不足"提示
+    - 不查 ``status`` (status != 1 已被 get_current_user 401 user_disabled), 不查 deleted_at
+      (同上, get_current_user 已挡), 这层只关心 is_admin
+
+    与 X-Admin-Token (ops 通道) 的区别:
+    - X-Admin-Token: 服务器侧固定密钥, 用于离线脚本 / 紧急运维; 不识别"哪个 user 操作"
+    - get_current_admin (本函数): JWT user.is_admin, 走 in-app 流程; 审计能记到具体 user_id
+
+    两者并存; 同一接口可同时支持 (in-app admin + ops 兜底), 但 admin-only 列表/
+    详情/修改类接口默认只走 get_current_admin (强 audit trail).
+    """
+    if not user.is_admin:
+        logger.warning(
+            f"auth.deps.admin_required user_id={user.user_id} phone={user.phone}"
+        )
+        raise _forbidden("admin_required", "需要管理员权限")
+    return user
+
+
 __all__ = [
     "USER_STATUS_ACTIVE",
+    "get_current_admin",
     "get_current_user",
     "get_optional_user",
 ]

@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     ForeignKey,
     Index,
     SmallInteger,
@@ -69,6 +70,14 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         nullable=False,
         server_default=text("1"),
         comment="1=active, 0=disabled, -1=banned",
+    )
+    # Sprint 10 BE-S10-001: RBAC admin 标识. 部分索引 ix_users_is_admin
+    # (alembic/0017, WHERE is_admin=true) 在迁移里建, 此处不在 __table_args__ 重复
+    # 声明 (避免 SQLAlchemy autogenerate 退化成 full 索引误判 diff, 与 uq_users_email 同款约定).
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
     )
     last_active_at: Mapped[datetime] = mapped_column(
         server_default=func.now(),

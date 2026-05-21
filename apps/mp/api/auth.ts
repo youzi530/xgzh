@@ -59,6 +59,9 @@ export interface UserPublic {
   has_wechat?: boolean
   /** ``has_password AND (has_phone OR has_email)`` — 用来挡住某些"必须有密码登录路径"的功能 */
   profile_complete?: boolean
+  /** Sprint 10 BE-S10-003: 管理员标识. true=可访问 admin 页 (用户管理 / 后续运营页);
+   * 普通用户为 false. 与 has_* 不同, 这个字段不是派生而是直接映射 ORM users.is_admin */
+  is_admin?: boolean
 }
 
 export interface LoginResponse {

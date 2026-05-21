@@ -93,6 +93,11 @@ class UserPublic(BaseModel):
     has_password: bool = False
     has_wechat: bool = False
     profile_complete: bool = False
+    # ─── Sprint 10 BE-S10-003: RBAC admin 标识 ──────────────────────
+    # 直接拷自 ORM ``user.is_admin``; FE 用此判断我的页是否显示 admin section.
+    # 注: 与 has_* 不同, is_admin 不是派生而是直接映射 ORM 列, 但为了让老 dict
+    # 路径 (单测 / 二次序列化) 也工作, _derive_has_flags 里也兼容 dict 入参.
+    is_admin: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -123,6 +128,9 @@ class UserPublic(BaseModel):
             data["has_password"] = has_password
             data["has_wechat"] = has_wechat
             data["profile_complete"] = (has_phone or has_email) and has_password
+            # is_admin 不派生, 但若 dict 输入 (单测) 没传, 默认 False
+            if "is_admin" not in data:
+                data["is_admin"] = False
             return data
         # ORM 实例路径 — 直接 getattr (mypy 看不出来 ORM 类型, 全用 getattr 兜底)
         has_phone = bool(getattr(data, "phone", None))
@@ -143,6 +151,7 @@ class UserPublic(BaseModel):
             "has_password": has_password,
             "has_wechat": has_wechat,
             "profile_complete": (has_phone or has_email) and has_password,
+            "is_admin": bool(getattr(data, "is_admin", False)),
         }
         return result
 

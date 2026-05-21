@@ -54,6 +54,14 @@ INVITE_CODE_ALPHABET = string.ascii_uppercase + string.digits  # 去歧义留待
 INVITE_CODE_LENGTH = 8
 INVITE_CODE_RETRY = 5
 
+# ─── Sprint 10 BE-S10-002: 初始管理员兜底 ────────────────────────────
+# alembic/0017 已经在 migration 时 UPDATE 已存在的 13007458553 行;
+# 但若该手机号在 migration 后才注册, migration 跑不到他, 需要 runtime hook 兜底.
+# 凡是 normalized 后命中此列表的 phone 注册/登录时, 一律自动标 is_admin=true.
+# 不放进 settings — 这是项目级硬编码 (原始 sprint 单 docs/new sprint/2026.0506.md §a),
+# 不应让运维 env var 改, 防误降权.
+INITIAL_ADMIN_PHONES: frozenset[str] = frozenset({"+8613007458553"})
+
 
 class OTPNotFoundError(Exception):
     """Redis 中无该手机号 OTP. 前端语义: 未发送 / 已过期 / 已被消费."""
@@ -245,6 +253,43 @@ async def _touch_last_active(session: AsyncSession, user_id: uuid.UUID) -> None:
     await session.execute(stmt)
 
 
+async def _maybe_grant_initial_admin(session: AsyncSession, user: User) -> None:
+    """Sprint 10 BE-S10-002: 初始管理员兜底 hook.
+
+    场景: alembic/0017 migration 跑的时候 13007458553 还没注册,
+    UPDATE WHERE phone=... 影响 0 行. 该用户首次走任意登录入口注册成功后,
+    本 hook 把 is_admin 改成 True (幂等, 已经是 True 就 noop).
+
+    调用约束:
+    - 必须在 user 已经 flush() 进 DB 后调用 (我们改 ORM 实例属性, 由调用方 commit)
+    - 不抛异常 (admin 状态不影响登录主路径; 失败仅打 warning 等运维改)
+    - 仅看 phone, 不看 email — 初始管理员手机号是项目硬编码 (INITIAL_ADMIN_PHONES);
+      想加额外 admin 走 PATCH /admin/users/{id} 走 in-app 流程
+
+    与 alembic/0017 的关系:
+    - migration 是"老数据回填" — 已存在的 13007458553 行直接标 admin
+    - 本 hook 是"新注册兜底" — 注册后才出现的 13007458553 实时标 admin
+    - 两者并存; 任何路径都能让初始 admin 拿到权限
+    """
+    if user.phone is None or user.phone not in INITIAL_ADMIN_PHONES:
+        return
+    if user.is_admin:
+        return  # 幂等
+    user.is_admin = True
+    try:
+        await session.flush()
+    except Exception as e:  # noqa: BLE001 — 兜底不应阻塞登录
+        logger.warning(
+            f"auth.initial_admin.grant_fail user_id={user.user_id} "
+            f"phone={mask_phone(user.phone)} err={e!r}"
+        )
+        return
+    logger.info(
+        f"auth.initial_admin.granted user_id={user.user_id} "
+        f"phone={mask_phone(user.phone)}"
+    )
+
+
 async def verify_phone_login(
     session: AsyncSession,
     *,
@@ -274,6 +319,7 @@ async def verify_phone_login(
     await otp_service.consume_otp(phone)
 
     user, is_new = await find_or_create_user_by_phone(session, phone)
+    await _maybe_grant_initial_admin(session, user)
     await _touch_last_active(session, user.user_id)
     await session.commit()
 
@@ -367,6 +413,9 @@ async def verify_wechat_mp_login(
         )
         raise RefreshUserUnavailable("user disabled")
 
+    # 微信用户没 phone, hook 内部会 noop; 但若日后用户在"完善资料"里绑了
+    # 初始 admin 手机号, 下次再登录此 hook 会兜底标 is_admin (不需要重新写 hook)
+    await _maybe_grant_initial_admin(session, user)
     await _touch_last_active(session, user.user_id)
     await session.commit()
 
@@ -609,6 +658,9 @@ async def register_with_password(
         session, phone=norm_phone, email=norm_email, password_hash=pwd_hash
     )
 
+    # 初始 admin 兜底: 13007458553 走密码注册时同事务标 is_admin
+    await _maybe_grant_initial_admin(session, user)
+
     # 4. 邀请码 (失败不阻塞注册主路径)
     if invite_code:
         try:
@@ -696,6 +748,7 @@ async def verify_password_login(
         raise InvalidCredentialsError("identifier or password invalid")
 
     # 2. 成功 — touch last_active + 颁 token
+    await _maybe_grant_initial_admin(session, user)
     await _touch_last_active(session, user.user_id)
     await session.commit()
 

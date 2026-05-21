@@ -103,6 +103,18 @@ export const useAuthStore = defineStore('auth', () => {
   const loggedIn = computed(() => isAccessFresh.value || isRefreshFresh.value)
 
   /**
+   * Sprint 10 FE-S10-001: 管理员标识.
+   *
+   * - source of truth: 后端 ``UserPublic.is_admin`` 字段 (Sprint 10 BE-S10-003);
+   *   FE 不在客户端做任何"白名单"判断, 防止 token 被改后假装 admin
+   * - 用法: ``v-if="isAdmin"`` 在我的页显示管理员入口; admin 写操作仍走 BE 的
+   *   ``get_current_admin`` 二次校验, FE 只是"显示/隐藏" UI 不是权限边界
+   * - 仅看 ``user.is_admin === true`` 严格相等: undefined / null / false 全视为
+   *   非 admin (老 session 没拉过新字段时 default 非 admin 兜底)
+   */
+  const isAdmin = computed(() => user.value?.is_admin === true)
+
+  /**
    * 跨 store 副作用: 登录态变化时清掉别的 store / composable 里的 stale state.
    *
    * 为什么写这里而不是订阅:
@@ -353,6 +365,7 @@ export const useAuthStore = defineStore('auth', () => {
     loggedIn,
     isAccessFresh,
     isRefreshFresh,
+    isAdmin,
     setSession,
     setTokens,
     setUser,

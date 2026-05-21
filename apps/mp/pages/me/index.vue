@@ -63,7 +63,7 @@ const COUNTDOWN_TICK_MS = 60_000
 const BD_WECHAT_ID = 'xinguzhihui-bd'
 
 const authStore = useAuthStore()
-const { user, loggedIn, vipMembership, vipMembershipLoading } = storeToRefs(authStore)
+const { user, loggedIn, isAdmin, vipMembership, vipMembershipLoading } = storeToRefs(authStore)
 const upgrade = useUpgradeModal()
 
 // FE-S4-004: 主题切换器 — 读 mode 给 segment 高亮, 写 mode 立即生效 + 持久化
@@ -362,6 +362,12 @@ function gotoBrokers() {
   uni.navigateTo({ url: '/pages/broker/index' })
 }
 
+// Sprint 10 FE-S10-001: admin 用户管理入口. 仅 isAdmin=true 时显示.
+// BE 的 get_current_admin 依赖会做二次校验 (FE 隐藏 UI 不是权限边界).
+function gotoAdminUsers() {
+  uni.navigateTo({ url: '/pages/admin/users' })
+}
+
 function copyInviteCode() {
   const code = user.value?.invite_code
   if (!code) return
@@ -658,6 +664,39 @@ onUnmounted(() => {
         </view>
         <view class="entry-right">
           <text class="entry-arrow">›</text>
+        </view>
+      </view>
+    </view>
+
+    <!--
+      Sprint 10 FE-S10-001: 管理员专属 section. 仅 isAdmin=true (BE 下发的
+      UserPublic.is_admin) 才渲染. BE 的 get_current_admin 二次校验是真正的
+      权限边界; 这里隐藏 UI 只是 UX 清爽 (普通用户看不到), 不依赖前端做权限.
+
+      Sprint 11 加 broker / feedback / community / knowledge 4 个管理页时,
+      在本 entry-list 内追加 4 个 entry-item 即可, 不需要重组结构.
+    -->
+    <view v-if="isAdmin" class="section section-admin">
+      <view class="section-header">
+        <view class="section-title-row">
+          <text class="section-title">管理员</text>
+          <view class="admin-badge">
+            <text class="admin-badge-text">仅管理员可见</text>
+          </view>
+        </view>
+      </view>
+      <view class="entry-list">
+        <view class="entry-item" @tap="gotoAdminUsers">
+          <view class="entry-left">
+            <text class="entry-icon entry-icon-admin">👥</text>
+            <view class="entry-text">
+              <text class="entry-title">用户管理</text>
+              <text class="entry-desc">查看 / 搜索 / 加 VIP / 禁用 / 软删</text>
+            </view>
+          </view>
+          <view class="entry-right">
+            <text class="entry-arrow">›</text>
+          </view>
         </view>
       </view>
     </view>
@@ -1006,6 +1045,27 @@ onUnmounted(() => {
   background: rgba(34, 197, 94, 0.15);
   border-color: rgba(34, 197, 94, 0.35);
   color: #22c55e;
+}
+/* Sprint 10 FE-S10-001: 管理员入口 icon — 紫色调与其它入口区分 */
+.entry-icon-admin {
+  background: rgba(167, 139, 250, 0.15);
+  border-color: rgba(167, 139, 250, 0.35);
+  color: #a78bfa;
+}
+.section-admin {
+  /* 与普通 section 间距一致, 不额外加 margin-top — section 已经自带 */
+}
+.admin-badge {
+  margin-left: 12rpx;
+  padding: 4rpx 12rpx;
+  background: rgba(167, 139, 250, 0.15);
+  border: 1rpx solid rgba(167, 139, 250, 0.35);
+  border-radius: 999rpx;
+}
+.admin-badge-text {
+  font-size: 20rpx;
+  color: #a78bfa;
+  letter-spacing: 1rpx;
 }
 .entry-left {
   flex: 1;
