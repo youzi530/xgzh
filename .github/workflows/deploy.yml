@@ -163,6 +163,23 @@ jobs:
           # 让 index.html 等文件直接落在 /opt/xgzh/h5-dist/index.html (caddy serve root)
           strip_components: 4
 
+      # ─── 1.4 Sync infra configs (docker-compose + Caddyfile) to ECS ──────
+      # Sprint 12 前: 假设 docker-compose.production.yml 和 Caddyfile 是"首次手动 scp,
+      # 改了再手动重 scp", 没自动化. Sprint 12 加 caddy service 后立刻踩坑 (ECS 上
+      # docker-compose 仍是老版本不含 caddy → docker compose up -d 起不来 caddy).
+      # 修复: 每次 deploy 强制把 infra/ 下的配置文件 scp 一次, 确保 ECS = git main.
+      #
+      # 安全: 这俩文件都是公开配置, 无 secret (变量插值由 .env 提供). 反复 scp 幂等.
+      - name: SCP infra configs (docker-compose + Caddyfile) to ECS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "infra/docker-compose.production.yml,infra/Caddyfile"
+          target: "/opt/xgzh/"
+          strip_components: 1  # 把 infra/ 前缀去掉, 文件直落 /opt/xgzh/
+
       # ─── 1.5 Sync .env from GitHub Secrets (Sprint 9 自动化) ──────────
       # 把 GH Secrets 里的 secrets 重写到服务器 /opt/xgzh/.env, 保留 .env.local 覆盖.
       # 加新 secret = 改本 step 的 envs: 列表 + heredoc + GH UI 加 secret. 这是 secret 来源唯一处.
@@ -359,8 +376,11 @@ jobs:
             docker compose -f docker-compose.production.yml run --rm \
               --entrypoint /app/.venv/bin/alembic xgzh-api current
 
-            # ── (e) 滚动重建 BE 容器 (用新镜像) ──
-            docker compose -f docker-compose.production.yml up -d xgzh-api
+            # ── (e) 滚动重建 BE 容器 + 起其他声明的 service (Sprint 12: caddy) ──
+            # 不带 service 名 = 起整个 stack: 已在跑的 service 如果配置/image 没变, 不重启;
+            # 配置变了 (docker-compose.yml 改) 或新加的 service (caddy) 会被创建/重建.
+            # 这样首次加 caddy 的 deploy 不需要手动 ssh up -d caddy.
+            docker compose -f docker-compose.production.yml up -d
 
             # ── (f) 显示当前容器状态 ──
             sleep 3

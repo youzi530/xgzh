@@ -10,9 +10,9 @@
 # 这里加白只针对 6 个明确审过的文件 + 其 sha256 checksum (改文件后需更新).
 
 fileignoreconfig:
-  # Sprint 9 自动化重写 → Sprint 12 加 H5 build + scp 后再次更新
+  # Sprint 9 自动化重写 → Sprint 12 加 H5 build + scp + 加 SCP infra configs 后再次更新
   - filename: .github/workflows/deploy.yml
-    checksum: f4d5de06f352934f78efc13f408df7e26eb46d6a23f80ea20f088b548425f03f
+    checksum: 5376ddb46526d577170e6bbcff74c61e6abb6c1452c7cdec91005b74ef077244
   - filename: docs/bug/2026.04.30-bug.md
     checksum: 85e0e5ea87f0e793d7bc6dcc710000f511e2fae08f1af2ed2c107c644e59e845
   # Sprint 12 把 CORS_ORIGINS 默认值改成含 xgzh.top 系列, checksum 更新
