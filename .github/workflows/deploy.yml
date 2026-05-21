@@ -366,28 +366,32 @@ jobs:
             sleep 3
             docker compose -f docker-compose.production.yml ps
 
-      # ─── 3. 健康检查 (5 retry × 5s = 25s) ──────────────────────
-      - name: Health check (retry 5×)
+      # ─── 3. 健康检查 (12 retry × 5s = 60s) ─────────────────────
+      # Sprint 12: 5 retry × 5s = 25s 边缘不够 (容器加载 routes/middleware 后启动慢
+      # 到 ~22s, 加 ssh + docker pull overhead 经常打边). 12 retry × 5s = 60s 给 ~2x
+      # 余量; 仍然 fail 几乎肯定是真挂了, 不是慢启动. 60s 仍 << alembic upgrade 上限.
+      - name: Health check (retry 12×)
         id: healthcheck
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          command_timeout: 2m
+          command_timeout: 3m
           script: |
             set -e
             echo "Waiting for xgzh-api to be healthy..."
-            for i in 1 2 3 4 5; do
-              if curl -fsS http://localhost:8000/healthz > /dev/null 2>&1; then
+            for i in $(seq 1 12); do
+              # 走 docker 内网调用 (Sprint 12 起 host 8000 不再公网, 但 docker exec 仍可 curl)
+              if docker exec xgzh-api curl -fsS http://localhost:8000/healthz > /dev/null 2>&1; then
                 echo "✅ Health check passed (attempt $i)"
-                curl -fsS http://localhost:8000/healthz
+                docker exec xgzh-api curl -fsS http://localhost:8000/healthz
                 exit 0
               fi
-              echo "Attempt $i/5 failed, sleep 5s..."
+              echo "Attempt $i/12 failed, sleep 5s..."
               sleep 5
             done
-            echo "❌ Health check failed after 5 attempts"
+            echo "❌ Health check failed after 12 attempts (60s)"
             echo "--- Last 50 lines of xgzh-api logs ---"
             docker logs xgzh-api --tail 50
             exit 1
@@ -413,8 +417,16 @@ jobs:
             sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=$PREVIOUS_TAG|" .env
             docker compose -f docker-compose.production.yml pull xgzh-api
             docker compose -f docker-compose.production.yml up -d xgzh-api
-            sleep 5
-            curl -fsS http://localhost:8000/healthz && echo "✅ Rolled back to $PREVIOUS_TAG"
+            # rollback 也走容器内 curl (Sprint 12 host 8000 不再公网)
+            for i in $(seq 1 12); do
+              if docker exec xgzh-api curl -fsS http://localhost:8000/healthz > /dev/null 2>&1; then
+                echo "✅ Rolled back to $PREVIOUS_TAG"
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "❌ Rollback also failed; manual intervention required"
+            exit 1
 
       # ─── 5. Summary ────────────────────────────────────────────
       - name: Deploy summary
