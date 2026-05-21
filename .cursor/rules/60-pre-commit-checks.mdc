@@ -1,0 +1,81 @@
+---
+description: 改完代码必须本地跑等价 CI 检查 (ruff + mypy + vue-tsc), 避免 CI 红回头改
+alwaysApply: true
+---
+
+# 本地等价 CI 检查 (强制规则)
+
+**任何 BE/FE 代码改动完成后, 必须在本地跑等价 CI 检查, 全绿后才视为完成.**
+
+这条规则的原因: CI 红了再补 fix-up commit 浪费回合, 用户每次都要回头说"CI 报错了"; 本地 30s 跑完 = 提前堵漏.
+
+## BE 改完必跑
+
+**改了 `apps/api/**/*.py` 或 `apps/api/alembic/**/*.py` 之后**, 在 `apps/api/` 跑:
+
+```bash
+make lint        # ruff check, ~2s
+make typecheck   # mypy strict, ~7s
+```
+
+或一次跑全 CI fast lane (lint + typecheck + 单元测试 + eval smoke):
+
+```bash
+make ci-smoke
+```
+
+涉及 ORM / schema / 新增 endpoint 时, 还要跑相关集成测试 (`XGZH_TEST_DATABASE_URL=... uv run pytest tests/test_<feature>.py`).
+
+## FE 改完必跑
+
+**改了 `apps/mp/**/*.{ts,tsx,vue}` 之后**, 在 `apps/mp/` 跑:
+
+```bash
+pnpm exec vue-tsc --noEmit   # ~5s
+```
+
+## 常见错误模式 (本地一定能挡住)
+
+### mypy 漏泛型参数
+
+```python
+# BAD: Missing type arguments for generic type "list"  [type-arg]
+base_filters: list = []
+
+# GOOD
+from sqlalchemy.sql import ColumnElement
+base_filters: list[ColumnElement[bool]] = []
+```
+
+### ruff I001 import 未排序
+
+`# noqa: F401` 保留死代码 import 会触发 I001; 没用就直接删, 注释用普通 comment 写在文件别处.
+
+### ruff SIM223 永远为假
+
+```python
+# BAD: ... and False 永远不可达, ruff SIM223
+if target is None or target.deleted_at is None and False:
+
+# GOOD: 直接拆出可读条件
+if target is None:
+    raise UserNotFoundError(...)
+```
+
+### vue-tsc APIError.statusCode vs status
+
+`APIError` 实例字段是 `statusCode` (number) 不是 `status`. 写错 tsc 直接红.
+
+## 例外
+
+- 只改 docs/spec/*.md → 跳过, 不影响代码
+- 只改 .cursor/rules/*.mdc → 跳过
+- 只改 .github/workflows → 跳过 (这是改 CI 自身)
+- 改 ts/tsx/vue 但只动注释/文案 → 仍要跑 vue-tsc (空格/缩进有可能影响 JSX 类型推断)
+
+## 跑测试的判断
+
+- 改 service / endpoint 逻辑 → 跑对应 `tests/test_<feature>.py` (集成测试)
+- 改 schema (Pydantic) → 跑 `make typecheck` + 该 schema 涉及的 test
+- 改 ORM / alembic → `uv run alembic upgrade head` 在 dev 库验证 + 跑全量 `make test-all`
+- 仅改 .vue 模板 → 跑 vue-tsc + 启动 mp/h5 dev 看 HMR 不报错

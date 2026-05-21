@@ -20,6 +20,7 @@ from decimal import Decimal
 from loguru import logger
 from sqlalchemy import and_, func, or_, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import ColumnElement
 
 from app.db.models import User
 from app.db.models.invite import InviteCode
@@ -88,7 +89,7 @@ async def list_users_with_aggregate(
     分页用 offset/limit 而非 cursor — admin 用 case 量小 (期望全表 < 1w),
     offset 性能可接受; cursor 等 Sprint 12 通用列表性能优化时再加.
     """
-    base_filters: list = []
+    base_filters: list[ColumnElement[bool]] = []
     if q:
         pattern = f"%{q.strip()}%"
         base_filters.append(
