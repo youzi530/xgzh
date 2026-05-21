@@ -24,10 +24,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import User
 from app.db.models.invite import InviteCode
 from app.db.models.vip import VipMembership
-from app.security.blacklist import blacklist_jti  # noqa: F401  # 暂未使用; admin 软删不拉黑 access (admin 不持有目标 access jti)
 from app.services import vip_service
 from app.utils.email import mask_email
 from app.utils.phone import mask_phone
+
+# 设计注: admin 软删不拉黑 target 的 access jti (admin 不持有目标 access payload);
+# 目标用户的 access 会因 status=0 在下一次 get_current_user 走 user_disabled 401 兜底,
+# 30min 内自然过期. 详见 soft_delete_user_by_admin docstring.
 
 
 class UserNotFoundError(Exception):
@@ -228,8 +231,6 @@ async def patch_user(
     - 软删用户也允许编辑 (admin 可能在恢复中); 但禁用/封禁本来就是软删后状态可接受
     """
     target = await session.get(User, target_user_id)
-    if target is None or target.deleted_at is None and False:  # noqa: SIM108 — keep readable
-        pass  # 不可达; 兜底 None check 在下面
     if target is None:
         raise UserNotFoundError(f"user {target_user_id} not found")
 
