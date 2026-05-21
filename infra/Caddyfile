@@ -1,0 +1,126 @@
+# Caddy 2 反代 + Let's Encrypt 自动 HTTPS (Sprint 12 / ICP 备案上线)
+# ─────────────────────────────────────────────────────────────────────
+#
+# 部署: 仅当本机已经放行 80/443 端口 + DNS A 记录已传播 + xgzh.top 已 ICP 备案
+# 才能拿到 LE 证书. 任一缺失 Caddy 会循环重试 (~5min 一次).
+#
+# 调试:
+#   docker logs xgzh-caddy --tail 100        # 看 ACME 流程 / 反代日志
+#   docker exec xgzh-caddy caddy validate --config /etc/caddy/Caddyfile   # 语法
+#   docker exec xgzh-caddy ls /data/caddy/certificates    # cert 是否签到
+#
+# 改本文件后:
+#   docker compose -f docker-compose.production.yml restart caddy
+#   (重启不会丢 cert, /data 是 named volume)
+#
+# 加新子域:
+#   1. 阿里云 DNS 加 A 记录指向 8.130.156.2
+#   2. 本文件加 site block
+#   3. ICP 备案审核状态 (子域通常自动覆盖, 但要确认)
+#   4. docker compose restart caddy
+
+
+# ─── api.xgzh.top: 反代 BE FastAPI ─────────────────────────────────────
+# uniapp mp / H5 / 第三方 client 都打这个域名.
+# CORS_ORIGINS 在 docker-compose.production.yml 已经默认含 api.xgzh.top + xgzh.top.
+api.xgzh.top {
+    reverse_proxy xgzh-api:8000 {
+        # 把真实 client IP 透传给 BE (用于 audit / rate limit / 阿里云 sms IP 上报)
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # BE 健康检查: 如果 /healthz 长时间挂, caddy 也会标记 unhealthy
+        health_uri /healthz
+        health_interval 30s
+        health_timeout 5s
+    }
+
+    encode gzip zstd
+
+    # 安全 headers — 防中间人 / 防 click-jack / 强制 HTTPS
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # 防被 nginx 等中间设施缓存 (BE 自己设 cache-control)
+        -Server
+    }
+
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+}
+
+
+# ─── xgzh.top: serve H5 静态 (uniapp build:h5 产物) ────────────────────
+# H5 入口. ts 在 utils/request.ts 里 H5 走相对路径, fetch /api/v1/* 由
+# caddy 同源代理到 BE (避免 CORS).
+xgzh.top {
+    root * /srv/h5
+    encode gzip zstd
+
+    # API 同源代理: H5 里 fetch /api/v1/auth/login → caddy 转 xgzh-api:8000/api/v1/auth/login
+    # 同源 = 无 CORS 麻烦, 浏览器 SameSite cookie 也能用 (虽然我们走 JWT 不用 cookie)
+    handle /api/* {
+        reverse_proxy xgzh-api:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+    handle /healthz {
+        reverse_proxy xgzh-api:8000
+    }
+    handle /version {
+        reverse_proxy xgzh-api:8000
+    }
+
+    # 头像静态文件 (BUG-S9-002 host volume): BE 在 /var/lib/xgzh/avatars 写, 由 BE
+    # 自己 serve (路由 /static/avatars/*); 这里 catch-all 仍能命中.
+    handle /static/* {
+        reverse_proxy xgzh-api:8000
+    }
+
+    # 静态文件 + SPA fallback (uniapp h5 是 SPA, 任何 404 路径都 fallback 到 index.html)
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
+
+    # 缓存策略:
+    # - 带 hash 的 build 产物 (assets/xxx-[hash].js) → 1 年强缓存
+    # - index.html → 永远不缓存 (保证升级即时生效)
+    @hashed_assets path /assets/*
+    header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
+
+    @html path /index.html /
+    header @html Cache-Control "no-cache, no-store, must-revalidate"
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+}
+
+
+# ─── www.xgzh.top: 暂未启用 ────────────────────────────────────────────
+# ICP 备案号是顶级域 xgzh.top, www 主机名通常自动包含, 但部分接入商要求单独申请.
+# 想启用 www: (1) 确认阿里云 DNS 有 www.xgzh.top A 记录 → 8.130.156.2;
+# (2) 确认工信部 / 阿里云接入备案表里 www 子域可用;
+# (3) 取消下面注释 + restart caddy.
+#
+# www.xgzh.top {
+#     redir https://xgzh.top{uri} permanent
+# }

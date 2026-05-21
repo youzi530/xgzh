@@ -221,8 +221,12 @@ services:
       # 默认复用 WECHAT_MP_APP_ID; 如果商户号绑了别的小程序, .env 里单独配 WECHATPAY_APP_ID 覆盖
       WECHATPAY_APP_ID: ${WECHATPAY_APP_ID:-}
       WECHATPAY_ORDER_IDEMPOTENCY_SECONDS: "300"
-    ports:
-      - "8000:8000"
+    # Sprint 12: 不再直接暴露 8000 公网, 由 caddy 反代 https 入口.
+    # 旧的 ports: - "8000:8000" 已废 (用 expose 让 docker 内网仍可访问).
+    # 紧急情况想绕过 caddy 直 curl 8000: ssh 上 ECS 后 ``curl http://xgzh-api:8000/healthz``,
+    # 或临时 ``docker compose ... up -d --force-recreate`` 切回 ports.
+    expose:
+      - "8000"
     volumes:
       # BUG-S9-002 头像 host volume mount, 容器重启 / 重建镜像后头像不丢.
       # ./data/avatars 相对 docker-compose.production.yml 所在目录 (即 /opt/xgzh-prod);
@@ -239,6 +243,44 @@ services:
       resources:
         limits:
           memory: 700M
+
+  # ─── Caddy 2 反代 + Let's Encrypt + H5 静态托管 ───────────────────────
+  # Sprint 12 (ICP 备案下来后启用):
+  # - api.xgzh.top → 反代 xgzh-api:8000 (HTTPS 自动)
+  # - xgzh.top, www.xgzh.top → serve /srv/h5 静态 (uniapp build:h5 产物)
+  # - 自动续期 cert (90 day, Caddy 默认 30 day 前续)
+  #
+  # 操作模式:
+  # - 改路由配置 → 改 ./Caddyfile + ``docker compose ... restart caddy``
+  # - 看 cert 状态: docker exec xgzh-caddy ls /data/caddy/certificates
+  # - 看 access log: docker logs xgzh-caddy --tail 100
+  #
+  # 重要: 80 端口必须放行 (Let's Encrypt HTTP-01 challenge 走 80), 不放行就签不到 cert.
+  caddy:
+    image: caddy:2-alpine
+    container_name: xgzh-caddy
+    restart: unless-stopped
+    depends_on:
+      xgzh-api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # Let's Encrypt 证书 + ACME 状态 (跨容器持久化)
+      - caddy_config:/config    # Caddy 自动生成 config snapshot
+      - ./h5-dist:/srv/h5:ro    # H5 静态文件; deploy.yml 在 build job 里 scp 进来
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 100M  # Caddy 轻量, 100M 足够
 
   # ─── PostgreSQL 16 + pgvector ───────────────────────────────────────
   postgres:
@@ -295,3 +337,13 @@ services:
       resources:
         limits:
           memory: 250M
+
+# ─── Named volumes ───────────────────────────────────────────────────
+# 与 services.X.volumes 里的 ./path 不同: named volume 由 docker daemon 管理,
+# 不绑定到 host 文件系统路径; 适合不需要从 host 直接编辑 / 备份的数据 (cert / ACME state).
+volumes:
+  caddy_data:
+    # Let's Encrypt 私钥 + 已签证书 + ACME challenge state. 容器重建不丢, 才能续期.
+    # 备份: docker run --rm -v xgzh-prod_caddy_data:/from alpine tar -czf /dev/stdout -C /from . > caddy_data.tar.gz
+  caddy_config:
+    # Caddy 自动生成的 config snapshot (运行时反射用). 丢失可重建, 不算关键数据.

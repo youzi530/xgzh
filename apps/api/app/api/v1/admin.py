@@ -23,13 +23,23 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Self
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel, Field
+from loguru import logger
+from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
+from app.db.models import User
 from app.schemas.admin_dashboard import DashboardResponse
+from app.schemas.auth import (
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+    _validate_password_format,
+)
 from app.schemas.feedback import (
     FeedbackAdminItem,
     FeedbackAdminListResponse,
@@ -45,6 +55,8 @@ from app.services import (
     feedback_service,
     pii_inventory_service,
 )
+from app.services.security_password import hash_password
+from app.utils.phone import mask_phone, normalize_phone
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -388,6 +400,146 @@ async def get_dashboard(
     return Response(
         content=payload.model_dump_json(),
         media_type="application/json",
+    )
+
+
+# ─── Ops 用户管理 (Sprint 12 / 上线整合) ──────────────────────────────
+# 设计动机: 短信资质未下来 + admin 13007458553 忘密码 → 自助登录死锁.
+# 这里提供"运维通道"绕过 SMS, 直接重置密码并(可选)授权 admin. 跟 sprint 10
+# /admin/users/* (JWT + is_admin 鉴权) 区别: 那条路是 in-app admin 用的 UI,
+# 这条路是无 admin 可用时的"破冰"通道, 走 X-Admin-Token, 服务器侧凭票入场.
+#
+# 不放进 Sprint 10 的 admin_users.py: 那个文件依赖 get_current_admin (JWT),
+# 跟这里的 X-Admin-Token 走两套鉴权; 强行混到一起会让"哪条路是哪种鉴权"很难读.
+
+
+class OpsSetPasswordRequest(BaseModel):
+    """Sprint 12 P0-1: ops 重置密码请求体.
+
+    - new_password: 复用业务密码强度规则 (6-32 字, 至少 1 数字)
+    - grant_admin: 默认 True (主用例: 解锁初始 admin); False 时不修改 is_admin,
+      但**绝不降级** — 已经是 admin 的不会因为 grant_admin=False 被卸权,
+      防误操作把唯一 admin 关在外面 (要降权请走 Sprint 10 /admin/users/{id}).
+    """
+
+    new_password: str = Field(
+        ...,
+        min_length=PASSWORD_MIN_LENGTH,
+        max_length=PASSWORD_MAX_LENGTH,
+        description=f"新密码 {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} 字, 至少含 1 数字",
+    )
+    grant_admin: bool = Field(
+        default=True,
+        description="是否同时 grant is_admin=true; False 时不动 is_admin (但绝不卸权)",
+    )
+
+    @model_validator(mode="after")
+    def _validate_format(self) -> Self:
+        _validate_password_format(self.new_password)
+        return self
+
+
+class OpsSetPasswordResponse(BaseModel):
+    """Sprint 12 P0-1: ops 重置密码响应."""
+
+    user_id: str
+    phone_masked: str = Field(description="脱敏手机号 (运维侧只看脱敏即可)")
+    is_admin: bool
+    message: str = Field(
+        default="Password reset successful.",
+        description="提示运维下一步动作",
+    )
+    security_warning: str = Field(
+        default=(
+            "旧 access token 在自然 30min TTL 内仍可用; 旧 refresh token 在 "
+            "30day TTL 内仍可换新 access. 主用例 (admin 自助解锁) 安全, 但安全事件强踢需要 "
+            "后续 sprint 加 password_version JWT claim 才能实现 (见 docs/bug/2026.05.21.md P2)."
+        ),
+        description="诚实告知运维当前实现的安全边界",
+    )
+
+
+@router.post(
+    "/users/by-phone/{phone}/set-password",
+    response_model=OpsSetPasswordResponse,
+    dependencies=[Depends(require_admin_token)],
+    summary="ops 通道直接重置用户密码 (绕过 SMS); 用于 admin 自助登录死锁兜底",
+    responses={
+        401: {"description": "X-Admin-Token 缺失或不匹配"},
+        404: {"description": "phone 没找到对应 user"},
+        503: {"description": "服务器没配 OPS_ADMIN_TOKEN"},
+    },
+)
+async def ops_set_user_password(
+    payload: OpsSetPasswordRequest,
+    phone: str = Path(
+        ...,
+        description="目标用户手机号; 接受 13xxx (默认 +86) 或 +8613xxx; URL 中 + 要 encode 为 %2B",
+        min_length=8,
+        max_length=20,
+    ),
+    session: AsyncSession = Depends(get_session),
+) -> OpsSetPasswordResponse:
+    """Sprint 12 P0-1: 凭 X-Admin-Token 直接重置任意用户密码.
+
+    使用场景:
+    - 初始 admin (13007458553) 忘密码 + 短信资质未下来 → 唯一解锁通道
+    - 用户主动求助"我手机收不到验证码也忘密码了" → 运维人工核身后重置
+    - 安全事件后强制重置某用户 + 踢下线所有设备
+
+    不走任何用户 JWT, 不需要被重置用户在线; 仅依赖 server 侧 OPS_ADMIN_TOKEN.
+
+    副作用:
+    1. password_hash 覆盖 (bcrypt cost=12)
+    2. (可选) is_admin 置 true; 永不卸权
+    3. 写一条 audit logger.info (Sprint 11 上线 audit_log 表后会持久化到 DB)
+
+    安全边界 (诚实声明):
+    - 旧 access token 在 JWT 自然 30min TTL 内仍可用 (无 password_version claim 机制)
+    - 旧 refresh token 在 30day TTL 内仍可换新 access (refresh blacklist 走 Redis 单
+      条 jti 撤销, 没有"该用户所有 refresh 一键失效"的机制; auth_sessions 表存在但
+      auth flow 未主动写入)
+    - 主用例 (admin 自助解锁登录) 不需要踢任何人, 这层"旧 token 仍可用"反而是优点
+      (admin 设备没换, 旧 access 顺其自然到期; ta 用新密码再登一次拿新 token 即可)
+    - 安全事件强踢需要后续 sprint 加 ``users.password_version`` + JWT ``pv`` claim
+      + 解码时校验 pv ≥ user.password_version. 当前不在 P0-1 范围.
+
+    安全: 这是 P0 高敏感接口. 任何拿到 OPS_ADMIN_TOKEN 的人 = 能改任意用户密码.
+    OPS_ADMIN_TOKEN 长度 ≥ 32 byte 随机串 + chmod 600 .env + 不进 git.
+    """
+    normalized_phone = normalize_phone(phone)
+    masked = mask_phone(normalized_phone)
+
+    target = (
+        await session.execute(select(User).where(User.phone == normalized_phone))
+    ).scalar_one_or_none()
+    if target is None:
+        logger.warning(
+            f"ops.set_password.user_not_found phone={masked}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "user_not_found",
+                "message": f"未找到 phone={masked} 对应用户",
+            },
+        )
+
+    new_hash = hash_password(payload.new_password)
+    target.password_hash = new_hash
+    if payload.grant_admin and not target.is_admin:
+        target.is_admin = True
+
+    await session.commit()
+
+    logger.warning(
+        f"ops.set_password.ok user_id={target.user_id} phone={masked} "
+        f"is_admin={target.is_admin} grant_admin={payload.grant_admin}"
+    )
+    return OpsSetPasswordResponse(
+        user_id=str(target.user_id),
+        phone_masked=masked,
+        is_admin=target.is_admin,
     )
 
 

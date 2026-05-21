@@ -39,10 +39,16 @@ if [ -z "$EXPECTED_SHA" ]; then
     EXPECTED_SHA=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "")
 fi
 
-API_HOST="${API_HOST:-8.130.156.2}"
-API_PORT="${API_PORT:-8000}"
-API_BASE="http://${API_HOST}:${API_PORT}"
-SSH_HOST="${SSH_HOST:-root@${API_HOST}}"
+API_HOST="${API_HOST:-api.xgzh.top}"
+API_PORT="${API_PORT:-443}"
+API_PROTO="${API_PROTO:-https}"
+API_BASE="${API_PROTO}://${API_HOST}"
+# port 不是 80/443 时显式加冒号 (运行在自定义端口的本地测试场景)
+if [ "$API_PORT" != "443" ] && [ "$API_PORT" != "80" ]; then
+    API_BASE="${API_PROTO}://${API_HOST}:${API_PORT}"
+fi
+# SSH host 仍走 IP (DNS 跟不上时不能阻塞运维)
+SSH_HOST="${SSH_HOST:-root@8.130.156.2}"
 DB_NAME="${DB_NAME:-xgzh}"
 
 # 终端色 (兼容 CI 无 tty)

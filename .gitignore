@@ -62,6 +62,10 @@ data/
 infra/data/
 infra/.env
 
+# Sprint 12: H5 build 产物 deploy 中转目录 (deploy.yml scp 进来; 仅 .gitkeep 入库)
+infra/h5-dist/*
+!infra/h5-dist/.gitkeep
+
 # ─── AI / artifacts ────────────────────────────────
 .ai-cache/
 prompts-debug/

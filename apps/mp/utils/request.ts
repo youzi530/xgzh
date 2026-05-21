@@ -11,10 +11,12 @@
 
 import { readAccessTokenSync, useAuthStore } from '@/stores/auth'
 
-// ⚠️ 内测期临时硬编码生产后端公网 IP (HTTP, 还没 HTTPS).
-// ICP 备案 + Caddy 上线后改成 'https://api.xgzh.top', 见 docs/deploy/01-2026-04-30-release/06-server-bootstrap-log.md §12.
-// 想本地连本地后端跑 e2e: 这里改回 'http://localhost:8000'.
-const DEFAULT_BASE_URL = 'http://8.130.156.2:8000'
+// Sprint 12: ICP 备案下来 + Caddy 反代上线后, 从 http://8.130.156.2:8000 切到
+// https://api.xgzh.top (HTTPS, 提审硬要求). Caddy 自动 Let's Encrypt 续期, BE 仍
+// 监听 :8000 但只在 docker 内网, 公网入口是 caddy:443 → xgzh-api:8000.
+// 想本地连本地后端跑 e2e: 这里改回 'http://localhost:8000' (mp 本地 dev) /
+// '' (H5 dev 走 manifest.json devServer.proxy).
+const DEFAULT_BASE_URL = 'https://api.xgzh.top'
 
 const LOGIN_PAGE_URL = '/pages/auth/login'
 

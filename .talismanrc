@@ -10,13 +10,14 @@
 # 这里加白只针对 6 个明确审过的文件 + 其 sha256 checksum (改文件后需更新).
 
 fileignoreconfig:
-  # Sprint 9 自动化重写 (加 Sync .env from GitHub Secrets step), checksum 更新
+  # Sprint 9 自动化重写 → Sprint 12 加 H5 build + scp 后再次更新
   - filename: .github/workflows/deploy.yml
-    checksum: 4dc58cd4573d81ecc099c8573033ed4cf4f39b430fb03390383d4bd52d2ecbc0
+    checksum: f4d5de06f352934f78efc13f408df7e26eb46d6a23f80ea20f088b548425f03f
   - filename: docs/bug/2026.04.30-bug.md
     checksum: 85e0e5ea87f0e793d7bc6dcc710000f511e2fae08f1af2ed2c107c644e59e845
+  # Sprint 12 把 CORS_ORIGINS 默认值改成含 xgzh.top 系列, checksum 更新
   - filename: infra/.env.production.example
-    checksum: 45e856480689ae72d7237a6cd01e593012c7f142b924e1e9c200babd948f7479
+    checksum: f6d2e25a816e23df3bae2fd730c0654cae417b5a5b29e1e4ba80dfc9315b655f
   # Sprint 9 environment 块大扩 (~30 → ~180 行), checksum 更新
   - filename: infra/docker-compose.production.yml
     checksum: 8c8172c5b6c592e9b830a4afd7b30af02affa46979ae082a389a92f53831dcaa
@@ -66,8 +67,19 @@ fileignoreconfig:
   # Sprint 9 IaC 迁移文档: 注释提到 secret / API key / token 字面量, 不是真值
   - filename: docs/deploy/02-2026-05-06-secrets-automation.md
     checksum: 165a6439c6704031c0da68508e178a108d6edba88ac55a9292b21d06ddb92fd0
-  # Sprint 12 (今日): verify-deploy.sh 烟雾测试脚本; 含 "401" / "PASS:" / "FAIL:"
-  # 等字符串字面量被 talisman entropy 误判. 脚本里无任何 secret (走 SSH key + GH gh
-  # cli + curl 公网 endpoint). 注: talisman 自己算的 checksum 跟 shasum 不一样, 用前者.
+  # OPS-S10: verify-deploy.sh 烟雾测试脚本; 含 "401" / "PASS:" / "FAIL:" 等字符串
+  # 被 talisman entropy 误判. 无任何 secret (走 SSH key + GH gh cli + curl 公网).
+  # 注: talisman 自己算的 checksum 跟 shasum 不一样, 用前者.
   - filename: infra/verify-deploy.sh
     checksum: e0d5a31b0294c604b59e82e53d12b51b7b01e318a679a01c689d554ac7027c2e
+  # ─── Sprint 12 (域名 / HTTPS / H5 上线) 误报白名单 ──────────────────────
+  # ops 重置密码 endpoint + 17 个测试 + Caddy + 域名切割相关文档. 真 secret 仍在 GH
+  # Secrets, talisman 误判触发字 = "password" 字段名 / Pydantic field name / curl example.
+  - filename: apps/api/app/api/v1/admin.py
+    checksum: cfc49ea0acdbb3846eaf3d7a8f8035b66fbea36c029abcb63e146172e129edcd
+  - filename: apps/api/tests/test_ops_set_password.py
+    checksum: e5bc5adfb76957aab4e7991dfa109ac59f89321389d650dfba820d7c415fff31
+  - filename: docs/bug/2026.05.21.md
+    checksum: aed230bd4682afd4b1c3c51b4cc927490133afe3096c61f1e30a16c9a995cc07
+  - filename: docs/deploy/03-2026-05-21-domain-cutover.md
+    checksum: 515a8802486374d2889ac6450b113c1963009f4be271e4e33c8f60a2a70ac215

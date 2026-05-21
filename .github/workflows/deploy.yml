@@ -109,6 +109,60 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ─── 1.2 Build H5 (Sprint 12 / ICP 备案下来后启用) ────────────────
+      # 跟 BE 镜像绑定同一 git sha. H5 没 sha 注入 (静态文件, 重启不重置), 但 push 时
+      # 整目录 mtime 会变, 浏览器靠 SPA 的 index.html no-cache + assets 文件名带 hash
+      # 实现增量更新. 手动 dispatch 指定 image_tag (rollback) 时, 不重 build H5 (跳过).
+      - name: Setup pnpm
+        if: ${{ github.event.inputs.image_tag == '' }}
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node.js 20 (with pnpm cache)
+        if: ${{ github.event.inputs.image_tag == '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install pnpm deps (root + mp)
+        if: ${{ github.event.inputs.image_tag == '' }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Build H5 (uniapp h5 dist)
+        if: ${{ github.event.inputs.image_tag == '' }}
+        # 输出到 apps/mp/dist/build/h5/. cd 进 apps/mp 跑 (uniapp 要 UNI_INPUT_DIR=.)
+        run: pnpm --filter ./apps/mp build:h5
+
+      - name: Clean ECS h5-dist before scp
+        if: ${{ github.event.inputs.image_tag == '' }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 1m
+          script: |
+            set -euo pipefail
+            mkdir -p /opt/xgzh/h5-dist
+            # 清空旧 dist 文件 (但保留目录, caddy 挂载的就是这个目录, rmdir 会让 caddy 失联)
+            find /opt/xgzh/h5-dist -mindepth 1 -delete
+            echo "✅ /opt/xgzh/h5-dist cleaned"
+
+      - name: SCP H5 dist to ECS
+        if: ${{ github.event.inputs.image_tag == '' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: "apps/mp/dist/build/h5/*"
+          target: "/opt/xgzh/h5-dist"
+          # 关键: strip_components=4 把 apps/mp/dist/build/h5/ 这 4 层前缀去掉,
+          # 让 index.html 等文件直接落在 /opt/xgzh/h5-dist/index.html (caddy serve root)
+          strip_components: 4
+
       # ─── 1.5 Sync .env from GitHub Secrets (Sprint 9 自动化) ──────────
       # 把 GH Secrets 里的 secrets 重写到服务器 /opt/xgzh/.env, 保留 .env.local 覆盖.
       # 加新 secret = 改本 step 的 envs: 列表 + heredoc + GH UI 加 secret. 这是 secret 来源唯一处.
@@ -372,7 +426,11 @@ jobs:
               echo ""
               echo "- **Image tag**: \`${{ steps.tag.outputs.tag }}\`"
               echo "- **Server**: ${{ secrets.DEPLOY_HOST }}"
-              echo "- **API**: http://${{ secrets.DEPLOY_HOST }}:8000"
+              echo "- **API (HTTPS)**: https://api.xgzh.top  (备份: http://${{ secrets.DEPLOY_HOST }}:8000 已废, 仅 docker 内网)"
+              echo "- **H5**: https://xgzh.top"
+              echo "- **Version**: https://api.xgzh.top/version"
+              echo ""
+              echo "本地校验: \`./xgzh/infra/verify-deploy.sh ${{ steps.tag.outputs.tag }}\`"
             } >> "$GITHUB_STEP_SUMMARY"
           else
             {
