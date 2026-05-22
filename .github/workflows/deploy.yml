@@ -159,9 +159,11 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           source: "apps/mp/dist/build/h5/*"
           target: "/opt/xgzh/h5-dist"
-          # 关键: strip_components=4 把 apps/mp/dist/build/h5/ 这 4 层前缀去掉,
+          # 关键: strip_components=5 把 apps/mp/dist/build/h5/ 这 5 层前缀去掉,
           # 让 index.html 等文件直接落在 /opt/xgzh/h5-dist/index.html (caddy serve root)
-          strip_components: 4
+          # bug-2026-05-22: 历史写 4 时实际落 /opt/xgzh/h5-dist/h5/index.html,
+          # caddy 404. drone-scp tar 里有 5 段 path (apps/mp/dist/build/h5/file).
+          strip_components: 5
 
       # ─── 1.4 Sync infra configs (docker-compose + Caddyfile) to ECS ──────
       # Sprint 12 前: 假设 docker-compose.production.yml 和 Caddyfile 是"首次手动 scp,
