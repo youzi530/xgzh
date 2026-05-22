@@ -10,7 +10,7 @@
 | DELETE | /api/v1/admin/flags/{name}    | 删 flag                             |
 | GET    | /api/v1/admin/metrics         | 当前窗口 错误率 / total / errors    |
 | POST   | /api/v1/admin/metrics/reset   | 清当前窗口计数 (debug / 灰度回滚后) |
-| GET    | /api/v1/admin/feedbacks       | 反馈列表 (分页 + filter)            |
+| GET    | /api/v1/admin/ops/feedbacks   | 反馈列表 (Sprint 11 从 /admin/feedbacks 迁移; ops X-Admin-Token) |
 | GET    | /api/v1/admin/pii-inventory   | PIPL 个人信息收集清单 + 实时计数    |
 | GET    | /api/v1/admin/dashboard       | 6 指标数据看板 (?days&format)       |
 
@@ -169,14 +169,23 @@ async def reset_metrics() -> None:
     await error_monitor.reset_metrics()
 
 
-# ─── Feedbacks 路由 (BE-S5-004) ────────────────────────────────────
+# ─── Feedbacks 路由 (BE-S5-004 / Sprint 11 迁移到 ops/feedbacks) ────────────
+#
+# Sprint 11 BE-S11-B02 引入了 JWT 鉴权的 ``/admin/feedbacks`` (admin_feedbacks.py).
+# 为了避免 URL 冲突, 老 X-Admin-Token 路径迁移到 ``/admin/ops/feedbacks``:
+# - 老 ops 脚本 (如果有) 需要把 URL 从 ``/admin/feedbacks`` → ``/admin/ops/feedbacks``
+# - 新 in-app admin (走 JWT + is_admin) 直接用 ``/admin/feedbacks``
+# - 两路径鉴权完全独立, 不冲突
+#
+# 迁移决策: Sprint 11 拍板 Q4=A 双系统并存, 但物理 URL 不能同时 own; 选 ops 移让 REST
+# 标准路径给 in-app admin, ops 脚本要 update, 但 ops 路径很少有人调 (没有 cron / dashboard 调用).
 
 
 @router.get(
-    "/feedbacks",
+    "/ops/feedbacks",
     response_model=FeedbackAdminListResponse,
     dependencies=[Depends(require_admin_token)],
-    summary="拉反馈列表 (admin)",
+    summary="拉反馈列表 (ops X-Admin-Token; Sprint 11 从 /admin/feedbacks 迁移过来)",
 )
 async def list_feedbacks(
     category: FeedbackCategory | None = Query(

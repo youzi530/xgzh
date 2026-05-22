@@ -81,7 +81,7 @@ class FeedbackAdminItem(BaseModel):
 
 
 class FeedbackAdminListResponse(BaseModel):
-    """admin 列表分页响应."""
+    """admin 列表分页响应 (老 ops 路径用; limit/offset)."""
 
     items: list[FeedbackAdminItem]
     total: int = Field(..., description="符合 filter 条件的总数 (用于分页)")
@@ -89,7 +89,83 @@ class FeedbackAdminListResponse(BaseModel):
     offset: int = Field(..., description="本页 offset")
 
 
+# ─── Sprint 11 BE-S11-B02: admin JWT 路径 schemas ─────────────────────
+
+AdminFeedbackStatus = Literal["pending", "reviewed", "resolved", "closed"]
+
+
+class AdminFeedbackListItem(BaseModel):
+    """JWT 路径 ``/admin/feedbacks`` 列表项. 比老 ``FeedbackAdminItem`` 多 admin 字段."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    feedback_id: uuid.UUID
+    user_id: uuid.UUID | None
+    category: FeedbackCategory
+    content: str
+    contact: str | None
+    app_version: str | None
+    platform: FeedbackPlatform
+    ip_inet: str | None = Field(default=None)
+    created_at: datetime
+    # Sprint 11 加
+    admin_status: AdminFeedbackStatus | None = Field(
+        default=None,
+        description="处理状态; NULL = 还没看过 (等同 pending)",
+    )
+    admin_note: str | None = None
+    reviewed_by: uuid.UUID | None = None
+    reviewed_at: datetime | None = None
+    deleted_at: datetime | None = None
+    is_deleted: bool = False
+
+    @field_validator("ip_inet", mode="before")
+    @classmethod
+    def _coerce_ip_to_str(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, ipaddress.IPv4Address | ipaddress.IPv6Address):
+            return str(v)
+        return v  # type: ignore[no-any-return]
+
+
+class AdminFeedbackDetail(AdminFeedbackListItem):
+    """JWT 路径 ``/admin/feedbacks/{id}`` 详情. 字段与列表项一致 (反馈本身字段少)."""
+
+
+class AdminFeedbackListResponse(BaseModel):
+    """JWT 路径分页响应 (page/page_size; 跟 admin_users 一致)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[AdminFeedbackListItem]
+    total: int = Field(ge=0)
+    page: int
+    page_size: int
+
+
+class AdminFeedbackUpdate(BaseModel):
+    """``PATCH /admin/feedbacks/{id}``. 全字段可选 (None = 不动)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    admin_status: AdminFeedbackStatus | None = Field(
+        default=None,
+        description="改处理状态; 自动填 reviewed_by / reviewed_at",
+    )
+    admin_note: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="admin 内部备注; 空字符串 = 清备注",
+    )
+
+
 __all__ = [
+    "AdminFeedbackDetail",
+    "AdminFeedbackListItem",
+    "AdminFeedbackListResponse",
+    "AdminFeedbackStatus",
+    "AdminFeedbackUpdate",
     "FeedbackAdminItem",
     "FeedbackAdminListResponse",
     "FeedbackCategory",

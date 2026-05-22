@@ -3,7 +3,9 @@
 公开端点 (匿名 + 登录都能调):
 - ``POST /api/v1/feedback`` 提交一条反馈
 
-admin 端列表查询走 ``app/api/v1/admin.py::list_feedbacks`` (X-Admin-Token 鉴权).
+admin 端列表查询走两条路径 (Sprint 11):
+- ``app/api/v1/admin_feedbacks.py`` JWT in-app 路径 ``/admin/feedbacks`` (推荐)
+- ``app/api/v1/admin.py::list_feedbacks`` X-Admin-Token ops 路径 ``/admin/ops/feedbacks``
 
 限流策略 (spec/12 §AC, 走 ``feedback_service.enforce_rate_limit``):
 - 匿名 IP: 5 min ≤ 3 条
@@ -60,7 +62,7 @@ async def create_feedback(
     user: User | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_session),
 ) -> FeedbackCreateResponse:
-    """收到一条用户反馈; admin 在 ``GET /api/v1/admin/feedbacks`` 拉清单."""
+    """收到一条用户反馈; admin 在 ``GET /api/v1/admin/feedbacks`` (JWT) 或 ``/admin/ops/feedbacks`` (X-Admin-Token) 拉清单."""
     user_id = user.user_id if user is not None else None
     client_ip = _resolve_client_ip(request)
 

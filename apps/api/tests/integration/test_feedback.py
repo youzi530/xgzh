@@ -50,7 +50,7 @@ async def test_anon_post_feedback_succeeds(client: httpx.AsyncClient) -> None:
 
     # admin 列表能拉到
     list_res = await client.get(
-        "/api/v1/admin/feedbacks", headers={"X-Admin-Token": ADMIN_TOKEN}
+        "/api/v1/admin/ops/feedbacks", headers={"X-Admin-Token": ADMIN_TOKEN}
     )
     assert list_res.status_code == 200
     items = list_res.json()["items"]
@@ -151,7 +151,7 @@ async def test_admin_list_filter_by_category_and_platform(
     h = {"X-Admin-Token": ADMIN_TOKEN}
 
     # 全列: 3 条
-    res = await client.get("/api/v1/admin/feedbacks", headers=h)
+    res = await client.get("/api/v1/admin/ops/feedbacks", headers=h)
     assert res.status_code == 200
     body = res.json()
     assert body["total"] == 3
@@ -161,21 +161,21 @@ async def test_admin_list_filter_by_category_and_platform(
 
     # filter category=bug → 2 条
     res = await client.get(
-        "/api/v1/admin/feedbacks?category=bug", headers=h
+        "/api/v1/admin/ops/feedbacks?category=bug", headers=h
     )
     assert res.status_code == 200
     assert res.json()["total"] == 2
 
     # filter platform=h5 → 2 条 (bug+h5, feature+h5)
     res = await client.get(
-        "/api/v1/admin/feedbacks?platform=h5", headers=h
+        "/api/v1/admin/ops/feedbacks?platform=h5", headers=h
     )
     assert res.status_code == 200
     assert res.json()["total"] == 2
 
     # filter 双条件 category=bug AND platform=h5 → 1 条
     res = await client.get(
-        "/api/v1/admin/feedbacks?category=bug&platform=h5", headers=h
+        "/api/v1/admin/ops/feedbacks?category=bug&platform=h5", headers=h
     )
     assert res.status_code == 200
     body = res.json()
@@ -185,7 +185,7 @@ async def test_admin_list_filter_by_category_and_platform(
 
     # 分页 limit=1: 第二页能拿到
     res = await client.get(
-        "/api/v1/admin/feedbacks?limit=1&offset=1", headers=h
+        "/api/v1/admin/ops/feedbacks?limit=1&offset=1", headers=h
     )
     assert res.status_code == 200
     body = res.json()
@@ -199,14 +199,14 @@ async def test_admin_list_filter_by_category_and_platform(
 
 
 async def test_admin_feedbacks_requires_token(client: httpx.AsyncClient) -> None:
-    res = await client.get("/api/v1/admin/feedbacks")
+    res = await client.get("/api/v1/admin/ops/feedbacks")
     assert res.status_code == 401
     assert res.json()["detail"]["code"] == "admin_token_invalid"
 
 
 async def test_admin_feedbacks_wrong_token(client: httpx.AsyncClient) -> None:
     res = await client.get(
-        "/api/v1/admin/feedbacks", headers={"X-Admin-Token": "wrong"}
+        "/api/v1/admin/ops/feedbacks", headers={"X-Admin-Token": "wrong"}
     )
     assert res.status_code == 401
 
@@ -230,7 +230,7 @@ async def test_red_word_in_content_does_not_block(client: httpx.AsyncClient) -> 
     assert res.status_code == 201
 
     list_res = await client.get(
-        "/api/v1/admin/feedbacks", headers={"X-Admin-Token": ADMIN_TOKEN}
+        "/api/v1/admin/ops/feedbacks", headers={"X-Admin-Token": ADMIN_TOKEN}
     )
     items = list_res.json()["items"]
     assert len(items) == 1

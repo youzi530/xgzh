@@ -26,16 +26,25 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Literal
 
 from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import ColumnElement
 
 from app.cache import RateLimitExceeded, get_redis_client
-from app.db.models import Feedback
+from app.db.models import Feedback, User
 from app.schemas.feedback import FeedbackCategory, FeedbackPlatform
 from app.services.compliance import scan as _compliance_scan
+
+# Sprint 11 BE-S11-B01: admin 处理状态枚举
+AdminFeedbackStatus = Literal["pending", "reviewed", "resolved", "closed"]
+
+
+class FeedbackNotFoundError(Exception):
+    """目标 feedback_id 不存在或已硬删 (软删的不抛, 由 include_deleted 控制)."""
 
 # 限流配额 (spec/12 §BE-S5-004 AC)
 _ANON_RATE_TIMES = 3
@@ -146,7 +155,7 @@ async def list_feedbacks(
 ) -> tuple[list[Feedback], int]:
     """admin 列表 + filter, 返 (items, total).
 
-    总数与列表分两次查询; 反馈量级低不需要 cursor pagination.
+    Sprint 5 ops 通道 (X-Admin-Token) 用 — 行为保持: 不过滤软删, limit/offset 分页.
     """
     base_filters = []
     if category is not None:
@@ -168,3 +177,200 @@ async def list_feedbacks(
         .all()
     )
     return list(rows), int(total)
+
+
+# ─── Sprint 11 BE-S11-B01: admin 工作流 service ──────────────────────
+
+
+async def admin_list_feedbacks(
+    session: AsyncSession,
+    *,
+    q: str | None = None,
+    category: FeedbackCategory | None = None,
+    platform: FeedbackPlatform | None = None,
+    admin_status: AdminFeedbackStatus | None = None,
+    include_deleted: bool = False,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[Feedback], int]:
+    """admin JWT 路径分页 + 多维 filter; 返 (items, total).
+
+    与老 ops ``list_feedbacks`` 的区别:
+    - page/page_size 分页 (跟 admin_users 一致), 老路径 limit/offset 保持
+    - 默认隐藏软删 (deleted_at NOT NULL), 想看显式 ``include_deleted=true``
+    - 加 ``q`` 模糊搜 content/contact (ilike)
+    - 加 ``admin_status`` filter (NULL 视为 "pending")
+    """
+    base_filters: list[ColumnElement[bool]] = []
+    if not include_deleted:
+        base_filters.append(Feedback.deleted_at.is_(None))
+    if category is not None:
+        base_filters.append(Feedback.category == category)
+    if platform is not None:
+        base_filters.append(Feedback.platform == platform)
+    if admin_status is not None:
+        if admin_status == "pending":
+            # NULL or "pending" 都视为 pending (省 backfill)
+            base_filters.append(
+                (Feedback.admin_status.is_(None))
+                | (Feedback.admin_status == "pending")
+            )
+        else:
+            base_filters.append(Feedback.admin_status == admin_status)
+    if q:
+        like = f"%{q.strip()}%"
+        base_filters.append(
+            Feedback.content.ilike(like) | Feedback.contact.ilike(like)
+        )
+
+    count_stmt = select(func.count()).select_from(Feedback)
+    list_stmt = select(Feedback).order_by(Feedback.created_at.desc())
+    for f in base_filters:
+        count_stmt = count_stmt.where(f)
+        list_stmt = list_stmt.where(f)
+
+    total = (await session.execute(count_stmt)).scalar_one()
+    offset = max(page - 1, 0) * page_size
+    rows = (
+        (await session.execute(list_stmt.limit(page_size).offset(offset)))
+        .scalars()
+        .all()
+    )
+    return list(rows), int(total)
+
+
+async def admin_get_feedback(
+    session: AsyncSession,
+    feedback_id: uuid.UUID,
+    *,
+    include_deleted: bool = True,
+) -> Feedback:
+    """admin 视角查单 feedback. 默认 ``include_deleted=True`` (排查软删的需要).
+
+    Raises:
+        FeedbackNotFoundError: id 物理不存在 (即便 include_deleted=True 也查不到)
+    """
+    stmt = select(Feedback).where(Feedback.feedback_id == feedback_id)
+    if not include_deleted:
+        stmt = stmt.where(Feedback.deleted_at.is_(None))
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise FeedbackNotFoundError(f"feedback_id={feedback_id} not found")
+    return row
+
+
+async def update_feedback(
+    session: AsyncSession,
+    *,
+    admin: User,
+    feedback_id: uuid.UUID,
+    admin_status: AdminFeedbackStatus | None = None,
+    admin_note: str | None = None,
+) -> Feedback:
+    """admin 改 feedback 处理状态 + 内部备注.
+
+    不能改 ``content`` (用户原文不可篡改; PIPL 合规风险), 路由层 schema 已隔离.
+    传 None 视为不动该字段 (跟 Pydantic ``exclude_unset`` 配合).
+
+    每次 admin_status 变化都更新 ``reviewed_by`` / ``reviewed_at`` (记录最后处理人).
+    admin_note 单独改不动 reviewed_* (admin 只是补备注, 不算"处理过").
+
+    Raises:
+        FeedbackNotFoundError: id 不存在或已软删 (软删的禁改; admin 想改先恢复)
+    """
+    row = (
+        await session.execute(
+            select(Feedback).where(
+                Feedback.feedback_id == feedback_id,
+                Feedback.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise FeedbackNotFoundError(
+            f"feedback_id={feedback_id} not found or already soft-deleted"
+        )
+
+    changed = []
+    if admin_status is not None and row.admin_status != admin_status:
+        row.admin_status = admin_status
+        row.reviewed_by = admin.user_id
+        row.reviewed_at = datetime.now(UTC)
+        changed.extend(["admin_status", "reviewed_by", "reviewed_at"])
+    if admin_note is not None:
+        # 空字符串视为清备注
+        new_note = admin_note if admin_note.strip() else None
+        if row.admin_note != new_note:
+            row.admin_note = new_note
+            changed.append("admin_note")
+
+    if not changed:
+        logger.info(f"feedback.admin_update.noop id={feedback_id} admin={admin.user_id}")
+        return row
+
+    await session.commit()
+    await session.refresh(row)
+    logger.warning(
+        f"feedback.admin_update.ok id={feedback_id} admin={admin.user_id} fields={changed}"
+    )
+    return row
+
+
+async def soft_delete_feedback(
+    session: AsyncSession,
+    *,
+    admin: User,
+    feedback_id: uuid.UUID,
+) -> Feedback:
+    """软删 feedback (deleted_at = NOW). 已删的视为幂等成功.
+
+    Raises:
+        FeedbackNotFoundError: id 物理不存在
+    """
+    row = (
+        await session.execute(
+            select(Feedback).where(Feedback.feedback_id == feedback_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise FeedbackNotFoundError(f"feedback_id={feedback_id} not found")
+    if row.deleted_at is None:
+        row.deleted_at = datetime.now(UTC)
+        await session.commit()
+        await session.refresh(row)
+        logger.warning(
+            f"feedback.admin_soft_delete.ok id={feedback_id} admin={admin.user_id}"
+        )
+    else:
+        logger.info(
+            f"feedback.admin_soft_delete.noop id={feedback_id} admin={admin.user_id} already_deleted"
+        )
+    return row
+
+
+async def restore_feedback(
+    session: AsyncSession,
+    *,
+    admin: User,
+    feedback_id: uuid.UUID,
+) -> Feedback:
+    """恢复软删 (deleted_at=NULL). 没软删的 noop.
+
+    Raises:
+        FeedbackNotFoundError: id 物理不存在
+    """
+    row = (
+        await session.execute(
+            select(Feedback).where(Feedback.feedback_id == feedback_id)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise FeedbackNotFoundError(f"feedback_id={feedback_id} not found")
+    if row.deleted_at is not None:
+        row.deleted_at = None
+        await session.commit()
+        await session.refresh(row)
+        logger.warning(
+            f"feedback.admin_restore.ok id={feedback_id} admin={admin.user_id}"
+        )
+    return row

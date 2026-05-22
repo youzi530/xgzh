@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     admin,
     admin_brokers,
+    admin_feedbacks,
     admin_users,
     agent,
     articles,
@@ -47,5 +48,6 @@ router.include_router(feature_flags.router)
 router.include_router(admin.router)
 router.include_router(admin_users.router)
 router.include_router(admin_brokers.router)
+router.include_router(admin_feedbacks.router)
 
 __all__ = ["router"]

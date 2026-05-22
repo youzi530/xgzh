@@ -373,6 +373,11 @@ function gotoAdminBrokers() {
   uni.navigateTo({ url: '/pages/admin/brokers' })
 }
 
+// Sprint 11 FE-S11-B02: admin 反馈管理入口.
+function gotoAdminFeedbacks() {
+  uni.navigateTo({ url: '/pages/admin/feedbacks' })
+}
+
 function copyInviteCode() {
   const code = user.value?.invite_code
   if (!code) return
@@ -709,6 +714,18 @@ onUnmounted(() => {
             <view class="entry-text">
               <text class="entry-title">券商管理</text>
               <text class="entry-desc">新建 / 编辑开户链接 / 上下架 / 软删</text>
+            </view>
+          </view>
+          <view class="entry-right">
+            <text class="entry-arrow">›</text>
+          </view>
+        </view>
+        <view class="entry-item" @tap="gotoAdminFeedbacks">
+          <view class="entry-left">
+            <text class="entry-icon entry-icon-admin">📝</text>
+            <view class="entry-text">
+              <text class="entry-title">反馈管理</text>
+              <text class="entry-desc">查看 / 处理 / 备注 / 软删</text>
             </view>
           </view>
           <view class="entry-right">

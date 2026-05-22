@@ -1,13 +1,21 @@
-"""反馈 ORM: Feedback (Sprint 5 BE-S5-004).
+"""反馈 ORM: Feedback (Sprint 5 BE-S5-004 + Sprint 11 BE-S11-B01 admin 工作流).
 
-最轻量收集: 用户提交一行 → admin 在面板里读. 不上工单状态机.
+最轻量收集 (Sprint 5): 用户提交一行 → admin 读. 不上工单状态机.
+
+Sprint 11 加 admin 处理工作流字段:
+- ``admin_status`` 处理状态 (pending/reviewed/resolved/closed; NULL = 等同 pending)
+- ``admin_note`` admin 间内部备注 (用户看不到)
+- ``reviewed_by`` / ``reviewed_at`` 谁/啥时候处理的
+- ``deleted_at`` 软删 (跟其它表统一; 30d 后 cron 硬删)
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
+    DateTime,
     ForeignKey,
     String,
     Text,
@@ -17,18 +25,22 @@ from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-from app.db.models._mixins import TimestampMixin
+from app.db.models._mixins import SoftDeleteMixin, TimestampMixin
 
 
-class Feedback(Base, TimestampMixin):
+class Feedback(Base, TimestampMixin, SoftDeleteMixin):
     """用户反馈条目.
 
-    继承 ``TimestampMixin`` 拿 ``created_at`` / ``updated_at`` (反馈不可改, 但
-    mixin 一致性 > 微优化); 不继承 ``SoftDeleteMixin`` — 反馈是审计数据, 不软删,
-    admin 真删 = DELETE.
+    继承 ``TimestampMixin`` (created_at / updated_at) + ``SoftDeleteMixin``
+    (deleted_at, Sprint 11 加上去). admin 软删 → ``deleted_at = NOW()``,
+    30 天后 cron 硬删 (PIPL 最小化).
 
-    索引在 alembic 0009 用裸 SQL 创建 (DESC NULLS / partial 等 SQLAlchemy 不好直白
-    表达), 这里 ORM 层不再重复声明.
+    Sprint 5 ``list_feedbacks`` 走 ``X-Admin-Token`` ops 路径, 当时不暴露 deleted_at
+    (因为没有). Sprint 11 加 JWT in-app 路径 ``/admin/feedbacks`` 默认隐藏 deleted_at
+    NOT NULL 的行, ops 路径行为不变 (兼容 ops 旧脚本).
+
+    索引在 alembic 0009 用裸 SQL 创建 (DESC NULLS / partial), ORM 层不重复声明.
+    admin 工作流字段量级低不加额外索引.
     """
 
     __tablename__ = "feedbacks"
@@ -71,4 +83,30 @@ class Feedback(Base, TimestampMixin):
         INET(),
         nullable=True,
         comment="客户端 IP (PIPL 90d 留存)",
+    )
+
+    # ─── Sprint 11 BE-S11-B01 admin 工作流字段 ──────────────────────
+    admin_status: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+        comment=(
+            "admin 处理状态: pending / reviewed / resolved / closed; "
+            "NULL = 没人看过 (等同 pending)"
+        ),
+    )
+    admin_note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="admin 内部备注 (admin 间协作; 不暴露给用户)",
+    )
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        comment="处理人 admin user_id; 注销时 SET NULL",
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="处理时间戳 (跟 reviewed_by 一起填/清)",
     )
