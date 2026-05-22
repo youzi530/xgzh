@@ -99,3 +99,8 @@ fileignoreconfig:
     checksum: 10f9ae4f6db61ceca3b864186a3d4969710b8d354430ccfb970d17e4ed448d63
   - filename: apps/mp/pages/admin/feedbacks.vue
     checksum: d7707e998b3ed4c1cc27be957c8becfa6cce9915c5ebc683ea2e1d9fa59d944b
+  # Module C
+  - filename: apps/mp/pages/admin/community-post-detail.vue
+    checksum: 9faa26358c28c8e6af2045519bd361d546ad219da85b0de165cf94c867342ff7
+  - filename: apps/mp/pages/admin/community.vue
+    checksum: e674f763697b9f9a8d777d57975200691ce6a52f30adfe3c0c5ba43dc03ab8e5

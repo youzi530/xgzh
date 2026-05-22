@@ -68,6 +68,60 @@ class PostListResponse(BaseModel):
     page_size: int
 
 
+# ─── Sprint 11 BE-S11-C02: admin 管理 schemas ─────────────────────────
+
+
+class AdminPostListItem(BaseModel):
+    """admin 视角帖子条目. 比 PostDetailResponse 少 is_liked, 多 reviewed_by/at."""
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    user_nickname: str | None = None
+    user_avatar_url: str | None = None
+    content: str
+    status: PostStatus
+    visibility: PostVisibility
+    category: PostCategory
+    related_ipo_code: str | None = None
+    likes_count: int
+    comments_count: int
+    reports_count: int
+    rejection_reason: RejectionReason | str | None = None
+    reviewed_by: uuid.UUID | None = None
+    reviewed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminPostListResponse(BaseModel):
+    items: list[AdminPostListItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminPostStatusUpdate(BaseModel):
+    """``PATCH /admin/community/posts/{id}/status``."""
+
+    status: PostStatus = Field(
+        ..., description="published / pending / rejected / deleted / hidden"
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=200,
+        description="处理原因 (admin 留痕迹用; 写入 rejection_reason 字段)",
+    )
+
+
+class AdminPostVisibilityUpdate(BaseModel):
+    """``PATCH /admin/community/posts/{id}/visibility``."""
+
+    visibility: PostVisibility = Field(
+        ...,
+        description="public / self_only; self_only 等同于'软隐藏', 不动 status",
+    )
+
+
 # ─── Comment ──────────────────────────────────────────────────────────
 
 

@@ -176,6 +176,23 @@
             }
         },
         {
+            "path": "pages/admin/community",
+            "style": {
+                "navigationBarTitleText": "社区管理",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white",
+                "enablePullDownRefresh": true
+            }
+        },
+        {
+            "path": "pages/admin/community-post-detail",
+            "style": {
+                "navigationBarTitleText": "帖子详情",
+                "navigationBarBackgroundColor": "#0B1220",
+                "navigationBarTextStyle": "white"
+            }
+        },
+        {
             "path": "pages/community/edit",
             "style": {
                 "navigationBarTitleText": "发布动态",

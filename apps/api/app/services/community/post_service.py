@@ -294,3 +294,227 @@ async def delete_post(
     post.visibility = "self_only"
     await session.flush()
     logger.info(f"community.post.delete user={user_id} post={post_id}")
+
+
+# ─── Sprint 11 BE-S11-C01: admin 管理方法 ────────────────────────────
+#
+# 拍板 Q2=B 简化版: 不实现完整审核队列, 提供:
+# - 列表 (含全部 status / visibility, 不脱敏)
+# - PATCH status (强制改 published/pending/rejected/deleted/hidden)
+# - PATCH visibility (强制改 public/self_only, 不动 status)
+# - DELETE (= PATCH status=deleted, 但 endpoint 更明确)
+#
+# 不暴露:
+# - 改用户原文 content (PIPL 防篡改, 也不需要)
+# - 改 user_id (审计字段)
+# - 改 category / related_ipo_code (这是创作元数据, 改了等于篡改用户意图)
+
+
+async def admin_list_posts(
+    session: AsyncSession,
+    *,
+    q: str | None = None,
+    status_filter: str | None = None,
+    visibility: str | None = None,
+    category: str | None = None,
+    has_reports: bool | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    """admin 视角列表 — 含全 status, 含 hidden / pending / rejected / deleted.
+
+    与用户 ``list_posts`` 的区别:
+    - 不过滤 status (admin 默认看所有)
+    - 加 ``q`` 模糊搜 content
+    - 加 ``has_reports`` filter (举报过的帖子, 便于优先处理)
+    - 不返 is_liked (admin 视角没意义)
+    """
+    page = max(1, page)
+    page_size = max(1, min(100, page_size))
+    offset = (page - 1) * page_size
+
+    from sqlalchemy.sql import ColumnElement
+
+    base_filters: list[ColumnElement[bool]] = []
+    if status_filter:
+        base_filters.append(CommunityPost.status == status_filter)
+    if visibility:
+        base_filters.append(CommunityPost.visibility == visibility)
+    if category:
+        base_filters.append(CommunityPost.category == category)
+    if q:
+        base_filters.append(CommunityPost.content.ilike(f"%{q.strip()}%"))
+    if has_reports is True:
+        from app.db.models import CommunityReport
+
+        sub_q = select(CommunityReport.target_id).where(
+            CommunityReport.target_type == "post"
+        )
+        base_filters.append(CommunityPost.id.in_(sub_q))
+
+    count_stmt = select(func.count(CommunityPost.id))
+    list_stmt = (
+        select(CommunityPost, User.nickname, User.avatar_url)
+        .join(User, User.user_id == CommunityPost.user_id)
+        .order_by(CommunityPost.created_at.desc())
+    )
+    for f in base_filters:
+        count_stmt = count_stmt.where(f)
+        list_stmt = list_stmt.where(f)
+
+    total = int((await session.execute(count_stmt)).scalar() or 0)
+    rows = (
+        await session.execute(list_stmt.limit(page_size).offset(offset))
+    ).all()
+    items = [
+        {
+            "post": p,
+            "user_nickname": nickname,
+            "user_avatar_url": avatar_url,
+        }
+        for p, nickname, avatar_url in rows
+    ]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+async def admin_get_post(
+    session: AsyncSession, *, post_id: uuid.UUID
+) -> tuple[CommunityPost, dict[str, Any]]:
+    """admin 视角查单帖. 不过滤 status (含 deleted).
+
+    Raises:
+        PostNotFoundError: id 物理不存在
+    """
+    post = (
+        await session.execute(select(CommunityPost).where(CommunityPost.id == post_id))
+    ).scalar_one_or_none()
+    if post is None:
+        raise PostNotFoundError(f"post not found: {post_id}")
+    u = (
+        await session.execute(
+            select(User.nickname, User.avatar_url).where(User.user_id == post.user_id)
+        )
+    ).one_or_none()
+    return post, {
+        "user_nickname": u[0] if u else None,
+        "user_avatar_url": u[1] if u else None,
+    }
+
+
+ALLOWED_ADMIN_STATUS = {"published", "pending", "rejected", "deleted", "hidden"}
+ALLOWED_VISIBILITY = {"public", "self_only"}
+
+
+async def admin_update_post_status(
+    session: AsyncSession,
+    *,
+    admin: User,
+    post_id: uuid.UUID,
+    new_status: str,
+    reason: str | None = None,
+) -> CommunityPost:
+    """admin 强制改帖子 status. 同步更新 reviewed_by / reviewed_at.
+
+    Valid status: published / pending / rejected / deleted / hidden.
+    ``reason`` 写入 ``rejection_reason`` 字段 (即便不是 reject — 让 admin 留处理痕迹).
+
+    Raises:
+        PostNotFoundError: id 物理不存在
+        ValueError: status 非法
+    """
+    if new_status not in ALLOWED_ADMIN_STATUS:
+        raise ValueError(f"invalid status: {new_status!r}")
+
+    post = (
+        await session.execute(select(CommunityPost).where(CommunityPost.id == post_id))
+    ).scalar_one_or_none()
+    if post is None:
+        raise PostNotFoundError(f"post not found: {post_id}")
+
+    from datetime import UTC, datetime
+
+    post.status = new_status
+    post.reviewed_by = admin.user_id
+    post.reviewed_at = datetime.now(UTC)
+    if reason is not None:
+        post.rejection_reason = reason if reason.strip() else None
+    if new_status == "deleted":
+        post.visibility = "self_only"
+    await session.commit()
+    await session.refresh(post)
+    logger.warning(
+        f"community.admin.update_status admin={admin.user_id} post={post_id} "
+        f"new_status={new_status}"
+    )
+    return post
+
+
+async def admin_update_post_visibility(
+    session: AsyncSession,
+    *,
+    admin: User,
+    post_id: uuid.UUID,
+    new_visibility: str,
+) -> CommunityPost:
+    """admin 强制改 visibility. 不动 status (跟 update_status 区分).
+
+    Valid visibility: public / self_only.
+    ``self_only`` 等同于"软隐藏" — 帖子状态保持 published, 但其它用户看不到.
+
+    Raises:
+        PostNotFoundError: id 物理不存在
+        ValueError: visibility 非法
+    """
+    if new_visibility not in ALLOWED_VISIBILITY:
+        raise ValueError(f"invalid visibility: {new_visibility!r}")
+
+    post = (
+        await session.execute(select(CommunityPost).where(CommunityPost.id == post_id))
+    ).scalar_one_or_none()
+    if post is None:
+        raise PostNotFoundError(f"post not found: {post_id}")
+
+    from datetime import UTC, datetime
+
+    post.visibility = new_visibility
+    post.reviewed_by = admin.user_id
+    post.reviewed_at = datetime.now(UTC)
+    await session.commit()
+    await session.refresh(post)
+    logger.warning(
+        f"community.admin.update_visibility admin={admin.user_id} post={post_id} "
+        f"new_visibility={new_visibility}"
+    )
+    return post
+
+
+async def admin_delete_post(
+    session: AsyncSession,
+    *,
+    admin: User,
+    post_id: uuid.UUID,
+) -> CommunityPost:
+    """admin 强删 (= status='deleted'). 已 deleted 的幂等返回."""
+    post = (
+        await session.execute(select(CommunityPost).where(CommunityPost.id == post_id))
+    ).scalar_one_or_none()
+    if post is None:
+        raise PostNotFoundError(f"post not found: {post_id}")
+    if post.status != "deleted":
+        from datetime import UTC, datetime
+
+        post.status = "deleted"
+        post.visibility = "self_only"
+        post.reviewed_by = admin.user_id
+        post.reviewed_at = datetime.now(UTC)
+        await session.commit()
+        await session.refresh(post)
+        logger.warning(f"community.admin.delete admin={admin.user_id} post={post_id}")
+    else:
+        logger.info(f"community.admin.delete.noop admin={admin.user_id} post={post_id}")
+    return post
