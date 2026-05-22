@@ -104,3 +104,10 @@ fileignoreconfig:
     checksum: 9faa26358c28c8e6af2045519bd361d546ad219da85b0de165cf94c867342ff7
   - filename: apps/mp/pages/admin/community.vue
     checksum: e674f763697b9f9a8d777d57975200691ce6a52f30adfe3c0c5ba43dc03ab8e5
+  # Module D
+  - filename: apps/api/app/schemas/knowledge.py
+    checksum: 65885f1a149e8b04fe2f6144b36c2622d77350211c241e9bc5f6814a6088bfb4
+  - filename: apps/mp/pages/admin/knowledge.vue
+    checksum: 678955138fe082ddf685f8475600a66c06b60ae7854e97ce1d0cc374e0916e65
+  - filename: apps/mp/pages/admin/knowledge-edit.vue
+    checksum: 42926ae6ebc0e1e562af81265d19b719993e29114e456735d14a80b4c191e28c

@@ -383,6 +383,11 @@ function gotoAdminCommunity() {
   uni.navigateTo({ url: '/pages/admin/community' })
 }
 
+// Sprint 11 FE-S11-D06: admin 知识库管理入口.
+function gotoAdminKnowledge() {
+  uni.navigateTo({ url: '/pages/admin/knowledge' })
+}
+
 function copyInviteCode() {
   const code = user.value?.invite_code
   if (!code) return
@@ -743,6 +748,18 @@ onUnmounted(() => {
             <view class="entry-text">
               <text class="entry-title">社区管理</text>
               <text class="entry-desc">帖子审核 / 隐藏 / 软删</text>
+            </view>
+          </view>
+          <view class="entry-right">
+            <text class="entry-arrow">›</text>
+          </view>
+        </view>
+        <view class="entry-item" @tap="gotoAdminKnowledge">
+          <view class="entry-left">
+            <text class="entry-icon entry-icon-admin">📚</text>
+            <view class="entry-text">
+              <text class="entry-title">知识库管理</text>
+              <text class="entry-desc">新建 / 编辑 / 发布 / 删除</text>
             </view>
           </view>
           <view class="entry-right">

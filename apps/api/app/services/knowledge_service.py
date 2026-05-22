@@ -133,6 +133,174 @@ async def get_categories(
     return items, grand
 
 
+# ─── Sprint 11 BE-S11-D01: admin CRUD 方法 ─────────────────────────────
+
+
+class KnowledgeSlugTakenError(Exception):
+    """slug 已被占用 — router 转 409."""
+
+
+async def admin_list_articles(
+    session: AsyncSession,
+    *,
+    q: str | None = None,
+    category: str | None = None,
+    level: int | None = None,
+    is_published: bool | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[KnowledgeArticle], int]:
+    """admin 视角列表. 不强制 is_published=true (能看草稿).
+
+    新增 filter:
+    - ``q`` 模糊搜 title (ilike)
+    - ``is_published`` 显式 True/False 才生效 (None=全部)
+    """
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 1
+    if page_size > 100:
+        page_size = 100
+    offset = (page - 1) * page_size
+
+    base_filters: list[Any] = []
+    if category is not None:
+        base_filters.append(KnowledgeArticle.category == category)
+    if level is not None:
+        base_filters.append(KnowledgeArticle.level == level)
+    if is_published is not None:
+        base_filters.append(KnowledgeArticle.is_published.is_(is_published))
+    if q:
+        base_filters.append(KnowledgeArticle.title.ilike(f"%{q.strip()}%"))
+
+    count_stmt = select(func.count()).select_from(KnowledgeArticle)
+    list_stmt = select(KnowledgeArticle).order_by(
+        KnowledgeArticle.updated_at.desc(),
+    )
+    for f in base_filters:
+        count_stmt = count_stmt.where(f)
+        list_stmt = list_stmt.where(f)
+
+    total = (await session.execute(count_stmt)).scalar_one()
+    rows = (
+        (await session.execute(list_stmt.limit(page_size).offset(offset)))
+        .scalars()
+        .all()
+    )
+    return list(rows), int(total)
+
+
+async def admin_get_article(
+    session: AsyncSession, *, article_id: uuid.UUID
+) -> KnowledgeArticle:
+    """admin 按 id 取详情. 不过滤 is_published.
+
+    Raises:
+        KnowledgeNotFoundError: id 不存在
+    """
+    stmt = select(KnowledgeArticle).where(KnowledgeArticle.id == article_id)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise KnowledgeNotFoundError(f"article id={article_id} not found")
+    return row
+
+
+async def create_article(
+    session: AsyncSession,
+    *,
+    slug: str,
+    title: str,
+    category: str,
+    content_md: str,
+    tags: list[str] | None = None,
+    level: int = 1,
+    toc_json: list[dict[str, Any]] | None = None,
+    is_published: bool = False,
+    source: str = "curated",
+    source_url: str | None = None,
+    legal_disclaimer: str | None = None,
+) -> KnowledgeArticle:
+    """新建文章. slug 重复 raise.
+
+    Raises:
+        KnowledgeSlugTakenError: slug 已存在
+    """
+    existing = (
+        await session.execute(
+            select(KnowledgeArticle.id).where(KnowledgeArticle.slug == slug)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise KnowledgeSlugTakenError(f"slug {slug!r} already exists")
+
+    article = KnowledgeArticle(
+        slug=slug,
+        title=title,
+        category=category,
+        tags=tags,
+        level=level,
+        content_md=content_md,
+        toc_json=toc_json,
+        is_published=is_published,
+        source=source,
+        source_url=source_url,
+        legal_disclaimer=legal_disclaimer,
+    )
+    session.add(article)
+    await session.commit()
+    await session.refresh(article)
+    logger.info(
+        f"knowledge.admin.create slug={slug} category={category} "
+        f"is_published={is_published}"
+    )
+    return article
+
+
+async def update_article(
+    session: AsyncSession,
+    *,
+    article_id: uuid.UUID,
+    patch: dict[str, Any],
+) -> KnowledgeArticle:
+    """部分更新. slug 不允许改 (在 router 层拦掉; service 层就不接受这个 key).
+
+    ``patch`` 是 dict (router 用 ``model_dump(exclude_unset=True)`` 传过来).
+    None 字段会被赋成 NULL — 注意 router 端如果想要"不动" 就别在 patch 里传这个 key.
+
+    Raises:
+        KnowledgeNotFoundError: id 不存在
+    """
+    article = await admin_get_article(session, article_id=article_id)
+    for k, v in patch.items():
+        if k == "slug":
+            continue  # 防御性: slug 永远不动
+        setattr(article, k, v)
+    await session.commit()
+    await session.refresh(article)
+    logger.info(
+        f"knowledge.admin.update id={article_id} fields={list(patch.keys())}"
+    )
+    return article
+
+
+async def delete_article(
+    session: AsyncSession, *, article_id: uuid.UUID
+) -> None:
+    """硬删 (Knowledge 模型没 SoftDeleteMixin). 删除后 view_count 也清掉.
+
+    Raises:
+        KnowledgeNotFoundError: id 不存在
+    """
+    article = await admin_get_article(session, article_id=article_id)
+    await session.delete(article)
+    await session.commit()
+    logger.warning(f"knowledge.admin.delete id={article_id} slug={article.slug}")
+
+
+# ─── 公共: view count async ────────────────────────────────────────────
+
+
 async def bump_view_count(article_id: uuid.UUID) -> None:
     """异步 view_count + 1; 用 PG 原子 UPDATE 防 race.
 

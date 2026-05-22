@@ -5,6 +5,7 @@ from app.api.v1 import (
     admin_brokers,
     admin_community,
     admin_feedbacks,
+    admin_knowledge,
     admin_users,
     agent,
     articles,
@@ -51,5 +52,6 @@ router.include_router(admin_users.router)
 router.include_router(admin_brokers.router)
 router.include_router(admin_feedbacks.router)
 router.include_router(admin_community.router)
+router.include_router(admin_knowledge.router)
 
 __all__ = ["router"]
