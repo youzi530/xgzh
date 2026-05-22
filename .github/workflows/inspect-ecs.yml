@@ -1,0 +1,47 @@
+name: Inspect ECS (one-shot SSH 调试)
+
+# 用 workflow_dispatch 手动触发, 跑一段 SSH 命令到 ECS 上, 输出诊断信息.
+# 这是一次性诊断工具 (不部署任何东西), 安全可保留为永久 workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cmd:
+        description: "要执行的 shell 命令 (在 /opt/xgzh 目录下跑)"
+        required: false
+        default: |
+          echo "==== H5 dist 状态 ===="
+          ls -la /opt/xgzh/h5-dist/ | head -20
+          echo ""
+          echo "==== h5-dist 文件数 / 大小 ===="
+          find /opt/xgzh/h5-dist -type f | wc -l
+          du -sh /opt/xgzh/h5-dist 2>/dev/null
+          echo ""
+          echo "==== index.html 头 5 行 (如有) ===="
+          head -5 /opt/xgzh/h5-dist/index.html 2>/dev/null || echo "(无 index.html)"
+          echo ""
+          echo "==== Caddy 容器状态 ===="
+          docker ps --filter name=xgzh-caddy --format "table {{.Names}}\t{{.Status}}\t{{.RunningFor}}"
+          echo ""
+          echo "==== Caddy mount /srv/h5 内容 (容器视角) ===="
+          docker exec xgzh-caddy ls -la /srv/h5/ 2>&1 | head -20
+          echo ""
+          echo "==== Caddy 最近 20 行 log ===="
+          docker logs xgzh-caddy --tail 20 2>&1
+
+jobs:
+  inspect:
+    name: SSH 跑命令并输出
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run on ECS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 2m
+          script: |
+            set -uo pipefail
+            cd /opt/xgzh
+            ${{ inputs.cmd }}

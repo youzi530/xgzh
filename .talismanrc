@@ -118,3 +118,6 @@ fileignoreconfig:
     checksum: 06d1e64dcae173869c84a841660a59a3990e9e2293720117ead0231178195098
   - filename: apps/api/app/services/admin_audit_service.py
     checksum: b1d97d693725e6c548137d27ebc15a14b2125b651229d72f350ad232e12f6caf
+  # bug-2026-05-22 H5 404 排查工具
+  - filename: .github/workflows/inspect-ecs.yml
+    checksum: 3f0a7d26d8e360bdc2df5d9c350838752b3438f40e543e5cc193562f888be5ad
