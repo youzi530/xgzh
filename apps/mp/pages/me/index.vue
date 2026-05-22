@@ -368,6 +368,11 @@ function gotoAdminUsers() {
   uni.navigateTo({ url: '/pages/admin/users' })
 }
 
+// Sprint 11 FE-S11-A03: admin 券商管理入口.
+function gotoAdminBrokers() {
+  uni.navigateTo({ url: '/pages/admin/brokers' })
+}
+
 function copyInviteCode() {
   const code = user.value?.invite_code
   if (!code) return
@@ -692,6 +697,18 @@ onUnmounted(() => {
             <view class="entry-text">
               <text class="entry-title">用户管理</text>
               <text class="entry-desc">查看 / 搜索 / 加 VIP / 禁用 / 软删</text>
+            </view>
+          </view>
+          <view class="entry-right">
+            <text class="entry-arrow">›</text>
+          </view>
+        </view>
+        <view class="entry-item" @tap="gotoAdminBrokers">
+          <view class="entry-left">
+            <text class="entry-icon entry-icon-admin">🏦</text>
+            <view class="entry-text">
+              <text class="entry-title">券商管理</text>
+              <text class="entry-desc">新建 / 编辑开户链接 / 上下架 / 软删</text>
             </view>
           </view>
           <view class="entry-right">

@@ -83,3 +83,10 @@ fileignoreconfig:
     checksum: aed230bd4682afd4b1c3c51b4cc927490133afe3096c61f1e30a16c9a995cc07
   - filename: docs/deploy/03-2026-05-21-domain-cutover.md
     checksum: 515a8802486374d2889ac6450b113c1963009f4be271e4e33c8f60a2a70ac215
+  # ─── Sprint 11 (admin 4 模块 + audit) 误报白名单 ──────────────────────
+  # 注释/UI key 字段被 talisman entropy 误判. 真 secret 仍走 GH Secrets.
+  # Module A
+  - filename: apps/api/app/services/broker_service.py
+    checksum: 3843dd6af6754bfd8e231f8e6787ba903f5f64f8dc02f115acc0db28af087bd0
+  - filename: apps/mp/pages/admin/brokers.vue
+    checksum: a62c1e6085738760484c750be9540661deea1a5d91f28bd0669d8fb690141439

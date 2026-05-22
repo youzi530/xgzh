@@ -31,15 +31,24 @@ PartnershipType = Literal["CPA", "CPS", "BOTH", "NONE"]
 BrokerSortBy = Literal["display_order", "created_at"]
 
 INTERNAL_FIELDS: frozenset[str] = frozenset(
-    {"partnership_type", "partnership_cpa_amount", "partnership_cps_rate"}
+    {
+        "partnership_type",
+        "partnership_cpa_amount",
+        "partnership_cps_rate",
+        # Sprint 11: admin 才看的字段; 公开路径剥掉 (service _orm_to_dict 已带, 跟
+        # partnership_* 同款防御 in depth — 即便忘记调 to_public_dict, BrokerPublic
+        # extra=forbid 也会 raise)
+        "is_deleted",
+        "deleted_at",
+    }
 )
 
 
 def to_public_dict(payload: dict[str, Any]) -> dict[str, Any]:
-    """剥掉 ``partnership_*`` 内部字段, 防止泄漏到 ``/api/v1/brokers/*``.
+    """剥掉 ``partnership_*`` + admin 字段 (Sprint 11), 防止泄漏到 ``/api/v1/brokers/*``.
 
     ``BrokerPublic`` 设了 ``extra="forbid"``, 直接 ``model_validate(payload)``
-    会因 partnership_* 报错; 路由层用本 helper 显式投影后再 model_validate.
+    会因 partnership_* / is_deleted 报错; 路由层用本 helper 显式投影后再 model_validate.
     """
     return {k: v for k, v in payload.items() if k not in INTERNAL_FIELDS}
 
@@ -65,6 +74,14 @@ class BrokerPublic(BaseModel):
     fees: dict[str, Any] = Field(default_factory=dict)
     features: dict[str, Any] = Field(default_factory=dict)
     promotion: dict[str, Any] = Field(default_factory=dict)
+    open_account_url: str | None = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "顶层开户链接 (Sprint 11). admin 编辑入口; 与 promotion.referral_url 双字段并存; "
+            "FE redirect 优先用本字段, fallback JSONB. 长期稳定不受 promotion 生命周期影响"
+        ),
+    )
 
     display_order: int
     is_active: bool
@@ -93,3 +110,84 @@ class BrokerListResponse(BaseModel):
 
     items: list[BrokerPublic]
     total: int = Field(ge=0)
+
+
+# ─── Sprint 11 Module A: admin CRUD schemas ─────────────────────────────
+
+
+class BrokerAdminDetail(BrokerInternal):
+    """admin 视角 broker 详情. 含 partnership_* + 标记是否软删.
+
+    与 ``BrokerInternal`` 的区别: 加 ``is_deleted`` / ``deleted_at`` 让 admin 排查软删行.
+    """
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    is_deleted: bool = False
+    deleted_at: datetime | None = None
+
+
+class BrokerAdminListResponse(BaseModel):
+    """admin 视角 broker 列表 (不分页, 券商总数 < 30)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[BrokerAdminDetail]
+    total: int = Field(ge=0)
+
+
+class BrokerCreate(BaseModel):
+    """``POST /admin/brokers``. slug 必填, 其余可选."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+        min_length=2,
+        max_length=32,
+        description="URL slug: 小写字母数字 + 连字符; 首尾必须字母数字",
+    )
+    name_zh: str = Field(min_length=1, max_length=64)
+    name_en: str | None = Field(default=None, max_length=64)
+    logo_url: str | None = Field(default=None, max_length=500)
+    open_account_url: str | None = Field(default=None, max_length=500)
+    market_support: list[Literal["HK", "A", "US", "SG"]] = Field(default_factory=list)
+    licenses: list[str] = Field(default_factory=list)
+    fees: dict[str, Any] = Field(default_factory=dict)
+    features: dict[str, Any] = Field(default_factory=dict)
+    promotion: dict[str, Any] = Field(default_factory=dict)
+    partnership_type: PartnershipType = "NONE"
+    partnership_cpa_amount: Decimal | None = Field(default=None, ge=0)
+    partnership_cps_rate: Decimal | None = Field(default=None, ge=0, le=1)
+    display_order: int = Field(default=0, ge=0, le=9999)
+    is_active: bool = True
+
+
+class BrokerUpdate(BaseModel):
+    """``PATCH /admin/brokers/{slug}``. 全字段可选, JSONB 字段走 merge (key 级).
+
+    与 ``BrokerCreate`` 主要差异:
+    - 所有字段可选 (None = 不动)
+    - JSONB 用 ``*_patch`` 后缀字段, 服务层浅 merge (admin 不易"整 dict 覆盖"误删 key)
+    - slug 不允许改 (改 slug 会破坏外链 + conversion_events 历史归因; 想换名建新 broker)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name_zh: str | None = Field(default=None, min_length=1, max_length=64)
+    name_en: str | None = Field(default=None, max_length=64)
+    logo_url: str | None = Field(default=None, max_length=500)
+    open_account_url: str | None = Field(default=None, max_length=500)
+    market_support: list[Literal["HK", "A", "US", "SG"]] | None = None
+    licenses: list[str] | None = None
+    display_order: int | None = Field(default=None, ge=0, le=9999)
+    is_active: bool | None = None
+    partnership_type: PartnershipType | None = None
+    partnership_cpa_amount: Decimal | None = Field(default=None, ge=0)
+    partnership_cps_rate: Decimal | None = Field(default=None, ge=0, le=1)
+    promotion_patch: dict[str, Any] | None = Field(
+        default=None,
+        description="JSONB merge: 传入 dict 跟现有 promotion 浅合并, 保留其它 key",
+    )
+    fees_patch: dict[str, Any] | None = None
+    features_patch: dict[str, Any] | None = None

@@ -141,24 +141,35 @@ def build_redirect_url(
     utm_campaign: str | None = None,
     utm_medium: str | None = None,
 ) -> str | None:
-    """``broker.promotion.referral_url`` + 拼 utm_source / campaign / medium / invite_code.
+    """Broker 开户链接 + 拼 utm_source / campaign / medium / invite_code.
 
     Args:
-        broker: 已确认 ``promotion.is_active=True`` 的 Broker
+        broker: 已确认 ``deleted_at IS NULL AND is_active=True`` 的 Broker
         utm_campaign: 端点 query 透传; None 时不落 utm_campaign 参数
         utm_medium: 端点 query 透传
 
     Returns:
-        最终 redirect URL; 若 ``promotion.is_active=False`` 或缺 referral_url 返 None.
+        最终 redirect URL; 若顶层 + JSONB 都没填或 promotion.is_active=false 返 None.
+
+    URL 来源优先级 (Sprint 11 BE-S11-A04 双字段):
+    1. ``broker.open_account_url`` (顶层, admin 编辑入口, 长期稳定)
+    2. ``broker.promotion.referral_url`` (JSONB fallback, 兼容旧 seed; 但需要
+       ``promotion.is_active=True``, 这跟 "开户" 长期可用 vs "活动" 季节性的语义对应)
+
+    顶层 URL 跳转**不受 promotion.is_active 控制** — admin 维护了开户地址就一直能跳;
+    只有完全没维护顶层 + JSONB 也关了活动, 才返 None (404).
 
     URL 拼接走 ``urlparse + urlencode + urlunparse``, 不用 f-string —
     防 utm_campaign='&evil=1' 注入既有 query 参数; 同时保留 referral_url
     自带的 utm_source 不被覆盖 (参数级 merge: 我方 utm_* 仅在 broker 没设时填).
     """
     promo = broker.promotion or {}
-    if not promo.get("is_active"):
-        return None
-    base_url = promo.get("referral_url")
+    # Sprint 11: 优先用顶层 open_account_url; 否则走 promotion.referral_url (需 is_active)
+    base_url = broker.open_account_url
+    if not base_url:
+        if not promo.get("is_active"):
+            return None
+        base_url = promo.get("referral_url")
     if not base_url or not isinstance(base_url, str):
         return None
 

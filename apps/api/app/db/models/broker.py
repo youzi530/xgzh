@@ -153,6 +153,14 @@ class Broker(Base, TimestampMixin, SoftDeleteMixin):
             "减少 schema 变化成本"
         ),
     )
+    open_account_url: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        comment=(
+            "顶层开户链接, admin 编辑入口 (Sprint 11 BE-S11-A01). 与 promotion.referral_url "
+            "双字段并存: redirect 优先用顶层, fallback JSONB. 长期稳定, 不受 promotion 生命周期影响"
+        ),
+    )
 
     # ─── partnership 三字段 (BrokerInternal only, 不直接出 API) ─────────
     partnership_type: Mapped[str] = mapped_column(

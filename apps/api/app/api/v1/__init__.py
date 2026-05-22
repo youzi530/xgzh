@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     admin,
+    admin_brokers,
     admin_users,
     agent,
     articles,
@@ -45,5 +46,6 @@ router.include_router(community.router)
 router.include_router(feature_flags.router)
 router.include_router(admin.router)
 router.include_router(admin_users.router)
+router.include_router(admin_brokers.router)
 
 __all__ = ["router"]
