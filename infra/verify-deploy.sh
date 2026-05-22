@@ -311,6 +311,11 @@ check_l3_api_behavior() {
     fi
 
     # 3.4 DB schema 烟雾: users.is_admin 列存在 (Sprint 10 alembic 0017)
+    # 走 SSH; 如果 L2 SSH 已不通, 这里也跳 (重复 fail 无意义), 因为 /version 已确认 alembic_head
+    if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$SSH_HOST" 'true' 2>/dev/null; then
+        info "SSH 不通, 跳过 users.is_admin 列直查 (alembic_head 已在 /version 确认)"
+        return
+    fi
     local pg_check
     pg_check=$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$SSH_HOST" "
 docker exec -i xgzh-postgres psql -U xgzh -d $DB_NAME -tAc \"
