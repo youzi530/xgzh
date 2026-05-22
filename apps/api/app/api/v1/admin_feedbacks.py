@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,10 @@ from app.schemas.feedback import (
 )
 from app.security.deps import get_current_admin
 from app.services import feedback_service
+from app.services.admin_audit_service import (
+    log_admin_action,
+    resolve_request_context,
+)
 from app.services.feedback_service import FeedbackNotFoundError
 
 router = APIRouter(prefix="/admin/feedbacks", tags=["admin"])
@@ -209,9 +213,11 @@ async def get_feedback_admin(
 async def update_feedback_admin(
     feedback_id: uuid.UUID,
     body: AdminFeedbackUpdate,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> AdminFeedbackDetail:
+    ip, ua = resolve_request_context(request)
     patch = body.model_dump(exclude_unset=True)
     try:
         row = await feedback_service.update_feedback(
@@ -223,6 +229,15 @@ async def update_feedback_admin(
         )
     except FeedbackNotFoundError as e:
         raise _not_found(feedback_id) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="update",
+        target_type="feedback",
+        target_id=str(feedback_id),
+        changes={k: [None, v] for k, v in patch.items()},
+        ip_inet=ip,
+        user_agent=ua,
+    )
     logger.warning(
         f"admin.feedback.update.ok admin_id={admin.user_id} id={feedback_id} fields={list(patch.keys())}"
     )
@@ -245,15 +260,25 @@ async def update_feedback_admin(
 )
 async def soft_delete_feedback_admin(
     feedback_id: uuid.UUID,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
+    ip, ua = resolve_request_context(request)
     try:
         await feedback_service.soft_delete_feedback(
             session, admin=admin, feedback_id=feedback_id
         )
     except FeedbackNotFoundError as e:
         raise _not_found(feedback_id) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="delete",
+        target_type="feedback",
+        target_id=str(feedback_id),
+        ip_inet=ip,
+        user_agent=ua,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -274,15 +299,25 @@ async def soft_delete_feedback_admin(
 )
 async def restore_feedback_admin(
     feedback_id: uuid.UUID,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> AdminFeedbackDetail:
+    ip, ua = resolve_request_context(request)
     try:
         row = await feedback_service.restore_feedback(
             session, admin=admin, feedback_id=feedback_id
         )
     except FeedbackNotFoundError as e:
         raise _not_found(feedback_id) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="restore",
+        target_type="feedback",
+        target_id=str(feedback_id),
+        ip_inet=ip,
+        user_agent=ua,
+    )
     return _to_detail(row)
 
 

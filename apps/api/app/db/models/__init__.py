@@ -4,6 +4,7 @@
    alembic autogenerate 会漏掉新表。
 """
 
+from app.db.models.admin_audit import AdminAuditLog
 from app.db.models.article import Article, ArticleTopic
 from app.db.models.auth import AuthSession
 from app.db.models.broker import Broker, ConversionEvent
@@ -30,6 +31,7 @@ from app.db.models.user_deletion import UserDeletion
 from app.db.models.vip import VipMembership, VipOrder
 
 __all__ = [
+    "AdminAuditLog",
     "Article",
     "ArticleTopic",
     "AuthSession",

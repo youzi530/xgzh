@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +35,10 @@ from app.schemas.knowledge import (
 )
 from app.security.deps import get_current_admin
 from app.services import knowledge_service
+from app.services.admin_audit_service import (
+    log_admin_action,
+    resolve_request_context,
+)
 from app.services.knowledge_service import (
     KnowledgeNotFoundError,
     KnowledgeSlugTakenError,
@@ -147,9 +151,11 @@ async def get_article_admin(
 )
 async def create_article_admin(
     body: KnowledgeArticleCreate,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> KnowledgeArticleAdminDetail:
+    ip, ua = resolve_request_context(request)
     try:
         article = await knowledge_service.create_article(
             session,
@@ -170,6 +176,19 @@ async def create_article_admin(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "slug_taken", "message": str(e)},
         ) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="create",
+        target_type="knowledge_article",
+        target_id=str(article.id),
+        changes={
+            "slug": [None, article.slug],
+            "title": [None, article.title],
+            "is_published": [None, article.is_published],
+        },
+        ip_inet=ip,
+        user_agent=ua,
+    )
     logger.warning(
         f"admin.knowledge.create admin_id={admin.user_id} id={article.id} "
         f"slug={article.slug}"
@@ -196,9 +215,11 @@ async def create_article_admin(
 async def update_article_admin(
     article_id: uuid.UUID,
     body: KnowledgeArticleUpdate,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> KnowledgeArticleAdminDetail:
+    ip, ua = resolve_request_context(request)
     patch = body.model_dump(exclude_unset=True)
     if not patch:
         try:
@@ -214,6 +235,15 @@ async def update_article_admin(
         )
     except KnowledgeNotFoundError as e:
         raise _not_found(article_id) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="update",
+        target_type="knowledge_article",
+        target_id=str(article_id),
+        changes={k: [None, v] for k, v in patch.items()},
+        ip_inet=ip,
+        user_agent=ua,
+    )
     logger.warning(
         f"admin.knowledge.update admin_id={admin.user_id} id={article_id} "
         f"fields={list(patch.keys())}"
@@ -237,13 +267,23 @@ async def update_article_admin(
 )
 async def delete_article_admin(
     article_id: uuid.UUID,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
+    ip, ua = resolve_request_context(request)
     try:
         await knowledge_service.delete_article(session, article_id=article_id)
     except KnowledgeNotFoundError as e:
         raise _not_found(article_id) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="delete",
+        target_type="knowledge_article",
+        target_id=str(article_id),
+        ip_inet=ip,
+        user_agent=ua,
+    )
     logger.warning(
         f"admin.knowledge.delete admin_id={admin.user_id} id={article_id}"
     )

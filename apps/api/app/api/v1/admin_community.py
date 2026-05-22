@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,10 @@ from app.schemas.community import (
     PostVisibility,
 )
 from app.security.deps import get_current_admin
+from app.services.admin_audit_service import (
+    log_admin_action,
+    resolve_request_context,
+)
 from app.services.community import post_service
 from app.services.community.post_service import PostNotFoundError
 
@@ -184,9 +188,11 @@ async def get_post_admin(
 async def update_post_status_admin(
     post_id: uuid.UUID,
     body: AdminPostStatusUpdate,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> AdminPostListItem:
+    ip, ua = resolve_request_context(request)
     try:
         post = await post_service.admin_update_post_status(
             session,
@@ -202,6 +208,18 @@ async def update_post_status_admin(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"code": "invalid_status", "message": str(e)},
         ) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="status_change",
+        target_type="post",
+        target_id=str(post_id),
+        changes={
+            "status": [None, body.status],
+            "reason": [None, body.reason] if body.reason else None,
+        },
+        ip_inet=ip,
+        user_agent=ua,
+    )
     _, ctx = await post_service.admin_get_post(session, post_id=post_id)
     return _to_item(post, ctx["user_nickname"], ctx["user_avatar_url"])
 
@@ -224,9 +242,11 @@ async def update_post_status_admin(
 async def update_post_visibility_admin(
     post_id: uuid.UUID,
     body: AdminPostVisibilityUpdate,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> AdminPostListItem:
+    ip, ua = resolve_request_context(request)
     try:
         post = await post_service.admin_update_post_visibility(
             session,
@@ -241,6 +261,15 @@ async def update_post_visibility_admin(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"code": "invalid_visibility", "message": str(e)},
         ) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="visibility_change",
+        target_type="post",
+        target_id=str(post_id),
+        changes={"visibility": [None, body.visibility]},
+        ip_inet=ip,
+        user_agent=ua,
+    )
     _, ctx = await post_service.admin_get_post(session, post_id=post_id)
     return _to_item(post, ctx["user_nickname"], ctx["user_avatar_url"])
 
@@ -261,13 +290,23 @@ async def update_post_visibility_admin(
 )
 async def delete_post_admin(
     post_id: uuid.UUID,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
+    ip, ua = resolve_request_context(request)
     try:
         await post_service.admin_delete_post(session, admin=admin, post_id=post_id)
     except PostNotFoundError as e:
         raise _not_found(post_id) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="delete",
+        target_type="post",
+        target_id=str(post_id),
+        ip_inet=ip,
+        user_agent=ua,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

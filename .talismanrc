@@ -111,3 +111,10 @@ fileignoreconfig:
     checksum: 678955138fe082ddf685f8475600a66c06b60ae7854e97ce1d0cc374e0916e65
   - filename: apps/mp/pages/admin/knowledge-edit.vue
     checksum: 42926ae6ebc0e1e562af81265d19b719993e29114e456735d14a80b4c191e28c
+  # Module E audit
+  - filename: apps/api/alembic/versions/0020_admin_audit_logs.py
+    checksum: 444450fbf64db38c25a3383c289c38d4cac58d1e42a7d5d07bd62bc5dfdfd5ff
+  - filename: apps/api/app/db/models/admin_audit.py
+    checksum: 06d1e64dcae173869c84a841660a59a3990e9e2293720117ead0231178195098
+  - filename: apps/api/app/services/admin_audit_service.py
+    checksum: b1d97d693725e6c548137d27ebc15a14b2125b651229d72f350ad232e12f6caf

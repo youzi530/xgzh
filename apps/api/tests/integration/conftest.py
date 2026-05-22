@@ -139,7 +139,8 @@ async def truncate_all(db_engine: AsyncEngine) -> AsyncIterator[None]:
                 "community_posts, "  # BE-S6-005: user FK CASCADE
                 "community_comments, "  # post + user FK CASCADE
                 "community_likes, "  # user FK CASCADE
-                "community_reports "  # user FK CASCADE
+                "community_reports, "  # user FK CASCADE
+                "admin_audit_logs "  # BE-S11-E01: admin_user_id FK SET NULL, 显式列让用例间隔离
                 "RESTART IDENTITY CASCADE"
             )
         )
@@ -191,6 +192,7 @@ async def patch_session_factory(
     get_engine.cache_clear()
 
     import app.db as db_pkg
+    import app.services.admin_audit_service as admin_audit_mod
     import app.services.agent.tools.historical as agent_historical_mod
     import app.services.agent.tools.hybrid_search as agent_hybrid_search_mod
     import app.services.agent.tools.peers as agent_peers_mod
@@ -235,6 +237,7 @@ async def patch_session_factory(
         vip_service_mod,
         payment_service_mod,
         user_deletion_mod,
+        admin_audit_mod,
         seed_brokers_mod,
         backfill_historical_mod,
         check_historical_coverage_mod,

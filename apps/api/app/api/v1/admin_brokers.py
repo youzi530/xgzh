@@ -29,7 +29,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +43,10 @@ from app.schemas.broker import (
 )
 from app.security.deps import get_current_admin
 from app.services import broker_service
+from app.services.admin_audit_service import (
+    log_admin_action,
+    resolve_request_context,
+)
 from app.services.broker_service import (
     BrokerNotFoundError,
     BrokerSlugTakenError,
@@ -148,9 +152,11 @@ async def get_broker_admin(
 )
 async def create_broker_admin(
     body: BrokerCreate,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> BrokerAdminDetail:
+    ip, ua = resolve_request_context(request)
     try:
         payload = await broker_service.create_broker(
             session,
@@ -178,6 +184,15 @@ async def create_broker_admin(
                 "message": f"slug={body.slug!r} 已被占用; 请换一个",
             },
         ) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="create",
+        target_type="broker",
+        target_id=body.slug,
+        changes={"name_zh": [None, body.name_zh], "is_active": [None, body.is_active]},
+        ip_inet=ip,
+        user_agent=ua,
+    )
     logger.warning(
         f"admin.broker.create.ok admin_id={admin.user_id} slug={body.slug} name={body.name_zh}"
     )
@@ -203,9 +218,11 @@ async def create_broker_admin(
 async def update_broker_admin(
     slug: str,
     body: BrokerUpdate,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> BrokerAdminDetail:
+    ip, ua = resolve_request_context(request)
     patch = body.model_dump(exclude_unset=True)
     try:
         payload = await broker_service.update_broker(
@@ -215,6 +232,15 @@ async def update_broker_admin(
         )
     except BrokerNotFoundError as e:
         raise _not_found(slug) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="update",
+        target_type="broker",
+        target_id=slug,
+        changes={k: [None, v] for k, v in patch.items()},
+        ip_inet=ip,
+        user_agent=ua,
+    )
     logger.warning(
         f"admin.broker.update.ok admin_id={admin.user_id} slug={slug} fields={list(patch.keys())}"
     )
@@ -237,13 +263,23 @@ async def update_broker_admin(
 )
 async def soft_delete_broker_admin(
     slug: str,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
+    ip, ua = resolve_request_context(request)
     try:
         await broker_service.soft_delete_broker(session, slug=slug)
     except BrokerNotFoundError as e:
         raise _not_found(slug) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="delete",
+        target_type="broker",
+        target_id=slug,
+        ip_inet=ip,
+        user_agent=ua,
+    )
     logger.warning(f"admin.broker.delete.ok admin_id={admin.user_id} slug={slug}")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -265,13 +301,23 @@ async def soft_delete_broker_admin(
 )
 async def restore_broker_admin(
     slug: str,
+    request: Request,
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> BrokerAdminDetail:
+    ip, ua = resolve_request_context(request)
     try:
         payload = await broker_service.restore_broker(session, slug=slug)
     except BrokerNotFoundError as e:
         raise _not_found(slug) from e
+    await log_admin_action(
+        admin_user_id=admin.user_id,
+        action="restore",
+        target_type="broker",
+        target_id=slug,
+        ip_inet=ip,
+        user_agent=ua,
+    )
     logger.warning(f"admin.broker.restore.ok admin_id={admin.user_id} slug={slug}")
     return BrokerAdminDetail.model_validate(payload)
 
